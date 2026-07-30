@@ -1,0 +1,39 @@
+# 运行期数据与构建产物
+backend/data/
+backend/guardian
+backend/guardian.exe
+backend/guardian.exe~
+*.log
+
+# 交叉编译产物（make build-linux）
+/dist/
+
+# 前端依赖与构建产物（dist 由 go:embed 打进二进制，不入库）
+.pnpm-store/
+frontend/node_modules/
+backend/internal/web/dist/*
+# .gitkeep 必须入库：go:embed all:dist 要求目录非空，
+# 否则全新 clone 出来在构建前端之前连后端都编译不过。
+# 前面的 ! 只能抵消本文件的规则，父仓库 .gitignore 里的 `dist/` 需要下面这条兜底。
+!backend/internal/web/dist/.gitkeep
+!backend/internal/web/dist/
+
+# 调试与临时文件
+#
+# 用 curl 调接口时很容易在仓库里落下 cookie jar（-c c.txt）与
+# 策略导出快照（-o pol.json）。cookie 文件可能含会话令牌，绝不该入库。
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+cookies*.txt
+c.txt
+pol*.json
+.env
+*.tmp
+*.bak
+
+# 编辑器与系统
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

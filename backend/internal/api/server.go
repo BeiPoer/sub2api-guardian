@@ -1,0 +1,204 @@
+// Package api 暴露 Guardian 的 HTTP 接口与 SSE 实时推送。
+package api
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"sub2api-guardian/backend/internal/engine"
+	"sub2api-guardian/backend/internal/store"
+	"sub2api-guardian/backend/internal/upstream"
+)
+
+// Server 聚合 HTTP 处理所需的依赖。
+type Server struct {
+	store  *store.Store
+	client *upstream.Client
+	engine *engine.Engine
+	hub    *hub
+	assets http.Handler
+
+	// lastRenew 给会话滑动续期做限流，避免每个请求都写一次库。
+	renewMu   sync.Mutex
+	lastRenew map[string]time.Time
+
+	authRateMu sync.Mutex
+	authRates  map[string]authRateEntry
+}
+
+type authRateEntry struct {
+	count   int
+	resetAt time.Time
+}
+
+// NewServer 创建 API 服务。assets 用于托管内嵌前端，可为 nil。
+func NewServer(st *store.Store, client *upstream.Client, eng *engine.Engine, assets http.Handler) *Server {
+	s := &Server{
+		store:     st,
+		client:    client,
+		engine:    eng,
+		hub:       newHub(),
+		assets:    assets,
+		lastRenew: make(map[string]time.Time, 64),
+		authRates: make(map[string]authRateEntry, 64),
+	}
+	eng.SetNotifier(s.hub.broadcast)
+	return s
+}
+
+// Close 释放 SSE 资源。
+func (s *Server) Close() { s.hub.close() }
+
+// protectedRoutes 是需要登录才能访问的全部接口。
+//
+// 用表驱动而不是逐条 HandleFunc，是为了让「有没有漏挂鉴权」变成可测的事实：
+// 测试会遍历这张表逐条验证未登录返回 401（见 auth_test.go）。
+// 新增接口时往表里加一行，漏加会被测试抓住。
+func (s *Server) protectedRoutes() map[string]http.HandlerFunc {
+	return map[string]http.HandlerFunc{
+		"GET /api/overview":                 s.overview,
+		"GET /api/groups":                   s.listGroups,
+		"PUT /api/groups/{id}/policy":       s.saveGroupPolicy,
+		"DELETE /api/groups/{id}/policy":    s.deleteGroupPolicy,
+		"POST /api/groups/{id}/exclude":     s.excludeGroup,
+		"GET /api/channels":                 s.listChannels,
+		"GET /api/channels/{id}":            s.getChannel,
+		"PUT /api/channels/{id}":            s.updateChannel,
+		"POST /api/channels/{id}/probe":     s.probeChannel,
+		"POST /api/channels/{id}/fuse":      s.fuseChannel,
+		"POST /api/channels/{id}/recover":   s.recoverChannel,
+		"POST /api/channels/{id}/exclude":   s.excludeChannel,
+		"POST /api/channels/{id}/pause":     s.pauseChannel,
+		"GET /api/channels/{id}/models":     s.channelModels,
+		"PUT /api/channels/{id}/test-model": s.setChannelTestModel,
+		"GET /api/policy":                   s.getPolicy,
+		"PUT /api/policy":                   s.savePolicy,
+		"GET /api/connection":               s.getConnection,
+		"PUT /api/connection":               s.saveConnection,
+		"POST /api/sync":                    s.sync,
+		"POST /api/run-once":                s.runOnce,
+		"POST /api/cancel":                  s.cancelRun,
+		"POST /api/resume":                  s.resumeRun,
+		"POST /api/restore-all":             s.restoreAll,
+		"GET /api/events":                   s.listEvents,
+		"GET /api/actions":                  s.listActions,
+		"GET /api/stream":                   s.stream,
+		"GET /api/me":                       s.me,
+		"PUT /api/account":                  s.updateAccount,
+		"POST /api/logout":                  s.logout,
+	}
+}
+
+// Handler 返回带路由与中间件的处理器。
+func (s *Server) Handler() http.Handler {
+	mux := http.NewServeMux()
+
+	// 公开接口：探活，以及登录前必须能访问的初始化与登录本身。
+	mux.HandleFunc("GET /healthz", s.health)
+	mux.HandleFunc("GET /api/setup", s.setupStatus)
+	mux.HandleFunc("POST /api/setup", s.setup)
+	mux.HandleFunc("POST /api/login", s.login)
+
+	for pattern, handler := range s.protectedRoutes() {
+		mux.HandleFunc(pattern, s.requireAuth(handler))
+	}
+
+	if s.assets != nil {
+		mux.Handle("/", s.assets)
+	}
+	return cors(mux)
+}
+
+// health 只回一个存活标记。
+//
+// 早期版本还带上 engine.Status()，那会把运行状态、上次调度结果和错误信息
+// 泄露给任何未鉴权的调用方 —— 探活接口不需要这些。
+func (s *Server) health(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// devOrigins 是开发期允许跨源访问的前端地址。
+//
+// 生产环境下前端由二进制内嵌托管，本来就同源、不需要 CORS；
+// 这里只为「前端跑 vite dev、直连后端」这种场景留条路。
+var devOrigins = map[string]bool{
+	"http://127.0.0.1:5177": true,
+	"http://localhost:5177": true,
+}
+
+// cors 按白名单回显 Origin。
+//
+// 不能再用 Access-Control-Allow-Origin: *：会话走 Cookie，
+// 而浏览器规范禁止通配 Origin 携带凭据，通配符会让带 Cookie 的跨源请求直接失败。
+// 更要紧的是，通配 + 凭据本身就是把接口暴露给任意站点的组合。
+func cors(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" && devOrigins[origin] {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
+			// 响应随 Origin 变化，必须告诉缓存别把某一个源的响应复用给别人。
+			w.Header().Add("Vary", "Origin")
+		}
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func writeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
+}
+
+func writeError(w http.ResponseWriter, err error) {
+	status := http.StatusBadRequest
+	switch {
+	case errors.Is(err, engine.ErrAlreadyRunning):
+		status = http.StatusConflict
+	case errors.Is(err, engine.ErrAccountNotManaged):
+		status = http.StatusNotFound
+	case errors.Is(err, upstream.ErrNotConfigured):
+		status = http.StatusPreconditionFailed
+	}
+	writeJSON(w, status, map[string]any{"error": err.Error()})
+}
+
+func pathID(r *http.Request) (int64, error) {
+	return strconv.ParseInt(strings.TrimSpace(r.PathValue("id")), 10, 64)
+}
+
+func decodeBody(r *http.Request, out any) error {
+	defer func() { _ = r.Body.Close() }()
+	return json.NewDecoder(r.Body).Decode(out)
+}
+
+func queryInt(r *http.Request, key string, fallback int) int {
+	value, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get(key)))
+	if err != nil {
+		return fallback
+	}
+	return value
+}
+
+func queryInt64Ptr(r *http.Request, key string) *int64 {
+	raw := strings.TrimSpace(r.URL.Query().Get(key))
+	if raw == "" {
+		return nil
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return nil
+	}
+	return &value
+}
