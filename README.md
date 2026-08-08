@@ -245,7 +245,8 @@ gh release create v1.0.0 \
 
 ### Docker Compose
 
-默认把 Guardian 映射到宿主机回环地址的 `8787` 端口，并把数据库放在命名卷中：
+默认把 Guardian 映射到宿主机回环地址的 `8787` 端口，并把数据保存到项目下的
+`backend/data/`：
 
 ```bash
 docker compose up -d --build
@@ -258,6 +259,15 @@ docker compose logs -f guardian
 GUARDIAN_PORT=9090 docker compose up -d --build
 ```
 
+Compose 默认以 UID/GID `1000:1000` 的非 root 用户运行，标准部署不需要额外填写 UID/GID。
+若宿主机用户 UID/GID 不同，只需首次写入 `.env`，后续更新无需重复设置；同时确保
+`backend/data/` 由该用户可写：
+
+```bash
+mkdir -p backend/data
+chown -R "$(id -u):$(id -g)" backend/data
+```
+
 也可以复制 `.env.example` 为 `.env` 后修改。需要从其他机器直接访问时，显式设置
 `GUARDIAN_BIND=0.0.0.0`；此时必须同时限制防火墙来源并配置 HTTPS 反向代理。
 
@@ -265,11 +275,10 @@ GUARDIAN_PORT=9090 docker compose up -d --build
 `http://host.docker.internal:8080`（端口按实际值修改），不要填写容器内的
 `127.0.0.1`。如果两个服务在同一个 Docker 网络，直接使用 sub2api 的服务名。
 
-备份与恢复命名卷：
+备份与恢复数据目录：
 
 ```bash
-docker run --rm -v sub2api-guardian_guardian-data:/data -v "$PWD":/backup \
-  alpine tar czf /backup/guardian-data.tgz -C /data .
+tar czf guardian-data.tgz -C backend/data .
 ```
 
 ### 公网访问不到？先看监听地址

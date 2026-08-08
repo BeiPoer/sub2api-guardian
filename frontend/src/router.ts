@@ -13,6 +13,11 @@ const router = createRouter({
       name: 'connection',
       component: () => import('@/views/ConnectionView.vue')
     },
+    {
+      path: '/tools/image2',
+      name: 'image2',
+      component: () => import('@/views/Image2View.vue')
+    },
     { path: '/account', name: 'account', component: () => import('@/views/AccountView.vue') },
     { path: '/:pathMatch(.*)*', redirect: '/' }
   ]

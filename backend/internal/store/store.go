@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -16,8 +17,9 @@ import (
 //
 // SQLite 连接数固定为 1（写入串行化），配合互斥锁保证事务不会交叉。
 type Store struct {
-	db *sql.DB
-	mu sync.Mutex
+	db      *sql.DB
+	mu      sync.Mutex
+	dataDir string
 }
 
 // Open 打开（或创建）数据库并执行迁移。
@@ -34,7 +36,7 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	s := &Store{db: db}
+	s := &Store{db: db, dataDir: filepath.Dir(path)}
 	if err := s.migrate(); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -48,6 +50,9 @@ func Open(path string) (*Store, error) {
 
 // Close 关闭数据库。
 func (s *Store) Close() error { return s.db.Close() }
+
+// DataDir 返回数据库所在目录，供同进程的运行期文件复用同一持久化位置。
+func (s *Store) DataDir() string { return s.dataDir }
 
 // IsNotFound 报告错误是否为“记录不存在”。
 func IsNotFound(err error) bool { return errors.Is(err, sql.ErrNoRows) }

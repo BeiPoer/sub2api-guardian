@@ -17,7 +17,7 @@ const (
 	metaConnection    = "connection"
 	metaPolicy        = "policy_global"
 
-	currentSchemaVersion = "4"
+	currentSchemaVersion = "5"
 )
 
 var schemaStatements = []string{
@@ -119,6 +119,16 @@ var schemaStatements = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at)`,
+	`CREATE TABLE IF NOT EXISTS image2_upstreams (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		name TEXT NOT NULL,
+		slug TEXT NOT NULL UNIQUE,
+		base_url TEXT NOT NULL,
+		api_key TEXT NOT NULL,
+		-- 旧版本字段，当前代理不再读取或写入。
+		supports_url INTEGER NOT NULL DEFAULT 0,
+		model_mapping TEXT NOT NULL DEFAULT ''
+	)`,
 }
 
 // migrate 建表并在必要时从 0.1 版原型库升级。

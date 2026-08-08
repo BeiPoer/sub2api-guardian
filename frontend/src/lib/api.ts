@@ -4,6 +4,9 @@ import type {
   Connection,
   Group,
   GuardianEvent,
+  Image2Config,
+  Image2Settings,
+  Image2Upstream,
   Overview,
   Policy
 } from './types'
@@ -174,5 +177,18 @@ export const api = {
   actions: (accountID?: number) => {
     const query = accountID ? `?account_id=${accountID}` : ''
     return request<{ items: Action[] }>(`/api/actions${query}`)
-  }
+  },
+
+  image2: () => request<Image2Config>('/api/image2'),
+  saveImage2Settings: (payload: {
+    image_domain: string
+    retention_hours: number
+    proxy_api_key?: string
+  }) => put<Image2Settings>('/api/image2/settings', payload),
+  createImage2Upstream: (payload: Record<string, unknown>) =>
+    post<Image2Upstream>('/api/image2/upstreams', payload),
+  updateImage2Upstream: (id: number, payload: Record<string, unknown>) =>
+    put<Image2Upstream>(`/api/image2/upstreams/${id}`, payload),
+  deleteImage2Upstream: (id: number) =>
+    request<{ ok: boolean }>(`/api/image2/upstreams/${id}`, { method: 'DELETE' })
 }

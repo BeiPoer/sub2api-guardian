@@ -1,5 +1,7 @@
 # 运行期数据与构建产物
-backend/data/
+backend/data/*
+!backend/data/
+!backend/data/.gitkeep
 backend/guardian
 backend/guardian.exe
 backend/guardian.exe~

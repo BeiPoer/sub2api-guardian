@@ -49,6 +49,22 @@
       </div>
 
       <div class="sidebar-section">
+        <p v-if="!ui.sidebarCollapsed" class="sidebar-section-title">辅助工具</p>
+        <RouterLink
+          v-for="item in toolsNav"
+          :key="item.to"
+          :to="item.to"
+          class="sidebar-link mb-1"
+          :class="isActive(item.to) && 'sidebar-link-active'"
+          :title="item.label"
+          @click="emit('navigate')"
+        >
+          <Icon :name="item.icon" size="sm" class="flex-shrink-0" />
+          <span v-if="!ui.sidebarCollapsed" class="truncate">{{ item.label }}</span>
+        </RouterLink>
+      </div>
+
+      <div class="sidebar-section">
         <p v-if="!ui.sidebarCollapsed" class="sidebar-section-title">系统</p>
         <RouterLink
           v-for="item in systemNav"
@@ -128,6 +144,8 @@ const configNav = [
   { to: '/policy', label: '策略配置', icon: 'cog' as const },
   { to: '/connection', label: '连接设置', icon: 'link' as const }
 ]
+
+const toolsNav = [{ to: '/tools/image2', label: 'image2路由', icon: 'beaker' as const }]
 
 /** 系统：与调度无关的账号自身设置。 */
 const systemNav = [{ to: '/account', label: '信息修改', icon: 'userCircle' as const }]

@@ -2,6 +2,26 @@
 
 export type Strategy = 'price' | 'speed' | 'balanced'
 
+export interface Image2Settings {
+  image_domain: string
+  retention_hours: number
+  has_proxy_api_key: boolean
+}
+
+export interface Image2Upstream {
+  id: number
+  name: string
+  slug: string
+  base_url: string
+  has_api_key: boolean
+  model_mapping: string
+}
+
+export interface Image2Config {
+  settings: Image2Settings
+  upstreams: Image2Upstream[]
+}
+
 export type ChannelHealth =
   | 'unknown'
   | 'healthy'

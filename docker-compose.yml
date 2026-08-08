@@ -6,6 +6,7 @@ services:
     image: sub2api-guardian:local
     container_name: sub2api-guardian
     restart: unless-stopped
+    user: "${GUARDIAN_UID:-1000}:${GUARDIAN_GID:-1000}"
     ports:
       - "${GUARDIAN_BIND:-127.0.0.1}:${GUARDIAN_PORT:-8787}:8787"
     environment:
@@ -14,9 +15,6 @@ services:
       SUB2API_BASE_URL: "${SUB2API_BASE_URL:-}"
       SUB2API_ADMIN_KEY: "${SUB2API_ADMIN_KEY:-}"
     volumes:
-      - guardian-data:/data
+      - ./backend/data:/data
     extra_hosts:
       - "host.docker.internal:host-gateway"
-
-volumes:
-  guardian-data:

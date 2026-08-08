@@ -4,7 +4,11 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"log"
+	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,6 +33,13 @@ type Server struct {
 
 	authRateMu sync.Mutex
 	authRates  map[string]authRateEntry
+
+	image2Dir     string
+	image2InitErr error
+	image2Client  *http.Client
+	image2Stop    chan struct{}
+	image2Done    chan struct{}
+	closeOnce     sync.Once
 }
 
 type authRateEntry struct {
@@ -38,6 +49,9 @@ type authRateEntry struct {
 
 // NewServer 创建 API 服务。assets 用于托管内嵌前端，可为 nil。
 func NewServer(st *store.Store, client *upstream.Client, eng *engine.Engine, assets http.Handler) *Server {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = (&net.Dialer{Timeout: 10 * time.Second}).DialContext
+	image2Dir := filepath.Join(st.DataDir(), "image2", "images")
 	s := &Server{
 		store:     st,
 		client:    client,
@@ -46,13 +60,39 @@ func NewServer(st *store.Store, client *upstream.Client, eng *engine.Engine, ass
 		assets:    assets,
 		lastRenew: make(map[string]time.Time, 64),
 		authRates: make(map[string]authRateEntry, 64),
+		image2Dir: image2Dir,
+		image2Client: &http.Client{
+			Timeout:       3 * time.Minute,
+			Transport:     transport,
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
+		},
+		image2Stop: make(chan struct{}),
+		image2Done: make(chan struct{}),
+	}
+	s.image2InitErr = os.MkdirAll(image2Dir, 0o700)
+	if s.image2InitErr != nil {
+		log.Printf("创建 image2 图片目录失败: %v", s.image2InitErr)
+		close(s.image2Done)
+	} else {
+		if removed, err := s.cleanupImage2Files(); err != nil {
+			log.Printf("清理 image2 图片失败: %v", err)
+		} else if removed > 0 {
+			log.Printf("已清理 %d 个过期 image2 图片", removed)
+		}
+		go s.image2CleanupLoop()
 	}
 	eng.SetNotifier(s.hub.broadcast)
 	return s
 }
 
 // Close 释放 SSE 资源。
-func (s *Server) Close() { s.hub.close() }
+func (s *Server) Close() {
+	s.closeOnce.Do(func() {
+		close(s.image2Stop)
+		<-s.image2Done
+		s.hub.close()
+	})
+}
 
 // protectedRoutes 是需要登录才能访问的全部接口。
 //
@@ -87,6 +127,11 @@ func (s *Server) protectedRoutes() map[string]http.HandlerFunc {
 		"POST /api/restore-all":             s.restoreAll,
 		"GET /api/events":                   s.listEvents,
 		"GET /api/actions":                  s.listActions,
+		"GET /api/image2":                   s.getImage2,
+		"PUT /api/image2/settings":          s.saveImage2Settings,
+		"POST /api/image2/upstreams":        s.createImage2Upstream,
+		"PUT /api/image2/upstreams/{id}":    s.updateImage2Upstream,
+		"DELETE /api/image2/upstreams/{id}": s.deleteImage2Upstream,
 		"GET /api/stream":                   s.stream,
 		"GET /api/me":                       s.me,
 		"PUT /api/account":                  s.updateAccount,
@@ -103,6 +148,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/setup", s.setupStatus)
 	mux.HandleFunc("POST /api/setup", s.setup)
 	mux.HandleFunc("POST /api/login", s.login)
+	mux.HandleFunc("GET /images/{name}", s.serveImage2File)
+	mux.HandleFunc("GET /files/{name}", s.serveImage2File)
+	mux.HandleFunc("POST /{slug}/v1/images/generations", s.generateImage2)
+	mux.HandleFunc("POST /{slug}/v1/images/edits", s.editImage2)
 
 	for pattern, handler := range s.protectedRoutes() {
 		mux.HandleFunc(pattern, s.requireAuth(handler))
