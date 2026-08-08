@@ -2,11 +2,13 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -102,14 +104,14 @@ func TestImage2ProxyConvertsBase64ToURL(t *testing.T) {
 
 func TestImage2ResponseOnlyNeedsImageDomainForBase64(t *testing.T) {
 	native := []byte(`{"data":[{"url":"https://native.example/image.png"}]}`)
-	converted, proxyErr := (&Server{}).convertImage2Response(native, "")
+	converted, proxyErr := (&Server{}).convertImage2Response(context.Background(), native, "", "url")
 	if proxyErr != nil || !bytes.Equal(converted, native) {
 		t.Fatalf("原生 URL 响应被额外处理: err=%v body=%s", proxyErr, converted)
 	}
 
 	encoded := base64.StdEncoding.EncodeToString([]byte("not-an-image"))
-	_, proxyErr = (&Server{}).convertImage2Response(
-		[]byte(`{"data":[{"b64_json":"`+encoded+`"}]}`), "")
+	_, proxyErr = (&Server{}).convertImage2Response(context.Background(),
+		[]byte(`{"data":[{"b64_json":"`+encoded+`"}]}`), "", "url")
 	if proxyErr == nil || proxyErr.status != http.StatusServiceUnavailable || proxyErr.code != "image_domain_missing" {
 		t.Fatalf("Base64 响应未要求图片域名: %#v", proxyErr)
 	}
@@ -141,7 +143,17 @@ func TestNormalizeImage2URLsUsesRootUpstreamAndDomainOnly(t *testing.T) {
 	}
 }
 
-func TestImage2ProxyPassesThroughRequestedFormats(t *testing.T) {
+func TestImage2ProxyConvertsOnlyMismatchedFormats(t *testing.T) {
+	image := []byte("\x89PNG\r\n\x1a\nurl-to-base64")
+	imageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/image.png" {
+			t.Errorf("图片请求 = %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(image)
+	}))
+	defer imageServer.Close()
+
 	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var payload map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -155,7 +167,13 @@ func TestImage2ProxyPassesThroughRequestedFormats(t *testing.T) {
 			_, _ = w.Write([]byte(`{"data":[{"url":"https://native.example/image.png"}]}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"data":[{"b64_json":"upstream-base64"}]}`))
+		if payload["model"] == "already-base64" {
+			_, _ = w.Write([]byte(`{"data":[{"b64_json":"dXBzdHJlYW0tYmFzZTY0"}]}`))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": []any{
+			map[string]any{"url": imageServer.URL + "/image.png"},
+		}})
 	}))
 	defer upstreamServer.Close()
 
@@ -191,8 +209,28 @@ func TestImage2ProxyPassesThroughRequestedFormats(t *testing.T) {
 		t.Fatalf("原生 URL 未透传: %d %s", response.Code, response.Body.String())
 	}
 
-	response = call(`{"response_format":"b64_json"}`)
-	if response.Code != http.StatusOK || response.Body.String() != `{"data":[{"b64_json":"upstream-base64"}]}` {
+	response = call(`{"model":"already-base64","response_format":"b64_json"}`)
+	if response.Code != http.StatusOK || response.Body.String() != `{"data":[{"b64_json":"dXBzdHJlYW0tYmFzZTY0"}]}` {
 		t.Fatalf("b64_json 未透传: %d %s", response.Code, response.Body.String())
+	}
+
+	response = call(`{"response_format":"b64_json"}`)
+	var converted struct {
+		Data []map[string]any `json:"data"`
+	}
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &converted) != nil || len(converted.Data) != 1 {
+		t.Fatalf("URL 转 Base64 响应无效: %d %s", response.Code, response.Body.String())
+	}
+	encoded, _ := converted.Data[0]["b64_json"].(string)
+	decoded, err := base64.StdEncoding.Strict().DecodeString(encoded)
+	if err != nil || !bytes.Equal(decoded, image) {
+		t.Fatalf("Base64 图片无效: err=%v 内容一致=%v", err, bytes.Equal(decoded, image))
+	}
+	if _, exists := converted.Data[0]["url"]; exists {
+		t.Fatal("转换后仍包含 url")
+	}
+	entries, err := os.ReadDir(server.image2Dir)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("URL 转 Base64 不应落盘: err=%v 文件数=%d", err, len(entries))
 	}
 }

@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
@@ -328,27 +329,27 @@ func (s *Server) proxyImage2(w http.ResponseWriter, r *http.Request, operation s
 	}
 	mapping := parseImage2ModelMapping(upstream.ModelMapping)
 	var (
-		body        io.ReadCloser
-		contentType string
-		wantsURL    bool
+		body           io.ReadCloser
+		contentType    string
+		responseFormat string
 	)
 	switch {
 	case mediaType == "application/json":
-		prepared, wants, prepareErr := prepareImage2JSON(r, mapping)
+		prepared, format, prepareErr := prepareImage2JSON(r, mapping)
 		if prepareErr != nil {
 			writeImage2ProxyError(w, prepareErr)
 			return
 		}
 		body = io.NopCloser(bytes.NewReader(prepared))
 		contentType = "application/json"
-		wantsURL = wants
+		responseFormat = format
 	case operation == "edits" && mediaType == "multipart/form-data":
-		prepared, preparedType, wants, prepareErr := prepareImage2Multipart(r, mapping)
+		prepared, preparedType, format, prepareErr := prepareImage2Multipart(r, mapping)
 		if prepareErr != nil {
 			writeImage2ProxyError(w, prepareErr)
 			return
 		}
-		body, contentType, wantsURL = prepared, preparedType, wants
+		body, contentType, responseFormat = prepared, preparedType, format
 	default:
 		writeImage2ProxyError(w, image2UnsupportedContentType(operation))
 		return
@@ -385,7 +386,8 @@ func (s *Server) proxyImage2(w http.ResponseWriter, r *http.Request, operation s
 	}
 	defer response.Body.Close()
 	copyImage2ResponseHeaders(w.Header(), response.Header)
-	if response.StatusCode < 200 || response.StatusCode >= 300 || !wantsURL {
+	if response.StatusCode < 200 || response.StatusCode >= 300 ||
+		(responseFormat != "url" && responseFormat != "b64_json") {
 		w.WriteHeader(response.StatusCode)
 		_, _ = io.Copy(w, response.Body)
 		return
@@ -400,7 +402,7 @@ func (s *Server) proxyImage2(w http.ResponseWriter, r *http.Request, operation s
 		return
 	}
 	imageBaseURL := image2PublicBaseURL(r, settings.ImageDomain)
-	converted, convertErr := s.convertImage2Response(raw, imageBaseURL)
+	converted, convertErr := s.convertImage2Response(r.Context(), raw, imageBaseURL, responseFormat)
 	if convertErr != nil {
 		writeImage2ProxyError(w, convertErr)
 		return
@@ -447,31 +449,31 @@ func (s *Server) requireImage2Key(r *http.Request) (store.Image2Settings, *image
 	return settings, nil
 }
 
-func prepareImage2JSON(r *http.Request, mapping map[string]string) ([]byte, bool, *image2ProxyError) {
+func prepareImage2JSON(r *http.Request, mapping map[string]string) ([]byte, string, *image2ProxyError) {
 	decoder := json.NewDecoder(r.Body)
 	decoder.UseNumber()
 	var payload map[string]any
 	if err := decoder.Decode(&payload); err != nil || payload == nil {
-		return nil, false, image2InvalidJSON(err)
+		return nil, "", image2InvalidJSON(err)
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return nil, false, image2InvalidJSON(err)
+		return nil, "", image2InvalidJSON(err)
 	}
 	if model, ok := payload["model"].(string); ok && mapping[model] != "" {
 		payload["model"] = mapping[model]
 	}
-	wantsURL := payload["response_format"] == "url"
+	responseFormat, _ := payload["response_format"].(string)
 	if image2True(payload["stream"]) {
 		payload["stream"] = false
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
-		return nil, false, image2InternalError(err)
+		return nil, "", image2InternalError(err)
 	}
-	return raw, wantsURL, nil
+	return raw, responseFormat, nil
 }
 
-func prepareImage2Multipart(r *http.Request, mapping map[string]string) (io.ReadCloser, string, bool, *image2ProxyError) {
+func prepareImage2Multipart(r *http.Request, mapping map[string]string) (io.ReadCloser, string, string, *image2ProxyError) {
 	if err := r.ParseMultipartForm(32 << 20); err != nil || r.MultipartForm == nil {
 		code := "invalid_form"
 		status := http.StatusBadRequest
@@ -479,15 +481,15 @@ func prepareImage2Multipart(r *http.Request, mapping map[string]string) (io.Read
 		if errors.As(err, &tooLarge) {
 			status, code = http.StatusRequestEntityTooLarge, "request_too_large"
 		}
-		return nil, "", false, &image2ProxyError{
+		return nil, "", "", &image2ProxyError{
 			status: status, message: "Request body must be valid multipart form data.",
 			errorType: "invalid_request_error", code: code,
 		}
 	}
 	form := r.MultipartForm
-	wantsURL := false
-	for _, value := range form.Value["response_format"] {
-		wantsURL = wantsURL || value == "url"
+	responseFormat := ""
+	if values := form.Value["response_format"]; len(values) > 0 {
+		responseFormat = values[0]
 	}
 
 	reader, writer := io.Pipe()
@@ -523,7 +525,7 @@ func prepareImage2Multipart(r *http.Request, mapping map[string]string) (io.Read
 		}
 		_ = writer.Close()
 	}()
-	return reader, contentType, wantsURL, nil
+	return reader, contentType, responseFormat, nil
 }
 
 func copyImage2MultipartFile(writer *multipart.Writer, name string, fileHeader *multipart.FileHeader) error {
@@ -587,7 +589,7 @@ func copyImage2ResponseHeaders(target, source http.Header) {
 	}
 }
 
-func (s *Server) convertImage2Response(raw []byte, imageBaseURL string) ([]byte, *image2ProxyError) {
+func (s *Server) convertImage2Response(ctx context.Context, raw []byte, imageBaseURL, responseFormat string) ([]byte, *image2ProxyError) {
 	var payload map[string]any
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return nil, &image2ProxyError{
@@ -616,6 +618,23 @@ func (s *Server) convertImage2Response(raw []byte, imageBaseURL string) ([]byte,
 		if !ok {
 			rollback()
 			return nil, image2InvalidBase64()
+		}
+		if responseFormat == "b64_json" {
+			if encoded, hasBase64 := item["b64_json"].(string); hasBase64 && encoded != "" {
+				continue
+			}
+			imageURL, ok := item["url"].(string)
+			if !ok || imageURL == "" {
+				return nil, image2InvalidURL()
+			}
+			content, err := s.readImage2URL(ctx, imageURL)
+			if err != nil {
+				return nil, image2InvalidURL()
+			}
+			delete(item, "url")
+			item["b64_json"] = base64.StdEncoding.EncodeToString(content)
+			convertedAny = true
+			continue
 		}
 		encoded, hasBase64 := item["b64_json"]
 		if !hasBase64 || encoded == nil {
@@ -661,6 +680,31 @@ func (s *Server) convertImage2Response(raw []byte, imageBaseURL string) ([]byte,
 		return nil, image2InternalError(err)
 	}
 	return converted, nil
+}
+
+func (s *Server) readImage2URL(ctx context.Context, value string) ([]byte, error) {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return nil, errors.New("invalid image URL")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, value, nil)
+	if err != nil {
+		return nil, err
+	}
+	response, err := s.image2Client.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, errors.New("image URL returned a non-success status")
+	}
+	content, err := io.ReadAll(io.LimitReader(response.Body, image2MaxResponseBytes+1))
+	if err != nil || len(content) == 0 || len(content) > image2MaxResponseBytes ||
+		!strings.HasPrefix(http.DetectContentType(content), "image/") {
+		return nil, errors.New("image URL returned invalid image data")
+	}
+	return content, nil
 }
 
 func (s *Server) writeImage2File(content []byte) (string, error) {
@@ -807,6 +851,13 @@ func image2InvalidBase64() *image2ProxyError {
 	return &image2ProxyError{
 		status: http.StatusBadGateway, message: "Upstream returned invalid base64 image data.",
 		errorType: "upstream_error", code: "invalid_image_data",
+	}
+}
+
+func image2InvalidURL() *image2ProxyError {
+	return &image2ProxyError{
+		status: http.StatusBadGateway, message: "Upstream returned an invalid or unavailable image URL.",
+		errorType: "upstream_error", code: "invalid_image_url",
 	}
 }
 
