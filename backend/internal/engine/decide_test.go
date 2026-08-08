@@ -18,14 +18,15 @@ func buildTestRound(t *testing.T, p policy.Policy, channels ...*channel) *round 
 
 	group := domain.Group{ID: 1, Name: "测试分组", RateMultiplier: 1}
 	r := &round{
-		now:          time.Now(),
-		global:       p,
-		overrides:    map[int64]*policy.GroupOverride{},
-		groups:       []domain.Group{group},
-		groupByID:    map[int64]domain.Group{1: group},
-		byAccountID:  map[int64]*channel{},
-		groupMembers: map[int64][]*channel{},
-		softFuses:    map[int64]int{},
+		now:                 time.Now(),
+		global:              p,
+		overrides:           map[int64]*policy.GroupOverride{},
+		groups:              []domain.Group{group},
+		groupByID:           map[int64]domain.Group{1: group},
+		upstreamMultipliers: map[int64]domain.UpstreamMultiplierSnapshot{},
+		byAccountID:         map[int64]*channel{},
+		groupMembers:        map[int64][]*channel{},
+		softFuses:           map[int64]int{},
 	}
 	for _, ch := range channels {
 		ch.pol = p
@@ -99,8 +100,86 @@ func decideOffline(r *round) {
 // 告警事件只会写进 round.alerts，不落库，因此不需要 store。
 func softBreakerPass(r *round) {
 	e := &Engine{}
+	e.applyUpstreamMultiplierBreaker(r)
 	e.applyHardBreaker(r)
 	e.applySoftBreaker(r)
+}
+
+func TestUpstreamMultiplierBreakerFusesAboveThreshold(t *testing.T) {
+	p := policy.Default()
+	p.AccountUpstreamMultiplierEnabled["1"] = true
+	p.AccountUpstreamMultiplierBreakers["1"] = policy.UpstreamMultiplierBreaker{
+		Enabled: true, Threshold: 1.2,
+	}
+	high := makeChannel(1, p, repeatEvent(domain.EventPerfect, 10)...)
+	high.account.Type = "apikey"
+	spare := makeChannel(2, p, repeatEvent(domain.EventPerfect, 10)...)
+	r := buildTestRound(t, p, high, spare)
+	r.upstreamMultipliers[1] = domain.UpstreamMultiplierSnapshot{Value: 1.5, UpdatedAt: r.now}
+
+	decideOffline(r)
+
+	if high.desired.health != domain.HealthFused || high.desired.schedulable {
+		t.Fatalf("超阈值渠道未熔断: health=%s schedulable=%v", high.desired.health, high.desired.schedulable)
+	}
+	if !strings.Contains(high.desired.reason, "1.5") || !strings.Contains(high.desired.reason, "1.2") {
+		t.Fatalf("熔断原因未包含实际倍率和阈值: %q", high.desired.reason)
+	}
+}
+
+func TestUpstreamMultiplierBreakerUsesStrictGreaterThan(t *testing.T) {
+	p := policy.Default()
+	p.AccountUpstreamMultiplierEnabled["1"] = true
+	p.AccountUpstreamMultiplierBreakers["1"] = policy.UpstreamMultiplierBreaker{
+		Enabled: true, Threshold: 1.5,
+	}
+	equal := makeChannel(1, p, repeatEvent(domain.EventPerfect, 10)...)
+	equal.account.Type = "apikey"
+	spare := makeChannel(2, p, repeatEvent(domain.EventPerfect, 10)...)
+	r := buildTestRound(t, p, equal, spare)
+	r.upstreamMultipliers[1] = domain.UpstreamMultiplierSnapshot{Value: 1.5, UpdatedAt: r.now}
+
+	decideOffline(r)
+
+	if equal.desired.health == domain.HealthFused {
+		t.Fatal("倍率等于阈值时不应熔断")
+	}
+}
+
+func TestUpstreamMultiplierBreakerNeedsSnapshot(t *testing.T) {
+	p := policy.Default()
+	p.AccountUpstreamMultiplierEnabled["1"] = true
+	p.AccountUpstreamMultiplierBreakers["1"] = policy.UpstreamMultiplierBreaker{
+		Enabled: true, Threshold: 1.2,
+	}
+	channel := makeChannel(1, p, repeatEvent(domain.EventPerfect, 10)...)
+	channel.account.Type = "apikey"
+	spare := makeChannel(2, p, repeatEvent(domain.EventPerfect, 10)...)
+	r := buildTestRound(t, p, channel, spare)
+
+	decideOffline(r)
+
+	if channel.desired.health == domain.HealthFused {
+		t.Fatal("没有成功倍率快照时不应触发阈值熔断")
+	}
+}
+
+func TestUpstreamMultiplierBreakerKeepsLastSurvivor(t *testing.T) {
+	p := policy.Default()
+	p.AccountUpstreamMultiplierEnabled["1"] = true
+	p.AccountUpstreamMultiplierBreakers["1"] = policy.UpstreamMultiplierBreaker{
+		Enabled: true, Threshold: 1.2,
+	}
+	only := makeChannel(1, p, repeatEvent(domain.EventPerfect, 10)...)
+	only.account.Type = "apikey"
+	r := buildTestRound(t, p, only)
+	r.upstreamMultipliers[1] = domain.UpstreamMultiplierSnapshot{Value: 2, UpdatedAt: r.now}
+
+	decideOffline(r)
+
+	if only.desired.health != domain.HealthSurvivor || !only.desired.schedulable {
+		t.Fatalf("最后保底渠道状态 = %s/%v，期望 survivor/true", only.desired.health, only.desired.schedulable)
+	}
 }
 
 func TestHardBreakerOnFatal(t *testing.T) {
@@ -550,6 +629,28 @@ func TestManualMultiplierOverridesDefault(t *testing.T) {
 	if cheapKey.desired.weight <= oauth.desired.weight {
 		t.Fatalf("人工设为更低倍率的渠道权重 %.1f 应高于 OAuth %.1f",
 			cheapKey.desired.weight, oauth.desired.weight)
+	}
+}
+
+// TestUpstreamMultiplierOverridesManual 验证开启实时倍率后，本轮目录中的最新值
+// 同时用于引擎调度；人工值只保留配置，不参与当前权重计算。
+func TestUpstreamMultiplierOverridesManual(t *testing.T) {
+	p := policy.Default()
+	p.AccountMultipliers = map[string]float64{"1": 0.5}
+	p.AccountUpstreamMultiplierEnabled = map[string]bool{"1": true}
+
+	ch := makeChannel(1, p, repeatEvent(domain.EventPerfect, 10)...)
+	ch.account.Type = "apikey"
+	ch.account.RateMultiplier = 2.25
+
+	r := buildTestRound(t, p, ch)
+	resolveMultipliers(r)
+
+	if ch.state.Multiplier != 2.25 {
+		t.Fatalf("实时倍率 = %v, 期望 2.25", ch.state.Multiplier)
+	}
+	if !ch.state.MultiplierManual {
+		t.Fatal("实时倍率开启时仍应保留人工倍率配置标记")
 	}
 }
 

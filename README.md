@@ -23,9 +23,9 @@ Guardian 把这件事自动化：**你只需为每个分组选择「价格优先
 |---|---|
 | 测活 | 通过 sub2api 的账号测试接口（SSE）主动探测，识别认证失败、余额不足、限流、超时 |
 | 测延迟 | 取首个内容事件的时间作为首字延迟（TTFB），统计 P50 / P95 |
-| 调度倍率 | 每个渠道一个倍率，越低越优先。账号类型默认 `0.01`，API Key 默认 `1`，可人工编辑。**仅供调度系统使用，不写回 sub2api** |
+| 调度倍率 | 每个渠道一个倍率，越低越优先。API Key 可按运营配置的周期（最低 30 秒）读取上游倍率或立即同步；失败保留最近成功值。**仅供调度系统使用，不写回 sub2api** |
 | 健康分 | 长短期加权：短期取最近 N 次（最新一次占固定权重），长期取均值，凭据失效一票否决 |
-| 熔断 | 凭据失效立即熔断；错误率与延迟可配置为只降级不熔断；每轮切换有上限，防雪崩 |
+| 熔断 | 凭据失效立即熔断；实时倍率渠道可单独设置倍率上限并开启超限熔断；错误率与延迟可配置为只降级不熔断 |
 | 保底 | 熔断会让分组失去可用渠道时，改为「保底强留」并告警，**分组永不断供** |
 | 降级 | 低分渠道压低优先级与负载因子，但不停止调度 |
 | 调权 | 按策略把权重预算分配到组内渠道，落成 `priority` 与 `load_factor`，带防抖与冷却 |
@@ -67,7 +67,7 @@ sub2api 自己已经在处理限流：上游返回 429 时它写入 `rate_limit_
 
 ![渠道池](docs/images/channels.png)
 
-> 健康分环、最近 10 次结果、首字 P50/P95、调度倍率、权重、优先级与负载的现值→目标值。
+> 健康分环、最近 10 次结果、首字 P50/P95、调度倍率、权重、优先级与负载的现值→目标值；API Key 渠道可单独同步上游倍率，并配置超阈值熔断。
 
 ### 策略配置
 
@@ -197,6 +197,33 @@ cd backend && ./guardian
 > 前端由 `go:embed` 打进二进制，**必须先构建前端**再编译后端，否则只有占位页。
 > `make build` 已经处理好顺序。
 
+### Windows 一键测试包
+
+在 Windows 上完成一个版本后，运行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build-windows-test.ps1
+```
+
+脚本会重新构建前端和 Windows AMD64 后端，并固定输出到主项目下的独立测试目录：
+
+```text
+../sub2api-guardian-test/
+├── guardian.exe
+├── start-guardian.cmd
+├── build-info.txt
+└── data/guardian.sqlite    # 首次运行后创建，重新打包不会删除
+```
+
+双击 `start-guardian.cmd` 即可启动并打开 `http://127.0.0.1:8787`。打包前如果旧的
+`guardian.exe` 仍在运行，需要先关闭它，否则 Windows 会禁止覆盖正在运行的文件。
+
+前端已经构建过、只需要重新编译 EXE 时，可以使用：
+
+```powershell
+.\build-windows-test.ps1 -SkipFrontend
+```
+
 ---
 
 ## 部署
@@ -296,6 +323,8 @@ server {
     location / {
         proxy_pass http://127.0.0.1:8787;
         proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         # SSE 实时推送必需：不缓冲、不超时断流
         proxy_set_header Connection '';
         proxy_buffering off;
@@ -379,10 +408,11 @@ sqlite3 data/guardian.sqlite "DELETE FROM users; DELETE FROM sessions;"
 
 ```
 心跳 → 同步分组与账号
+     → 到期 API Key 渠道拉取上游倍率（失败保留最近成功快照）
      → 采样（真实流量优先，探针兜底）
-     → 解析调度倍率（人工设置 > 按账号类型取默认值）
+     → 解析调度倍率（实时模式用上游快照；关闭实时后用人工设置或类型默认值）
      → 计算健康分（短期 × 占比 + 长期 × 剩余，凭据失效置零）
-     → 决策：排除 → 回池 → 硬熔断 → 软熔断（保底 + 切换上限）→ 分级 → 重新上线
+     → 决策：排除 → 回池 → 倍率阈值熔断 → 硬熔断 → 软熔断（保底 + 切换上限）→ 分级
      → 调权（权重预算 → load_factor / priority，带防抖冷却）
      → 扩缩容
      → 写回 sub2api（受自动执行开关控制，先抓基线、记动作日志）
@@ -392,6 +422,14 @@ sqlite3 data/guardian.sqlite "DELETE FROM users; DELETE FROM sessions;"
 ### 数据来源
 
 - `POST /admin/accounts/:id/test`（SSE）—— 测活与首字延迟
+- `POST /admin/accounts/upstream-billing-probe/batch`、
+  `POST /admin/accounts/:id/upstream-billing-probe` —— 所有 API Key 平台优先复用
+  Sub2API 账户管理页面的原生探测；定时任务每批最多 20 个渠道，手动同步仍只请求单个渠道。
+  调度采用 `effective_rate_multiplier`（用户覆盖后的基础倍率再乘当前峰值系数），旧响应没有该字段时
+  兼容 `resolved_rate_multiplier`。只有旧版 Sub2API 对原生接口返回 404/405 时，才通过
+  `GET /admin/accounts/data?ids=` 临时读取连接信息兼容查询。
+  凭据不落库、不返回前端、不写日志；成功倍率独立保存，失败不会覆盖最近成功值。
+  拉取周期在「策略配置 → 运营配置」中统一设置；渠道编辑中可单独开启实时倍率和超阈值熔断
 - `GET /admin/ops/requests?account_id=` —— 真实流量的耗时、状态码、成功失败；
   **需要 sub2api 开启运维监控**，未开启时自动降级为纯探针模式并在页面顶部提示
 - `PUT /admin/accounts/:id`、`POST /admin/accounts/:id/schedulable`、

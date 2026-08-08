@@ -151,7 +151,7 @@
                   {{ formatMultiplier(channel.multiplier) }}
                 </Badge>
                 <p class="mt-1 text-xs text-gray-400 dark:text-dark-500">
-                  {{ channel.multiplier_manual ? '人工设置' : '类型默认' }}
+                  {{ multiplierSourceLabel(channel) }}
                 </p>
               </td>
 
@@ -237,7 +237,7 @@
 
               <td>
                 <!--
-                  固定两列网格：按钮数量在 1~4 之间变化，flex-wrap 会让每行的
+                  固定两列网格：按钮数量随渠道类型变化，flex-wrap 会让每行的
                   按钮数随宽度漂移，行高忽高忽低。网格保证始终「一行两个」。
 
                   宽度按「两个图标按钮 + 间距」给足，同时容得下跨两列的
@@ -308,9 +308,26 @@
                   </button>
                   </template>
                   <button
+                    v-if="isAPIKeyType(channel.type)"
                     type="button"
                     class="btn btn-secondary btn-sm"
-                    :class="channel.excluded && 'col-span-2'"
+                    :disabled="guardian.busy || isSyncingMultiplier(channel.id)"
+                    title="同步上游倍率"
+                    @click="syncUpstreamMultiplier(channel)"
+                  >
+                    <Icon
+                      name="sync"
+                      size="sm"
+                      :class="isSyncingMultiplier(channel.id) ? 'animate-spin' : ''"
+                    />
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn-secondary btn-sm"
+                    :class="[
+                      channel.excluded && !isAPIKeyType(channel.type) && 'col-span-2',
+                      !channel.excluded && isAPIKeyType(channel.type) && 'col-span-2'
+                    ]"
                     title="编辑"
                     @click="openEditor(channel)"
                   >
@@ -368,12 +385,55 @@
             type="number"
             :min="0"
             :step="0.01"
-            hint="越低越优先。仅供调度系统使用，不会写回 sub2api；填 0 表示回落到类型默认值"
+            :disabled="editor.upstreamMultiplierEnabled"
+            :hint="
+              editor.upstreamMultiplierEnabled
+                ? '实时倍率开启时人工值暂不生效，关闭后自动恢复'
+                : '越低越优先。仅供调度系统使用，不会写回 sub2api；填 0 表示回落到类型默认值'
+            "
           />
           <p class="mt-2 text-xs text-gray-500 dark:text-dark-400">
             类型默认：账号类型渠道 {{ DEFAULT_OAUTH_MULTIPLIER }}（优先使用）· API Key
             {{ DEFAULT_APIKEY_MULTIPLIER }}
           </p>
+          <div
+            v-if="isAPIKeyType(editor.type)"
+            class="mt-4 border-t border-primary-200 pt-4 dark:border-primary-900/50"
+          >
+            <SwitchRow
+              v-model="editor.upstreamMultiplierEnabled"
+              label="实时使用上游倍率"
+              description="自动定期读取 API Key 上游；失败时保留最近成功倍率，尚无成功记录时沿用 Sub2API 账号值"
+            />
+            <div class="mt-3 space-y-3">
+              <SwitchRow
+                v-model="editor.upstreamMultiplierBreakerEnabled"
+                :disabled="!editor.upstreamMultiplierEnabled"
+                label="倍率超阈值直接熔断"
+                description="最近成功读取的上游倍率超过设置上限时停止调度；仍遵守分组保底规则"
+              />
+              <Field
+                v-model="editor.upstreamMultiplierThreshold"
+                label="上游倍率上限"
+                type="number"
+                :min="0.01"
+                :step="0.01"
+                :disabled="!editor.upstreamMultiplierEnabled"
+                hint="只有开启实时倍率后才生效；等于阈值不会熔断"
+              />
+            </div>
+            <p class="mt-2 text-xs text-gray-500 dark:text-dark-400">
+              最近成功同步：
+              <span class="font-medium text-gray-700 dark:text-dark-200">
+                {{
+                  editor.upstreamMultiplier > 0
+                    ? `${formatMultiplier(editor.upstreamMultiplier)} · ${formatRelative(editor.upstreamMultiplierUpdatedAt)}`
+                    : '暂无'
+                }}
+              </span>
+              · Sub2API 账号值 {{ formatMultiplier(editor.upstreamRateMultiplier) }}
+            </p>
+          </div>
         </div>
 
         <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -480,6 +540,23 @@ import type { Channel } from '@/lib/types'
 const DEFAULT_OAUTH_MULTIPLIER = 0.01
 const DEFAULT_APIKEY_MULTIPLIER = 1
 
+function isAPIKeyType(accountType: string): boolean {
+  return ['apikey', 'api_key', 'key'].includes(accountType.trim().toLowerCase())
+}
+
+function multiplierSourceLabel(channel: Channel): string {
+  switch (channel.multiplier_source) {
+    case 'upstream':
+      return '上游倍率'
+    case 'upstream_fallback':
+      return '等待同步，使用原值'
+    case 'manual':
+      return '人工设置'
+    default:
+      return '类型默认'
+  }
+}
+
 const guardian = useGuardianStore()
 const ui = useUIStore()
 
@@ -496,6 +573,7 @@ const pageSize = 20
 const models = ref<string[]>([])
 const modelsLoading = ref(false)
 const syncing = ref(false)
+const syncingMultiplierIDs = ref<Set<number>>(new Set())
 
 /** 只同步 sub2api 目录字段；后端不会探测，已有样本与评分保持不变。 */
 async function syncNow() {
@@ -615,6 +693,13 @@ const editor = reactive({
   loadFactor: 1,
   concurrency: 1,
   multiplier: 0,
+  type: '',
+  upstreamMultiplierEnabled: false,
+  upstreamMultiplierBreakerEnabled: false,
+  upstreamMultiplierThreshold: 0,
+  upstreamRateMultiplier: 0,
+  upstreamMultiplier: 0,
+  upstreamMultiplierUpdatedAt: '',
   paused: false,
   excluded: false,
   testModel: '',
@@ -629,6 +714,9 @@ const editor = reactive({
   originalLoadFactor: 1,
   originalConcurrency: 1,
   originalMultiplier: 0,
+  originalUpstreamMultiplierEnabled: false,
+  originalUpstreamMultiplierBreakerEnabled: false,
+  originalUpstreamMultiplierThreshold: 0,
   originalTestModel: '',
   originalExcluded: false,
   originalPaused: false
@@ -642,8 +730,17 @@ function openEditor(channel: Channel) {
   editor.priority = channel.priority
   editor.loadFactor = channel.load_factor ?? 1
   editor.concurrency = channel.concurrency
-  // 只回显人工设置过的倍率，类型默认值留空表示「未接管」。
-  editor.multiplier = channel.multiplier_manual ? channel.multiplier : 0
+  editor.type = channel.type
+  // 实时倍率开启时生效值来自上游，人工配置通过独立字段回显并保留。
+  editor.multiplier =
+    channel.manual_multiplier ??
+    (channel.multiplier_source === 'manual' ? channel.multiplier : 0)
+  editor.upstreamMultiplierEnabled = channel.upstream_multiplier_enabled
+  editor.upstreamMultiplierBreakerEnabled = channel.upstream_multiplier_breaker_enabled
+  editor.upstreamMultiplierThreshold = channel.upstream_multiplier_threshold ?? 0
+  editor.upstreamRateMultiplier = channel.rate_multiplier
+  editor.upstreamMultiplier = channel.upstream_multiplier ?? 0
+  editor.upstreamMultiplierUpdatedAt = channel.upstream_multiplier_updated_at ?? ''
   editor.paused = channel.paused
   editor.excluded = channel.excluded
   editor.testModel = channel.test_model ?? ''
@@ -655,6 +752,9 @@ function openEditor(channel: Channel) {
   editor.originalLoadFactor = editor.loadFactor
   editor.originalConcurrency = editor.concurrency
   editor.originalMultiplier = editor.multiplier
+  editor.originalUpstreamMultiplierEnabled = editor.upstreamMultiplierEnabled
+  editor.originalUpstreamMultiplierBreakerEnabled = editor.upstreamMultiplierBreakerEnabled
+  editor.originalUpstreamMultiplierThreshold = editor.upstreamMultiplierThreshold
   editor.originalTestModel = editor.testModel
   editor.originalExcluded = editor.excluded
   editor.originalPaused = editor.paused
@@ -676,11 +776,34 @@ async function loadModels() {
 // saveChannel 只提交真正变化的部分：每个请求都会打到上游，
 // 全量提交会让一次保存变成好几轮往返。
 async function saveChannel() {
+  if (
+    editor.upstreamMultiplierEnabled &&
+    editor.upstreamMultiplierBreakerEnabled &&
+    editor.upstreamMultiplierThreshold <= 0
+  ) {
+    ui.notify('error', '开启倍率阈值熔断时必须设置大于 0 的上游倍率上限')
+    return
+  }
+
   const changed: Record<string, unknown> = {}
   if (editor.priority !== editor.originalPriority) changed.priority = editor.priority
   if (editor.loadFactor !== editor.originalLoadFactor) changed.load_factor = editor.loadFactor
   if (editor.concurrency !== editor.originalConcurrency) changed.concurrency = editor.concurrency
   if (editor.multiplier !== editor.originalMultiplier) changed.multiplier = editor.multiplier
+  if (editor.upstreamMultiplierEnabled !== editor.originalUpstreamMultiplierEnabled) {
+    changed.upstream_multiplier_enabled = editor.upstreamMultiplierEnabled
+  }
+  if (editor.upstreamMultiplierEnabled) {
+    if (
+      editor.upstreamMultiplierBreakerEnabled !==
+      editor.originalUpstreamMultiplierBreakerEnabled
+    ) {
+      changed.upstream_multiplier_breaker_enabled = editor.upstreamMultiplierBreakerEnabled
+    }
+    if (editor.upstreamMultiplierThreshold !== editor.originalUpstreamMultiplierThreshold) {
+      changed.upstream_multiplier_threshold = editor.upstreamMultiplierThreshold
+    }
+  }
 
   const nothingChanged =
     Object.keys(changed).length === 0 &&
@@ -725,6 +848,35 @@ async function probe(channel: Channel) {
     ui.notify('success', `「${channel.name}」探测完成`)
   } catch (err) {
     ui.notify('error', (err as Error).message)
+  }
+}
+
+function isSyncingMultiplier(accountID: number): boolean {
+  return syncingMultiplierIDs.value.has(accountID)
+}
+
+async function syncUpstreamMultiplier(channel: Channel) {
+  syncingMultiplierIDs.value = new Set(syncingMultiplierIDs.value).add(channel.id)
+  try {
+    const result = await api.syncUpstreamMultiplier(channel.id)
+    await guardian.refresh({ silent: true })
+    const changed = Math.abs(result.multiplier - result.previous_multiplier) > 1e-9
+    ui.notify(
+      'success',
+      changed
+        ? `「${channel.name}」上游倍率已更新：${formatMultiplier(result.previous_multiplier)} → ${formatMultiplier(result.multiplier)}`
+        : `「${channel.name}」上游倍率已同步：${formatMultiplier(result.multiplier)}`
+    )
+  } catch (err) {
+    const detail = (err as Error).message.replace(/^同步上游倍率失败，继续使用原倍率：\s*/, '')
+    ui.notify(
+      'error',
+      `「${channel.name}」同步上游倍率失败，继续使用原倍率 ${formatMultiplier(channel.multiplier)}：${detail}`
+    )
+  } finally {
+    const next = new Set(syncingMultiplierIDs.value)
+    next.delete(channel.id)
+    syncingMultiplierIDs.value = next
   }
 }
 

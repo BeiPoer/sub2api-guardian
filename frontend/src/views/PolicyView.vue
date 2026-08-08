@@ -59,6 +59,14 @@
                 :max="1"
                 :step="0.05"
               />
+              <Field
+                v-model="form.upstream_multiplier.interval_seconds"
+                label="上游倍率拉取间隔"
+                suffix="秒"
+                type="number"
+                :min="30"
+                hint="对所有已开启实时倍率的 API Key 渠道生效"
+              />
             </div>
           </div>
         </section>

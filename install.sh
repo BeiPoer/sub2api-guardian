@@ -209,19 +209,6 @@ download_file() {
   fi
 }
 
-download_optional() {
-  DOWNLOAD_URL="$1"
-  DOWNLOAD_TARGET="$2"
-  if command -v curl >/dev/null 2>&1; then
-    curl --fail --location --silent --retry 2 --connect-timeout 10 \
-      --output "$DOWNLOAD_TARGET" "$DOWNLOAD_URL" 2>/dev/null
-  elif command -v wget >/dev/null 2>&1; then
-    wget -q --tries=2 --timeout=20 -O "$DOWNLOAD_TARGET" "$DOWNLOAD_URL" 2>/dev/null
-  else
-    return 1
-  fi
-}
-
 SCRIPT_DIR=""
 case "$0" in
   */*) SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) ;;
@@ -260,25 +247,30 @@ if [ ! -f "$BINARY_PATH" ]; then
   fi
 
   CHECKSUM_FILE="$TMP_DIR/checksums.txt"
-  if download_optional "$RELEASE_BASE/checksums.txt" "$CHECKSUM_FILE"; then
-    if command -v sha256sum >/dev/null 2>&1; then
-      EXPECTED_SUM=$(awk -v name="$ASSET" '$2 == name || $2 == "*" name { print $1; exit }' "$CHECKSUM_FILE")
-      if [ -z "$EXPECTED_SUM" ]; then
-        echo "error: checksums.txt does not contain $ASSET" >&2
-        exit 1
-      fi
-      ACTUAL_SUM=$(sha256sum "$BINARY_PATH" | awk '{print $1}')
-      if [ "$ACTUAL_SUM" != "$EXPECTED_SUM" ]; then
-        echo "error: SHA-256 verification failed for $ASSET" >&2
-        exit 1
-      fi
-      echo "SHA-256 verified."
-    else
-      echo "warning: sha256sum is unavailable; skipping checksum verification" >&2
-    fi
-  else
-    echo "warning: release has no checksums.txt; skipping checksum verification" >&2
+  if ! download_file "$RELEASE_BASE/checksums.txt" "$CHECKSUM_FILE"; then
+    echo "error: release is missing checksums.txt; refusing an unverified install" >&2
+    exit 1
   fi
+  EXPECTED_SUM=$(awk -v name="$ASSET" '$2 == name || $2 == "*" name { print $1; exit }' "$CHECKSUM_FILE")
+  if [ -z "$EXPECTED_SUM" ]; then
+    echo "error: checksums.txt does not contain $ASSET" >&2
+    exit 1
+  fi
+  if command -v sha256sum >/dev/null 2>&1; then
+    ACTUAL_SUM=$(sha256sum "$BINARY_PATH" | awk '{print $1}')
+  elif command -v shasum >/dev/null 2>&1; then
+    ACTUAL_SUM=$(shasum -a 256 "$BINARY_PATH" | awk '{print $1}')
+  elif command -v openssl >/dev/null 2>&1; then
+    ACTUAL_SUM=$(openssl dgst -sha256 "$BINARY_PATH" | awk '{print $NF}')
+  else
+    echo "error: sha256sum, shasum, or openssl is required to verify the download" >&2
+    exit 1
+  fi
+  if [ "$ACTUAL_SUM" != "$EXPECTED_SUM" ]; then
+    echo "error: SHA-256 verification failed for $ASSET" >&2
+    exit 1
+  fi
+  echo "SHA-256 verified."
 fi
 
 ELF_MAGIC=$(od -An -tx1 -N4 "$BINARY_PATH" 2>/dev/null | tr -d '[:space:]')

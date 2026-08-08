@@ -2,6 +2,7 @@ package engine
 
 import (
 	"testing"
+	"time"
 
 	"sub2api-guardian/backend/internal/domain"
 	"sub2api-guardian/backend/internal/policy"
@@ -83,6 +84,34 @@ func TestPriceStrategyReordersPriority(t *testing.T) {
 	if !(cheap.desired.priority < normal.desired.priority && normal.desired.priority < pricey.desired.priority) {
 		t.Fatalf("价格优先下应按倍率重排，实际 便宜=%d 普通=%d 贵=%d",
 			cheap.desired.priority, normal.desired.priority, pricey.desired.priority)
+	}
+}
+
+func TestPriceStrategyUsesLatestUpstreamMultiplierSnapshot(t *testing.T) {
+	p := policy.Default()
+	p.Strategy = policy.StrategyPrice
+	p.AccountUpstreamMultiplierEnabled["1"] = true
+	p.AccountUpstreamMultiplierEnabled["2"] = true
+	policy.Normalize(&p)
+
+	a := weightChannel(1, 100, 2000, 1)
+	b := weightChannel(2, 100, 2000, 1)
+	a.account.RateMultiplier = 1
+	b.account.RateMultiplier = 1
+	r := weightRound(p, a, b)
+	r.upstreamMultipliers = map[int64]domain.UpstreamMultiplierSnapshot{
+		1: {Value: 2, UpdatedAt: time.Now()},
+		2: {Value: 0.5, UpdatedAt: time.Now()},
+	}
+
+	resolveMultipliers(r)
+	applyWeights(r)
+
+	if a.state.Multiplier != 2 || b.state.Multiplier != 0.5 {
+		t.Fatalf("未使用最新上游倍率快照: A=%g B=%g", a.state.Multiplier, b.state.Multiplier)
+	}
+	if b.desired.priority >= a.desired.priority {
+		t.Fatalf("价格优先未按新倍率调整优先级: 便宜=%d 昂贵=%d", b.desired.priority, a.desired.priority)
 	}
 }
 

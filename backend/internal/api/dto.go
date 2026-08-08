@@ -64,9 +64,16 @@ type ChannelDTO struct {
 	TTFBP95Ms int64 `json:"ttfb_p95_ms"`
 
 	// Multiplier 是 Guardian 内部的调度倍率（越低越优先），与网站计费无关。
-	Multiplier       float64  `json:"multiplier"`
-	MultiplierManual bool     `json:"multiplier_manual"`
-	Balance          *float64 `json:"balance,omitempty"`
+	Multiplier                       float64    `json:"multiplier"`
+	MultiplierManual                 bool       `json:"multiplier_manual"`
+	ManualMultiplier                 *float64   `json:"manual_multiplier,omitempty"`
+	UpstreamMultiplierEnabled        bool       `json:"upstream_multiplier_enabled"`
+	UpstreamMultiplierBreakerEnabled bool       `json:"upstream_multiplier_breaker_enabled"`
+	UpstreamMultiplierThreshold      *float64   `json:"upstream_multiplier_threshold,omitempty"`
+	MultiplierSource                 string     `json:"multiplier_source"`
+	UpstreamMultiplier               *float64   `json:"upstream_multiplier,omitempty"`
+	UpstreamMultiplierUpdatedAt      *time.Time `json:"upstream_multiplier_updated_at,omitempty"`
+	Balance                          *float64   `json:"balance,omitempty"`
 
 	RateMultiplier float64 `json:"rate_multiplier"`
 	Priority       int     `json:"priority"`

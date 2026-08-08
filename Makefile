@@ -2,6 +2,7 @@
 #
 # make build         构建当前平台的单二进制（内嵌前端）
 # make build-linux   交叉编译 Linux amd64 + arm64
+# make build-test    打包到父目录的 Windows 本地测试文件夹
 # make dev-*         分别启动前后端开发服务
 # make test          后端测试 + 前端类型检查
 
@@ -15,7 +16,7 @@ ifeq ($(OS),Windows_NT)
 BINARY := guardian.exe
 endif
 
-.PHONY: build build-frontend build-backend build-linux build-linux-amd64 build-linux-arm64 build-checksums \
+.PHONY: build build-frontend build-backend build-test build-linux build-linux-amd64 build-linux-arm64 build-checksums \
 	dev-backend dev-frontend test test-backend test-frontend fmt clean
 
 build: build-frontend build-backend
@@ -26,6 +27,11 @@ build-frontend:
 build-backend:
 	cd $(BACKEND) && go build -o $(BINARY) ./cmd/guardian
 	@echo "已生成 $(BACKEND)/$(BINARY)，直接运行即可在同一端口提供 API 与面板"
+
+# Windows 本地验收包。固定覆盖 ../sub2api-guardian-test/guardian.exe，
+# 但保留该目录中的 data/，因此升级测试包不会重置页面配置和历史数据。
+build-test:
+	powershell -NoProfile -ExecutionPolicy Bypass -File ./build-windows-test.ps1
 
 # 交叉编译 Linux。
 #

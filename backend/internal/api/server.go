@@ -4,7 +4,10 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"io"
+	"mime"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,6 +17,8 @@ import (
 	"sub2api-guardian/backend/internal/store"
 	"sub2api-guardian/backend/internal/upstream"
 )
+
+const maxRequestBodyBytes int64 = 1 << 20
 
 // Server 聚合 HTTP 处理所需的依赖。
 type Server struct {
@@ -61,36 +66,37 @@ func (s *Server) Close() { s.hub.close() }
 // 新增接口时往表里加一行，漏加会被测试抓住。
 func (s *Server) protectedRoutes() map[string]http.HandlerFunc {
 	return map[string]http.HandlerFunc{
-		"GET /api/overview":                 s.overview,
-		"GET /api/groups":                   s.listGroups,
-		"PUT /api/groups/{id}/policy":       s.saveGroupPolicy,
-		"DELETE /api/groups/{id}/policy":    s.deleteGroupPolicy,
-		"POST /api/groups/{id}/exclude":     s.excludeGroup,
-		"GET /api/channels":                 s.listChannels,
-		"GET /api/channels/{id}":            s.getChannel,
-		"PUT /api/channels/{id}":            s.updateChannel,
-		"POST /api/channels/{id}/probe":     s.probeChannel,
-		"POST /api/channels/{id}/fuse":      s.fuseChannel,
-		"POST /api/channels/{id}/recover":   s.recoverChannel,
-		"POST /api/channels/{id}/exclude":   s.excludeChannel,
-		"POST /api/channels/{id}/pause":     s.pauseChannel,
-		"GET /api/channels/{id}/models":     s.channelModels,
-		"PUT /api/channels/{id}/test-model": s.setChannelTestModel,
-		"GET /api/policy":                   s.getPolicy,
-		"PUT /api/policy":                   s.savePolicy,
-		"GET /api/connection":               s.getConnection,
-		"PUT /api/connection":               s.saveConnection,
-		"POST /api/sync":                    s.sync,
-		"POST /api/run-once":                s.runOnce,
-		"POST /api/cancel":                  s.cancelRun,
-		"POST /api/resume":                  s.resumeRun,
-		"POST /api/restore-all":             s.restoreAll,
-		"GET /api/events":                   s.listEvents,
-		"GET /api/actions":                  s.listActions,
-		"GET /api/stream":                   s.stream,
-		"GET /api/me":                       s.me,
-		"PUT /api/account":                  s.updateAccount,
-		"POST /api/logout":                  s.logout,
+		"GET /api/overview":                                s.overview,
+		"GET /api/groups":                                  s.listGroups,
+		"PUT /api/groups/{id}/policy":                      s.saveGroupPolicy,
+		"DELETE /api/groups/{id}/policy":                   s.deleteGroupPolicy,
+		"POST /api/groups/{id}/exclude":                    s.excludeGroup,
+		"GET /api/channels":                                s.listChannels,
+		"GET /api/channels/{id}":                           s.getChannel,
+		"PUT /api/channels/{id}":                           s.updateChannel,
+		"POST /api/channels/{id}/sync-upstream-multiplier": s.syncChannelUpstreamMultiplier,
+		"POST /api/channels/{id}/probe":                    s.probeChannel,
+		"POST /api/channels/{id}/fuse":                     s.fuseChannel,
+		"POST /api/channels/{id}/recover":                  s.recoverChannel,
+		"POST /api/channels/{id}/exclude":                  s.excludeChannel,
+		"POST /api/channels/{id}/pause":                    s.pauseChannel,
+		"GET /api/channels/{id}/models":                    s.channelModels,
+		"PUT /api/channels/{id}/test-model":                s.setChannelTestModel,
+		"GET /api/policy":                                  s.getPolicy,
+		"PUT /api/policy":                                  s.savePolicy,
+		"GET /api/connection":                              s.getConnection,
+		"PUT /api/connection":                              s.saveConnection,
+		"POST /api/sync":                                   s.sync,
+		"POST /api/run-once":                               s.runOnce,
+		"POST /api/cancel":                                 s.cancelRun,
+		"POST /api/resume":                                 s.resumeRun,
+		"POST /api/restore-all":                            s.restoreAll,
+		"GET /api/events":                                  s.listEvents,
+		"GET /api/actions":                                 s.listActions,
+		"GET /api/stream":                                  s.stream,
+		"GET /api/me":                                      s.me,
+		"PUT /api/account":                                 s.updateAccount,
+		"POST /api/logout":                                 s.logout,
 	}
 }
 
@@ -111,7 +117,7 @@ func (s *Server) Handler() http.Handler {
 	if s.assets != nil {
 		mux.Handle("/", s.assets)
 	}
-	return cors(mux)
+	return hardenHTTP(cors(mux))
 }
 
 // health 只回一个存活标记。
@@ -129,6 +135,61 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 var devOrigins = map[string]bool{
 	"http://127.0.0.1:5177": true,
 	"http://localhost:5177": true,
+}
+
+// hardenHTTP 给 API 与静态页面统一加上边界保护。Origin 只用于阻止浏览器
+// 发起的跨站写请求；没有 Origin 的 CLI、systemd 探活和同源反代不受影响。
+func hardenHTTP(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Permissions-Policy", "camera=(), geolocation=(), microphone=()")
+
+		origin := strings.TrimSpace(r.Header.Get("Origin"))
+		if origin != "" && (isStateChanging(r.Method) || r.Method == http.MethodOptions) && !allowedOrigin(origin, r) {
+			writeErrorMessage(w, http.StatusForbidden, "拒绝跨站请求")
+			return
+		}
+
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+		}
+		if isStateChanging(r.Method) && requestHasBody(r) {
+			mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+			if err != nil || !strings.EqualFold(mediaType, "application/json") {
+				writeErrorMessage(w, http.StatusUnsupportedMediaType, "请求正文必须使用 application/json")
+				return
+			}
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func isStateChanging(method string) bool {
+	switch method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return true
+	default:
+		return false
+	}
+}
+
+func requestHasBody(r *http.Request) bool {
+	return r.ContentLength != 0 || len(r.TransferEncoding) > 0
+}
+
+func allowedOrigin(origin string, r *http.Request) bool {
+	if devOrigins[origin] {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil {
+		return false
+	}
+	return strings.EqualFold(u.Host, r.Host)
 }
 
 // cors 按白名单回显 Origin。
@@ -180,7 +241,18 @@ func pathID(r *http.Request) (int64, error) {
 
 func decodeBody(r *http.Request, out any) error {
 	defer func() { _ = r.Body.Close() }()
-	return json.NewDecoder(r.Body).Decode(out)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(out); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("请求体只能包含一个 JSON 值")
+		}
+		return err
+	}
+	return nil
 }
 
 func queryInt(r *http.Request, key string, fallback int) int {

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -49,6 +50,10 @@ func (s *Server) buildView(withSamples bool) (view, error) {
 	if err != nil {
 		return v, err
 	}
+	upstreamMultipliers, err := s.store.UpstreamMultipliers()
+	if err != nil {
+		return v, err
+	}
 	channelStates, err := s.store.ChannelStateMap()
 	if err != nil {
 		return v, err
@@ -83,52 +88,85 @@ func (s *Server) buildView(withSamples bool) (view, error) {
 
 		state := channelStates[account.ID]
 		blockKind, blockReason := account.UpstreamBlock(now)
+		snapshot, hasSnapshot := upstreamMultipliers[account.ID]
+		multiplier, multiplierSource := global.ResolveMultiplierSnapshot(
+			account.ID,
+			account.Type,
+			account.RateMultiplier,
+			snapshot.Value,
+			hasSnapshot,
+		)
+		var manualMultiplier *float64
+		if value, ok := global.ManualMultiplier(account.ID); ok {
+			manualMultiplier = &value
+		}
+		var upstreamMultiplier *float64
+		var upstreamMultiplierUpdatedAt *time.Time
+		if hasSnapshot {
+			value := snapshot.Value
+			updatedAt := snapshot.UpdatedAt
+			upstreamMultiplier = &value
+			upstreamMultiplierUpdatedAt = &updatedAt
+		}
+		upstreamBreaker, hasUpstreamBreaker := global.UpstreamMultiplierBreakerFor(account.ID, account.Type)
+		var upstreamMultiplierThreshold *float64
+		if hasUpstreamBreaker {
+			value := upstreamBreaker.Threshold
+			upstreamMultiplierThreshold = &value
+		}
 		dto := ChannelDTO{
-			ID:                 account.ID,
-			Name:               account.Name,
-			Platform:           account.Platform,
-			Type:               account.Type,
-			Status:             account.Status,
-			Schedulable:        account.Schedulable,
-			UpstreamBlock:      string(blockKind),
-			UpstreamBlockText:  blockReason,
-			Excluded:           global.AccountExcluded(account.ID),
-			Paused:             global.AccountPaused(account.ID),
-			Health:             string(effectiveHealth(global, account, state)),
-			DesiredHealth:      string(state.DesiredHealth),
-			ApplyPending:       applyPending(global, account, state),
-			ApplyError:         state.LastApplyError,
-			HealthScore:        state.HealthScore,
-			ShortScore:         state.ShortScore,
-			LongScore:          state.LongScore,
-			SampleCount:        state.SampleCount,
-			FailStreak:         state.ConsecutiveFail,
-			OKStreak:           state.ConsecutiveOK,
-			TTFBP50Ms:          state.TTFBP50Ms,
-			TTFBP95Ms:          state.TTFBP95Ms,
-			Multiplier:         global.MultiplierFor(account.ID, account.Type),
-			MultiplierManual:   global.HasManualMultiplier(account.ID),
-			Balance:            state.Balance,
-			RateMultiplier:     account.RateMultiplier,
-			Priority:           account.Priority,
-			LoadFactor:         account.LoadFactor,
-			Concurrency:        account.Concurrency,
-			Weight:             state.Weight,
-			DesiredPriority:    state.DesiredPriority,
-			DesiredLoadFactor:  state.DesiredLoadFactor,
-			DesiredConcurrency: state.DesiredConcurrency,
-			FusedReason:        state.FusedReason,
-			FusedUntil:         state.FusedUntil,
-			CooldownTill:       state.CooldownTill,
-			LastSampleAt:       state.LastSampleAt,
-			LastProbeAt:        state.LastProbeAt,
-			LastError:          firstNonEmpty(state.LastError, account.ErrorMessage),
-			TestModel:          global.AccountTestModels[strconv.FormatInt(account.ID, 10)],
-			Models:             state.Models,
-			LastRequestModel:   state.LastRequestModel,
-			LastProbeModel:     state.LastProbeModel,
-			ModelRewritten:     state.ModelRewritten,
-			PrimaryGrp:         state.GroupID,
+			ID:                               account.ID,
+			Name:                             account.Name,
+			Platform:                         account.Platform,
+			Type:                             account.Type,
+			Status:                           account.Status,
+			Schedulable:                      account.Schedulable,
+			UpstreamBlock:                    string(blockKind),
+			UpstreamBlockText:                blockReason,
+			Excluded:                         global.AccountExcluded(account.ID),
+			Paused:                           global.AccountPaused(account.ID),
+			Health:                           string(effectiveHealth(global, account, state)),
+			DesiredHealth:                    string(state.DesiredHealth),
+			ApplyPending:                     applyPending(global, account, state),
+			ApplyError:                       state.LastApplyError,
+			HealthScore:                      state.HealthScore,
+			ShortScore:                       state.ShortScore,
+			LongScore:                        state.LongScore,
+			SampleCount:                      state.SampleCount,
+			FailStreak:                       state.ConsecutiveFail,
+			OKStreak:                         state.ConsecutiveOK,
+			TTFBP50Ms:                        state.TTFBP50Ms,
+			TTFBP95Ms:                        state.TTFBP95Ms,
+			Multiplier:                       multiplier,
+			MultiplierManual:                 global.HasManualMultiplier(account.ID),
+			ManualMultiplier:                 manualMultiplier,
+			UpstreamMultiplierEnabled:        global.UpstreamMultiplierEnabled(account.ID, account.Type),
+			UpstreamMultiplierBreakerEnabled: hasUpstreamBreaker && upstreamBreaker.Enabled,
+			UpstreamMultiplierThreshold:      upstreamMultiplierThreshold,
+			MultiplierSource:                 multiplierSource,
+			UpstreamMultiplier:               upstreamMultiplier,
+			UpstreamMultiplierUpdatedAt:      upstreamMultiplierUpdatedAt,
+			Balance:                          state.Balance,
+			RateMultiplier:                   account.RateMultiplier,
+			Priority:                         account.Priority,
+			LoadFactor:                       account.LoadFactor,
+			Concurrency:                      account.Concurrency,
+			Weight:                           state.Weight,
+			DesiredPriority:                  state.DesiredPriority,
+			DesiredLoadFactor:                state.DesiredLoadFactor,
+			DesiredConcurrency:               state.DesiredConcurrency,
+			FusedReason:                      state.FusedReason,
+			FusedUntil:                       state.FusedUntil,
+			CooldownTill:                     state.CooldownTill,
+			LastSampleAt:                     state.LastSampleAt,
+			LastProbeAt:                      state.LastProbeAt,
+			LastError:                        firstNonEmpty(state.LastError, account.ErrorMessage),
+			TestModel:                        global.AccountTestModels[strconv.FormatInt(account.ID, 10)],
+			Models:                           state.Models,
+			LastRequestModel:                 state.LastRequestModel,
+			LastProbeModel:                   state.LastProbeModel,
+			ModelRewritten:                   state.ModelRewritten,
+			PrimaryGrp:                       state.GroupID,
 		}
 
 		// 同 Channels：宁可回 [] 也不要 null，前端 .length 会直接抛异常白屏。
@@ -560,13 +598,11 @@ func (s *Server) updateChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 调度倍率是 Guardian 自己维护的字段，绝不写回 sub2api。
-	if raw, ok := payload["multiplier"]; ok {
-		if err := s.saveMultiplier(id, raw); err != nil {
-			writeError(w, err)
-			return
-		}
-		delete(payload, "multiplier")
+	// 调度倍率与实时倍率开关是 Guardian 自己维护的字段，绝不写回 sub2api。
+	// 两者在一次请求里只读写一遍 Policy，避免部分保存和无谓的数据库竞争。
+	if err := s.saveLocalChannelSettings(id, payload); err != nil {
+		writeError(w, err)
+		return
 	}
 
 	if len(payload) > 0 {
@@ -580,27 +616,135 @@ func (s *Server) updateChannel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// saveMultiplier 保存人工设置的调度倍率。
+// saveLocalChannelSettings 保存人工调度倍率、实时倍率开关与渠道级倍率熔断配置。
 //
-// 这是 Guardian 内部字段，只影响价格优先的权重计算，不会写回 sub2api。
-// 传 0 或负数表示清除人工设置，回落到按账号类型的默认倍率。
-func (s *Server) saveMultiplier(id int64, raw any) error {
+// 这些都是 Guardian 内部字段，只影响价格优先的权重计算，不会写回 sub2api。
+// multiplier 传 0 或负数表示清除人工设置，回落到按账号类型的默认倍率。
+func (s *Server) saveLocalChannelSettings(id int64, payload map[string]any) error {
+	rawMultiplier, hasMultiplier := payload["multiplier"]
+	rawUpstream, hasUpstream := payload["upstream_multiplier_enabled"]
+	rawBreaker, hasBreaker := payload["upstream_multiplier_breaker_enabled"]
+	rawThreshold, hasThreshold := payload["upstream_multiplier_threshold"]
+	if !hasMultiplier && !hasUpstream && !hasBreaker && !hasThreshold {
+		return nil
+	}
+	delete(payload, "multiplier")
+	delete(payload, "upstream_multiplier_enabled")
+	delete(payload, "upstream_multiplier_breaker_enabled")
+	delete(payload, "upstream_multiplier_threshold")
+
 	p, err := s.store.Policy()
 	if err != nil {
 		return err
 	}
 	key := strconv.FormatInt(id, 10)
-	value, ok := raw.(float64)
-	if !ok || value <= 0 {
-		delete(p.AccountMultipliers, key)
-	} else {
-		p.AccountMultipliers[key] = value
+
+	upstreamEnabled := p.AccountUpstreamMultiplierEnabled[key]
+	if hasUpstream {
+		var ok bool
+		upstreamEnabled, ok = rawUpstream.(bool)
+		if !ok {
+			return fmt.Errorf("实时倍率开关必须是布尔值")
+		}
+	}
+	breaker := p.AccountUpstreamMultiplierBreakers[key]
+	if hasBreaker {
+		value, ok := rawBreaker.(bool)
+		if !ok {
+			return fmt.Errorf("倍率阈值熔断开关必须是布尔值")
+		}
+		breaker.Enabled = value
+	}
+	if hasThreshold {
+		value, ok := rawThreshold.(float64)
+		if !ok || value <= 0 || math.IsNaN(value) || math.IsInf(value, 0) {
+			return fmt.Errorf("上游倍率阈值必须是有限正数")
+		}
+		breaker.Threshold = value
+	}
+
+	if hasUpstream || hasBreaker || hasThreshold {
+		account, err := s.store.Account(id)
+		if err != nil {
+			return fmt.Errorf("读取渠道 %d 失败: %w", id, err)
+		}
+		if !policy.IsAPIKeyType(account.Type) &&
+			(upstreamEnabled || (hasBreaker && breaker.Enabled) || hasThreshold) {
+			return fmt.Errorf("只有 API Key 类型渠道可以配置实时倍率")
+		}
+	}
+	if !upstreamEnabled && ((hasBreaker && breaker.Enabled) || hasThreshold) {
+		return fmt.Errorf("请先开启实时使用上游倍率，再配置倍率阈值")
+	}
+	if upstreamEnabled && breaker.Enabled && breaker.Threshold <= 0 {
+		return fmt.Errorf("开启倍率阈值熔断时必须设置有效阈值")
+	}
+
+	if hasMultiplier {
+		value, ok := rawMultiplier.(float64)
+		if !ok || value <= 0 {
+			delete(p.AccountMultipliers, key)
+		} else {
+			p.AccountMultipliers[key] = value
+		}
+	}
+	if hasUpstream {
+		if upstreamEnabled {
+			p.AccountUpstreamMultiplierEnabled[key] = true
+		} else {
+			delete(p.AccountUpstreamMultiplierEnabled, key)
+		}
+	}
+	if !upstreamEnabled {
+		delete(p.AccountUpstreamMultiplierBreakers, key)
+	} else if hasBreaker || hasThreshold {
+		if breaker.Threshold > 0 {
+			p.AccountUpstreamMultiplierBreakers[key] = breaker
+		} else {
+			delete(p.AccountUpstreamMultiplierBreakers, key)
+		}
 	}
 	if _, err := s.store.SavePolicy(p); err != nil {
 		return err
 	}
 	s.hub.broadcast()
 	return nil
+}
+
+// syncChannelUpstreamMultiplier 只读取并保存单个 API Key 渠道的上游倍率。
+// 它不触发测活、不改测试样本，也不写回 Sub2API 的账号配置。
+func (s *Server) syncChannelUpstreamMultiplier(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	account, err := s.store.Account(id)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if !policy.IsAPIKeyType(account.Type) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": "只有 API Key 类型渠道可以同步上游倍率",
+		})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	result, err := s.engine.SyncUpstreamMultiplier(ctx, id)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{
+			"error": fmt.Sprintf("同步上游倍率失败，继续使用原倍率：%s", err),
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":                  true,
+		"multiplier":          result.Multiplier,
+		"previous_multiplier": result.PreviousMultiplier,
+		"updated_at":          result.UpdatedAt,
+	})
 }
 
 func (s *Server) channelModels(w http.ResponseWriter, r *http.Request) {

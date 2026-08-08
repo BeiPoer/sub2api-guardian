@@ -163,6 +163,13 @@ export const api = {
     post<{ ok: boolean }>(`/api/channels/${id}/pause`, { paused }),
   updateChannel: (id: number, payload: Record<string, unknown>) =>
     put<{ ok: boolean }>(`/api/channels/${id}`, payload),
+  syncUpstreamMultiplier: (id: number) =>
+    post<{
+      ok: boolean
+      multiplier: number
+      previous_multiplier: number
+      updated_at: string
+    }>(`/api/channels/${id}/sync-upstream-multiplier`),
   channelModels: (id: number) =>
     request<{ models: string[] }>(`/api/channels/${id}/models`, undefined, LONG_TIMEOUT_MS),
   setChannelTestModel: (id: number, modelID: string) =>

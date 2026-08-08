@@ -101,6 +101,7 @@ func (e *Engine) applyChannel(ctx context.Context, r *round, ch *channel) bool {
 				fmt.Sprintf("写回账号配置失败: %s", err), payload)
 		} else {
 			changed = true
+			applyAccountPayload(&ch.account, payload)
 			e.store.Log("info", "apply", accountRef(ch.account.ID), accountRef(ch.primaryGroup),
 				fmt.Sprintf("渠道 %s 调度参数已更新", ch.account.Name), payload)
 		}
@@ -119,10 +120,19 @@ func (e *Engine) applyChannel(ctx context.Context, r *round, ch *channel) bool {
 				fmt.Sprintf("切换可调度状态失败: %s", err), nil)
 		} else {
 			changed = true
+			ch.account.Schedulable = ch.desired.schedulable
 			if ch.desired.schedulable {
 				// 恢复上线时顺手清掉 sub2api 侧的错误与限流标记。
-				_ = e.client.ClearError(ctx, ch.account.ID)
-				_ = e.client.RecoverState(ctx, ch.account.ID)
+				if err := e.client.ClearError(ctx, ch.account.ID); err != nil {
+					e.store.Log("warn", "clear_error_failed", accountRef(ch.account.ID), accountRef(ch.primaryGroup),
+						fmt.Sprintf("渠道 %s 已恢复调度，但清除错误信息失败: %s", ch.account.Name, err), nil)
+				}
+				if err := e.client.RecoverState(ctx, ch.account.ID); err != nil {
+					e.store.Log("warn", "recover_state_failed", accountRef(ch.account.ID), accountRef(ch.primaryGroup),
+						fmt.Sprintf("渠道 %s 已恢复调度，但复位运行状态失败: %s", ch.account.Name, err), nil)
+				} else {
+					clearAccountRuntimeBlocks(&ch.account)
+				}
 				e.store.Log("info", "recovered", accountRef(ch.account.ID), accountRef(ch.primaryGroup),
 					fmt.Sprintf("渠道 %s 已恢复调度：%s", ch.account.Name, ch.desired.reason), nil)
 			} else {
@@ -220,6 +230,7 @@ func (e *Engine) restoreBaseline(ctx context.Context, ch *channel, reason string
 			return false
 		}
 		changed = true
+		applyAccountPayload(&ch.account, payload)
 	}
 	restoredSchedulable := false
 	if base.Schedulable != ch.account.Schedulable &&
@@ -233,13 +244,16 @@ func (e *Engine) restoreBaseline(ctx context.Context, ch *channel, reason string
 		}
 		changed = true
 		restoredSchedulable = true
+		ch.account.Schedulable = base.Schedulable
 	} else if base.Schedulable != ch.account.Schedulable && base.ManagedSchedulable != nil {
 		conflicts = append(conflicts, "schedulable")
 	}
 	if restoredSchedulable && base.Schedulable {
 		// SetSchedulable(true) 主要依赖 outbox；这两个恢复端点会同步刷新运行态快照。
 		_ = e.client.ClearError(ctx, ch.account.ID)
-		_ = e.client.RecoverState(ctx, ch.account.ID)
+		if err := e.client.RecoverState(ctx, ch.account.ID); err == nil {
+			clearAccountRuntimeBlocks(&ch.account)
+		}
 	}
 
 	if changed {
@@ -257,6 +271,39 @@ func (e *Engine) restoreBaseline(ctx context.Context, ch *channel, reason string
 			fmt.Sprintf("原值已恢复但删除基线失败: %s", err), nil)
 	}
 	return changed
+}
+
+// applyAccountPayload mirrors confirmed sub2api writes into the current round.
+// Group aggregation runs before the next catalog sync, so leaving the old snapshot
+// here would make the overview lag one full round behind successful writes.
+func applyAccountPayload(account *domain.Account, payload map[string]any) {
+	if value, ok := numberAsInt(payload["priority"]); ok {
+		account.Priority = value
+	}
+	if value, ok := numberAsInt(payload["load_factor"]); ok {
+		if value <= 0 {
+			account.LoadFactor = nil
+		} else {
+			account.LoadFactor = &value
+		}
+	}
+	if value, ok := numberAsInt(payload["concurrency"]); ok {
+		account.Concurrency = value
+	}
+	if value, ok := numberAsFloat(payload["rate_multiplier"]); ok {
+		account.RateMultiplier = value
+	}
+	if value, ok := payload["status"].(string); ok {
+		account.Status = normalizeAccountStatus(value)
+	}
+}
+
+func clearAccountRuntimeBlocks(account *domain.Account) {
+	account.RateLimitedAt = nil
+	account.RateLimitResetAt = nil
+	account.TempUnschedulableUntil = nil
+	account.TempUnschedulableReason = ""
+	account.OverloadUntil = nil
 }
 
 // persistManagedIntent 在调用 sub2api 前持久化写入意图。

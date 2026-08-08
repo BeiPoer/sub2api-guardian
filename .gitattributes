@@ -1,0 +1,16 @@
+* text=auto
+
+# Linux entrypoints and release metadata must keep Unix line endings.
+*.sh text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+Dockerfile text eol=lf
+Makefile text eol=lf
+*.txt text eol=lf
+
+# Keep source files consistent across Windows and Linux contributors.
+*.go text eol=lf
+*.ts text eol=lf
+*.vue text eol=lf
+*.json text eol=lf
+*.md text eol=lf

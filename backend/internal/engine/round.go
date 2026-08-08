@@ -82,11 +82,12 @@ type desired struct {
 
 // round 是一轮调度的可变上下文。
 type round struct {
-	now       time.Time
-	global    policy.Policy
-	overrides map[int64]*policy.GroupOverride
-	groups    []domain.Group
-	groupByID map[int64]domain.Group
+	now                 time.Time
+	global              policy.Policy
+	overrides           map[int64]*policy.GroupOverride
+	groups              []domain.Group
+	groupByID           map[int64]domain.Group
+	upstreamMultipliers map[int64]domain.UpstreamMultiplierSnapshot
 
 	channels     []*channel
 	byAccountID  map[int64]*channel
@@ -144,16 +145,17 @@ func buildRound(
 	baselines map[int64]domain.Baseline,
 ) *round {
 	r := &round{
-		now:          now,
-		global:       global,
-		overrides:    overrides,
-		groups:       groups,
-		groupByID:    make(map[int64]domain.Group, len(groups)),
-		byAccountID:  map[int64]*channel{},
-		groupMembers: map[int64][]*channel{},
-		softFuses:    map[int64]int{},
-		cleanedUp:    map[int64]bool{},
-		baselines:    baselines,
+		now:                 now,
+		global:              global,
+		overrides:           overrides,
+		groups:              groups,
+		groupByID:           make(map[int64]domain.Group, len(groups)),
+		upstreamMultipliers: map[int64]domain.UpstreamMultiplierSnapshot{},
+		byAccountID:         map[int64]*channel{},
+		groupMembers:        map[int64][]*channel{},
+		softFuses:           map[int64]int{},
+		cleanedUp:           map[int64]bool{},
+		baselines:           baselines,
 	}
 	for _, group := range groups {
 		r.groupByID[group.ID] = group

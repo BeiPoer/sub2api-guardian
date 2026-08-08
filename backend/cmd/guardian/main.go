@@ -62,6 +62,9 @@ func main() {
 		Addr:              cfg.Addr,
 		Handler:           server.Handler(),
 		ReadHeaderTimeout: 15 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+		MaxHeaderBytes:    1 << 20,
 		// SSE 需要长连接，因此不设置写超时。
 	}
 
@@ -92,6 +95,7 @@ func main() {
 	<-stop
 
 	log.Printf("正在关闭...")
+	eng.Stop()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {

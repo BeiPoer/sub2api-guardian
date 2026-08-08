@@ -18,7 +18,17 @@
 
       <main class="space-y-6 p-4 md:p-6 lg:p-8">
         <div
-          v-if="!guardian.configured"
+          v-if="guardian.loading"
+          class="flex items-center gap-3 rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm text-gray-600 dark:border-dark-700 dark:bg-dark-800 dark:text-dark-300"
+        >
+          <span
+            class="h-4 w-4 flex-shrink-0 animate-spin rounded-full border-2 border-primary-500 border-t-transparent"
+          />
+          正在同步 Guardian 数据…
+        </div>
+
+        <div
+          v-else-if="guardian.status && !guardian.configured"
           class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200"
         >
           <span class="flex items-center gap-2">
@@ -29,7 +39,7 @@
         </div>
 
         <div
-          v-else-if="!guardian.monitoringEnabled"
+          v-else-if="guardian.status && !guardian.monitoringEnabled"
           class="flex items-center gap-2 rounded-xl border border-primary-200 bg-primary-50 px-4 py-3 text-sm text-primary-800 dark:border-primary-800 dark:bg-primary-900/20 dark:text-primary-200"
         >
           <Icon name="infoCircle" size="sm" />

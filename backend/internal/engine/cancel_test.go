@@ -230,6 +230,56 @@ func TestCancelStopsRunningRound(t *testing.T) {
 	}
 }
 
+func TestStopCancelsAndWaitsForRunningRound(t *testing.T) {
+	fake := newSlowProbeFake()
+	eng, st := setupCancelEngine(t, fake)
+	conn, err := st.Connection()
+	if err != nil {
+		t.Fatalf("读取连接失败: %v", err)
+	}
+	conn.Enabled = true
+	if err := st.SaveConnection(conn); err != nil {
+		t.Fatalf("开启自动守护失败: %v", err)
+	}
+	if err := eng.Sync(context.Background()); err != nil {
+		t.Fatalf("同步失败: %v", err)
+	}
+
+	runDone := make(chan error, 1)
+	go func() { runDone <- eng.RunOnce(context.Background()) }()
+	deadline := time.After(5 * time.Second)
+	for fake.started.Load() == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("探测始终没有开始")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	stopDone := make(chan struct{})
+	go func() {
+		eng.Stop()
+		close(stopDone)
+	}()
+	select {
+	case <-stopDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop 没有及时取消并等待当前轮次")
+	}
+	select {
+	case <-runDone:
+	default:
+		t.Fatal("Stop 返回时调度轮次仍未退出")
+	}
+	conn, err = st.Connection()
+	if err != nil {
+		t.Fatalf("读取连接失败: %v", err)
+	}
+	if !conn.Enabled {
+		t.Fatal("进程停机不应持久化关闭自动守护")
+	}
+}
+
 // TestCancelWithoutRunningRound 验证空转时取消是安全的。
 func TestCancelWithoutRunningRound(t *testing.T) {
 	fake := newSlowProbeFake()
