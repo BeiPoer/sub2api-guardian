@@ -2,6 +2,7 @@
 package api
 
 import (
+	"crypto/cipher"
 	"encoding/json"
 	"errors"
 	"log"
@@ -34,12 +35,14 @@ type Server struct {
 	authRateMu sync.Mutex
 	authRates  map[string]authRateEntry
 
-	image2Dir     string
-	image2InitErr error
-	image2Client  *http.Client
-	image2Stop    chan struct{}
-	image2Done    chan struct{}
-	closeOnce     sync.Once
+	image2Dir         string
+	image2InitErr     error
+	image2Client      *http.Client
+	image2ProxyClient *http.Client
+	image2URLCipher   cipher.AEAD
+	image2Stop        chan struct{}
+	image2Done        chan struct{}
+	closeOnce         sync.Once
 }
 
 type authRateEntry struct {
@@ -66,8 +69,19 @@ func NewServer(st *store.Store, client *upstream.Client, eng *engine.Engine, ass
 			Transport:     transport,
 			CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
 		},
-		image2Stop: make(chan struct{}),
-		image2Done: make(chan struct{}),
+		image2ProxyClient: &http.Client{
+			Timeout:   3 * time.Minute,
+			Transport: transport,
+			CheckRedirect: func(r *http.Request, via []*http.Request) error {
+				if len(via) >= 5 || (r.URL.Scheme != "http" && r.URL.Scheme != "https") {
+					return errors.New("invalid image redirect")
+				}
+				return nil
+			},
+		},
+		image2URLCipher: newImage2URLCipher(os.Getenv(image2URLKeyEnv)),
+		image2Stop:      make(chan struct{}),
+		image2Done:      make(chan struct{}),
 	}
 	s.image2InitErr = os.MkdirAll(image2Dir, 0o700)
 	if s.image2InitErr != nil {
@@ -148,6 +162,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/setup", s.setupStatus)
 	mux.HandleFunc("POST /api/setup", s.setup)
 	mux.HandleFunc("POST /api/login", s.login)
+	mux.HandleFunc("GET /images/from/{name}", s.serveImage2URL)
 	mux.HandleFunc("GET /images/{name}", s.serveImage2File)
 	mux.HandleFunc("GET /files/{name}", s.serveImage2File)
 	mux.HandleFunc("POST /{slug}/v1/images/generations", s.generateImage2)

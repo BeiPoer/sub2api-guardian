@@ -351,6 +351,7 @@ WantedBy=multi-user.target
 | `GUARDIAN_PORT` | `8787` | 仅在未设置 `GUARDIAN_ADDR` 时生效 |
 | `GUARDIAN_DATA_DIR` | **可执行文件同级的 `data/`** | SQLite 数据目录 |
 | `SUB2API_BASE_URL` / `SUB2API_ADMIN_KEY` | — | 首次启动时预置连接配置 |
+| `IMAGE2_URL_ENCRYPTION_KEY` | 内置默认值 | image2 上游 URL 的代理加密密钥；更换后旧代理 URL 失效 |
 
 ---
 

@@ -3,7 +3,10 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
@@ -19,6 +22,7 @@ import (
 	"net/textproto"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -29,9 +33,12 @@ import (
 )
 
 const (
-	image2MaxRequestBytes  = 100 << 20
-	image2MaxResponseBytes = 128 << 20
-	image2CleanupInterval  = 5 * time.Minute
+	image2MaxRequestBytes   = 100 << 20
+	image2MaxResponseBytes  = 128 << 20
+	image2CleanupInterval   = 5 * time.Minute
+	image2URLKeyEnv         = "IMAGE2_URL_ENCRYPTION_KEY"
+	image2DefaultURLKey     = "sub2api-guardian-default-image2-url-key"
+	image2URLAssociatedData = "sub2api-guardian:image2-url:v1"
 )
 
 type image2UpstreamInput struct {
@@ -638,10 +645,18 @@ func (s *Server) convertImage2Response(ctx context.Context, raw []byte, imageBas
 		}
 		encoded, hasBase64 := item["b64_json"]
 		if !hasBase64 || encoded == nil {
-			if _, ok := item["url"].(string); !ok {
+			imageURL, ok := item["url"].(string)
+			if !ok || imageURL == "" {
 				rollback()
 				return nil, image2InvalidBase64()
 			}
+			proxyURL, err := s.image2ProxyURL(imageBaseURL, imageURL)
+			if err != nil {
+				rollback()
+				return nil, image2InvalidURL()
+			}
+			item["url"] = proxyURL
+			convertedAny = true
 			continue
 		}
 		encodedString, ok := encoded.(string)
@@ -682,10 +697,72 @@ func (s *Server) convertImage2Response(ctx context.Context, raw []byte, imageBas
 	return converted, nil
 }
 
-func (s *Server) readImage2URL(ctx context.Context, value string) ([]byte, error) {
+func newImage2URLCipher(secret string) cipher.AEAD {
+	secret = strings.TrimSpace(secret)
+	if secret == "" {
+		secret = image2DefaultURLKey
+	}
+	key := sha256.Sum256([]byte(secret))
+	block, err := aes.NewCipher(key[:])
+	if err != nil {
+		panic(err)
+	}
+	result, err := cipher.NewGCM(block)
+	if err != nil {
+		panic(err)
+	}
+	return result
+}
+
+func parseImage2RemoteURL(value string) (*url.URL, error) {
 	parsed, err := url.Parse(value)
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 		return nil, errors.New("invalid image URL")
+	}
+	return parsed, nil
+}
+
+func image2ProxyExtension(urlPath string) string {
+	switch strings.ToLower(path.Ext(urlPath)) {
+	case ".jpg", ".jpeg":
+		return ".jpg"
+	case ".webp":
+		return ".webp"
+	default:
+		return ".png"
+	}
+}
+
+func (s *Server) image2ProxyURL(imageBaseURL, source string) (string, error) {
+	parsed, err := parseImage2RemoteURL(source)
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, s.image2URLCipher.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
+	sealed := s.image2URLCipher.Seal(nonce, nonce, []byte(source), []byte(image2URLAssociatedData))
+	token := base64.RawURLEncoding.EncodeToString(sealed)
+	return strings.TrimRight(imageBaseURL, "/") + "/from/" + token + image2ProxyExtension(parsed.Path), nil
+}
+
+func (s *Server) decryptImage2URL(token string) (string, error) {
+	sealed, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil || len(sealed) < s.image2URLCipher.NonceSize()+s.image2URLCipher.Overhead() {
+		return "", errors.New("invalid image token")
+	}
+	nonceSize := s.image2URLCipher.NonceSize()
+	plain, err := s.image2URLCipher.Open(nil, sealed[:nonceSize], sealed[nonceSize:], []byte(image2URLAssociatedData))
+	if err != nil {
+		return "", err
+	}
+	return string(plain), nil
+}
+
+func (s *Server) readImage2URL(ctx context.Context, value string) ([]byte, error) {
+	if _, err := parseImage2RemoteURL(value); err != nil {
+		return nil, err
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, value, nil)
 	if err != nil {
@@ -705,6 +782,79 @@ func (s *Server) readImage2URL(ctx context.Context, value string) ([]byte, error
 		return nil, errors.New("image URL returned invalid image data")
 	}
 	return content, nil
+}
+
+func image2ProxyToken(name string) (string, bool) {
+	extension := path.Ext(name)
+	switch strings.ToLower(extension) {
+	case ".png", ".jpg", ".webp":
+	default:
+		return "", false
+	}
+	token := strings.TrimSuffix(name, extension)
+	return token, token != ""
+}
+
+func validImage2ProxyContentType(value string) bool {
+	mediaType, _, err := mime.ParseMediaType(value)
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(mediaType) {
+	case "image/png", "image/jpeg", "image/webp":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Server) serveImage2URL(w http.ResponseWriter, r *http.Request) {
+	token, ok := image2ProxyToken(r.PathValue("name"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	source, err := s.decryptImage2URL(token)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if _, err := parseImage2RemoteURL(source); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	request, err := http.NewRequestWithContext(r.Context(), r.Method, source, nil)
+	if err != nil {
+		http.Error(w, "image unavailable", http.StatusBadGateway)
+		return
+	}
+	request.Header.Set("Accept", "image/png, image/jpeg, image/webp")
+	response, err := s.image2ProxyClient.Do(request)
+	if err != nil {
+		status := http.StatusBadGateway
+		var networkError net.Error
+		if errors.As(err, &networkError) && networkError.Timeout() {
+			status = http.StatusGatewayTimeout
+		}
+		http.Error(w, "image unavailable", status)
+		return
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 ||
+		!validImage2ProxyContentType(response.Header.Get("Content-Type")) {
+		http.Error(w, "image unavailable", http.StatusBadGateway)
+		return
+	}
+	for _, name := range []string{"Content-Type", "Content-Length", "Cache-Control", "ETag", "Last-Modified", "Expires"} {
+		if value := response.Header.Get(name); value != "" {
+			w.Header().Set(name, value)
+		}
+	}
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(response.StatusCode)
+	if r.Method != http.MethodHead {
+		_, _ = io.Copy(w, response.Body)
+	}
 }
 
 func (s *Server) writeImage2File(content []byte) (string, error) {

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -102,15 +103,9 @@ func TestImage2ProxyConvertsBase64ToURL(t *testing.T) {
 	}
 }
 
-func TestImage2ResponseOnlyNeedsImageDomainForBase64(t *testing.T) {
-	native := []byte(`{"data":[{"url":"https://native.example/image.png"}]}`)
-	converted, proxyErr := (&Server{}).convertImage2Response(context.Background(), native, "", "url")
-	if proxyErr != nil || !bytes.Equal(converted, native) {
-		t.Fatalf("原生 URL 响应被额外处理: err=%v body=%s", proxyErr, converted)
-	}
-
+func TestImage2Base64ResponseRequiresImageDomain(t *testing.T) {
 	encoded := base64.StdEncoding.EncodeToString([]byte("not-an-image"))
-	_, proxyErr = (&Server{}).convertImage2Response(context.Background(),
+	_, proxyErr := (&Server{}).convertImage2Response(context.Background(),
 		[]byte(`{"data":[{"b64_json":"`+encoded+`"}]}`), "", "url")
 	if proxyErr == nil || proxyErr.status != http.StatusServiceUnavailable || proxyErr.code != "image_domain_missing" {
 		t.Fatalf("Base64 响应未要求图片域名: %#v", proxyErr)
@@ -143,14 +138,44 @@ func TestNormalizeImage2URLsUsesRootUpstreamAndDomainOnly(t *testing.T) {
 	}
 }
 
-func TestImage2ProxyConvertsOnlyMismatchedFormats(t *testing.T) {
-	image := []byte("\x89PNG\r\n\x1a\nurl-to-base64")
-	imageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/image.png" {
-			t.Errorf("图片请求 = %s %s", r.Method, r.URL.Path)
+func TestImage2ProxyExtensions(t *testing.T) {
+	cases := map[string]string{
+		"/image.png":  ".png",
+		"/IMAGE.JPG":  ".jpg",
+		"/image.jpeg": ".jpg",
+		"/image.WebP": ".webp",
+		"/image.gif":  ".png",
+		"/image":      ".png",
+	}
+	for input, want := range cases {
+		if got := image2ProxyExtension(input); got != want {
+			t.Errorf("image2ProxyExtension(%q) = %q, 期望 %q", input, got, want)
 		}
-		w.Header().Set("Content-Type", "image/png")
-		_, _ = w.Write(image)
+	}
+}
+
+func TestImage2ProxyHandlesRequestedFormats(t *testing.T) {
+	t.Setenv(image2URLKeyEnv, "image2-test-encryption-key")
+	base64Image := []byte("\x89PNG\r\n\x1a\nurl-to-base64")
+	proxyImage := []byte("proxied-webp")
+	var proxyHits atomic.Int32
+	imageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/image.png":
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(base64Image)
+		case "/source.webp":
+			proxyHits.Add(1)
+			if r.Header.Get("Authorization") != "" || r.Header.Get("Cookie") != "" {
+				t.Errorf("图片转发泄露调用方凭据: Authorization=%q Cookie=%q",
+					r.Header.Get("Authorization"), r.Header.Get("Cookie"))
+			}
+			w.Header().Set("Content-Type", "image/webp")
+			w.Header().Set("Cache-Control", "public, max-age=60")
+			_, _ = w.Write(proxyImage)
+		default:
+			http.NotFound(w, r)
+		}
 	}))
 	defer imageServer.Close()
 
@@ -164,7 +189,9 @@ func TestImage2ProxyConvertsOnlyMismatchedFormats(t *testing.T) {
 			t.Errorf("response_format 未原样转发: %#v", payload)
 		}
 		if responseFormat == "url" {
-			_, _ = w.Write([]byte(`{"data":[{"url":"https://native.example/image.png"}]}`))
+			writeJSON(w, http.StatusOK, map[string]any{"data": []any{
+				map[string]any{"url": imageServer.URL + "/source.webp?signature=secret"},
+			}})
 			return
 		}
 		if payload["model"] == "already-base64" {
@@ -199,14 +226,61 @@ func TestImage2ProxyConvertsOnlyMismatchedFormats(t *testing.T) {
 			bytes.NewBufferString(body))
 		request.Header.Set("Authorization", "Bearer proxy-secret")
 		request.Header.Set("Content-Type", "application/json")
+		request.Host = "guardian.example.com"
 		response := httptest.NewRecorder()
 		server.Handler().ServeHTTP(response, request)
 		return response
 	}
 
 	response := call(`{"response_format":"url"}`)
-	if response.Code != http.StatusOK || response.Body.String() != `{"data":[{"url":"https://native.example/image.png"}]}` {
-		t.Fatalf("原生 URL 未透传: %d %s", response.Code, response.Body.String())
+	var proxied struct {
+		Data []map[string]any `json:"data"`
+	}
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &proxied) != nil || len(proxied.Data) != 1 {
+		t.Fatalf("URL 代理响应无效: %d %s", response.Code, response.Body.String())
+	}
+	proxyURL, _ := proxied.Data[0]["url"].(string)
+	parsedProxyURL, err := url.Parse(proxyURL)
+	if err != nil || parsedProxyURL.Host != "guardian.example.com" ||
+		!strings.HasPrefix(parsedProxyURL.Path, "/images/from/") || !strings.HasSuffix(parsedProxyURL.Path, ".webp") {
+		t.Fatalf("图片代理 URL = %q, err=%v", proxyURL, err)
+	}
+	if proxyHits.Load() != 0 {
+		t.Fatal("生成代理 URL 时不应请求图片源")
+	}
+
+	proxyRequest := httptest.NewRequest(http.MethodGet, parsedProxyURL.Path, nil)
+	proxyRequest.Header.Set("Authorization", "Bearer must-not-forward")
+	proxyRequest.AddCookie(&http.Cookie{Name: "session", Value: "must-not-forward"})
+	proxyResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(proxyResponse, proxyRequest)
+	if proxyResponse.Code != http.StatusOK || !bytes.Equal(proxyResponse.Body.Bytes(), proxyImage) ||
+		proxyResponse.Header().Get("Content-Type") != "image/webp" ||
+		proxyResponse.Header().Get("Cache-Control") != "public, max-age=60" {
+		t.Fatalf("图片流式转发失败: status=%d type=%q cache=%q body=%q", proxyResponse.Code,
+			proxyResponse.Header().Get("Content-Type"), proxyResponse.Header().Get("Cache-Control"), proxyResponse.Body.Bytes())
+	}
+	if proxyHits.Load() != 1 {
+		t.Fatalf("图片源请求次数 = %d", proxyHits.Load())
+	}
+
+	prefix := "/images/from/"
+	name := strings.TrimPrefix(parsedProxyURL.Path, prefix)
+	token := strings.TrimSuffix(name, ".webp")
+	defaultCipherServer := &Server{image2URLCipher: newImage2URLCipher("")}
+	if _, err := defaultCipherServer.decryptImage2URL(token); err == nil {
+		t.Fatal("环境变量密钥未覆盖代码默认值")
+	}
+	replacement := "A"
+	if token[0] == 'A' {
+		replacement = "B"
+	}
+	tamperedRequest := httptest.NewRequest(http.MethodGet,
+		prefix+replacement+token[1:]+".webp", nil)
+	tamperedResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(tamperedResponse, tamperedRequest)
+	if tamperedResponse.Code != http.StatusNotFound || proxyHits.Load() != 1 {
+		t.Fatalf("篡改 token 返回 %d，图片源请求次数=%d", tamperedResponse.Code, proxyHits.Load())
 	}
 
 	response = call(`{"model":"already-base64","response_format":"b64_json"}`)
@@ -223,8 +297,8 @@ func TestImage2ProxyConvertsOnlyMismatchedFormats(t *testing.T) {
 	}
 	encoded, _ := converted.Data[0]["b64_json"].(string)
 	decoded, err := base64.StdEncoding.Strict().DecodeString(encoded)
-	if err != nil || !bytes.Equal(decoded, image) {
-		t.Fatalf("Base64 图片无效: err=%v 内容一致=%v", err, bytes.Equal(decoded, image))
+	if err != nil || !bytes.Equal(decoded, base64Image) {
+		t.Fatalf("Base64 图片无效: err=%v 内容一致=%v", err, bytes.Equal(decoded, base64Image))
 	}
 	if _, exists := converted.Data[0]["url"]; exists {
 		t.Fatal("转换后仍包含 url")

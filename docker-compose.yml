@@ -14,6 +14,7 @@ services:
       GUARDIAN_DATA_DIR: "/data"
       SUB2API_BASE_URL: "${SUB2API_BASE_URL:-}"
       SUB2API_ADMIN_KEY: "${SUB2API_ADMIN_KEY:-}"
+      IMAGE2_URL_ENCRYPTION_KEY: "${IMAGE2_URL_ENCRYPTION_KEY:-}"
     volumes:
       - ./backend/data:/data
     extra_hosts:
