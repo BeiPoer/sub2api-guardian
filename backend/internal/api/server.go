@@ -52,8 +52,11 @@ type authRateEntry struct {
 
 // NewServer 创建 API 服务。assets 用于托管内嵌前端，可为 nil。
 func NewServer(st *store.Store, client *upstream.Client, eng *engine.Engine, assets http.Handler) *Server {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.DialContext = (&net.Dialer{Timeout: 10 * time.Second}).DialContext
+	image2Transport := http.DefaultTransport.(*http.Transport).Clone()
+	image2ProxyTransport := image2Transport.Clone()
+	image2Transport.DialContext = (&net.Dialer{}).DialContext
+	image2Transport.TLSHandshakeTimeout = 0
+	image2ProxyTransport.DialContext = (&net.Dialer{Timeout: 10 * time.Second}).DialContext
 	image2Dir := filepath.Join(st.DataDir(), "image2", "images")
 	s := &Server{
 		store:     st,
@@ -65,13 +68,12 @@ func NewServer(st *store.Store, client *upstream.Client, eng *engine.Engine, ass
 		authRates: make(map[string]authRateEntry, 64),
 		image2Dir: image2Dir,
 		image2Client: &http.Client{
-			Timeout:       3 * time.Minute,
-			Transport:     transport,
+			Transport:     image2Transport,
 			CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
 		},
 		image2ProxyClient: &http.Client{
 			Timeout:   3 * time.Minute,
-			Transport: transport,
+			Transport: image2ProxyTransport,
 			CheckRedirect: func(r *http.Request, via []*http.Request) error {
 				if len(via) >= 5 || (r.URL.Scheme != "http" && r.URL.Scheme != "https") {
 					return errors.New("invalid image redirect")
