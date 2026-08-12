@@ -42,11 +42,12 @@ const (
 )
 
 type image2UpstreamInput struct {
-	Name         string `json:"name"`
-	Slug         string `json:"slug"`
-	BaseURL      string `json:"base_url"`
-	APIKey       string `json:"api_key"`
-	ModelMapping string `json:"model_mapping"`
+	Name          string `json:"name"`
+	Slug          string `json:"slug"`
+	BaseURL       string `json:"base_url"`
+	APIKey        string `json:"api_key"`
+	ModelMapping  string `json:"model_mapping"`
+	BlockedParams string `json:"blocked_params"`
 }
 
 func (s *Server) getImage2(w http.ResponseWriter, _ *http.Request) {
@@ -207,7 +208,7 @@ func normalizeImage2Upstream(input image2UpstreamInput, id int64, currentKey str
 	}
 	return store.Image2Upstream{
 		ID: id, Name: name, Slug: slug, BaseURL: baseURL, APIKey: apiKey,
-		ModelMapping: mapping,
+		ModelMapping: mapping, BlockedParams: normalizeImage2BlockedParams(input.BlockedParams),
 	}, nil
 }
 
@@ -282,6 +283,30 @@ func parseImage2ModelMapping(value string) map[string]string {
 	return mapping
 }
 
+func normalizeImage2BlockedParams(value string) string {
+	seen := make(map[string]bool)
+	params := make([]string, 0)
+	for _, raw := range strings.Split(value, ",") {
+		param := strings.TrimSpace(raw)
+		if param == "" || seen[param] {
+			continue
+		}
+		seen[param] = true
+		params = append(params, param)
+	}
+	return strings.Join(params, ",")
+}
+
+func parseImage2BlockedParams(value string) map[string]bool {
+	blocked := make(map[string]bool)
+	for _, param := range strings.Split(value, ",") {
+		if param = strings.TrimSpace(param); param != "" {
+			blocked[param] = true
+		}
+	}
+	return blocked
+}
+
 func writeImage2StoreError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, store.ErrImage2SlugExists):
@@ -335,6 +360,7 @@ func (s *Server) proxyImage2(w http.ResponseWriter, r *http.Request, operation s
 		return
 	}
 	mapping := parseImage2ModelMapping(upstream.ModelMapping)
+	blocked := parseImage2BlockedParams(upstream.BlockedParams)
 	var (
 		body           io.ReadCloser
 		contentType    string
@@ -342,7 +368,7 @@ func (s *Server) proxyImage2(w http.ResponseWriter, r *http.Request, operation s
 	)
 	switch {
 	case mediaType == "application/json":
-		prepared, format, prepareErr := prepareImage2JSON(r, mapping)
+		prepared, format, prepareErr := prepareImage2JSON(r, mapping, blocked)
 		if prepareErr != nil {
 			writeImage2ProxyError(w, prepareErr)
 			return
@@ -351,7 +377,7 @@ func (s *Server) proxyImage2(w http.ResponseWriter, r *http.Request, operation s
 		contentType = "application/json"
 		responseFormat = format
 	case operation == "edits" && mediaType == "multipart/form-data":
-		prepared, preparedType, format, prepareErr := prepareImage2Multipart(r, mapping)
+		prepared, preparedType, format, prepareErr := prepareImage2Multipart(r, mapping, blocked)
 		if prepareErr != nil {
 			writeImage2ProxyError(w, prepareErr)
 			return
@@ -456,7 +482,7 @@ func (s *Server) requireImage2Key(r *http.Request) (store.Image2Settings, *image
 	return settings, nil
 }
 
-func prepareImage2JSON(r *http.Request, mapping map[string]string) ([]byte, string, *image2ProxyError) {
+func prepareImage2JSON(r *http.Request, mapping map[string]string, blocked map[string]bool) ([]byte, string, *image2ProxyError) {
 	decoder := json.NewDecoder(r.Body)
 	decoder.UseNumber()
 	var payload map[string]any
@@ -466,10 +492,13 @@ func prepareImage2JSON(r *http.Request, mapping map[string]string) ([]byte, stri
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return nil, "", image2InvalidJSON(err)
 	}
+	responseFormat, _ := payload["response_format"].(string)
+	for key := range blocked {
+		delete(payload, key)
+	}
 	if model, ok := payload["model"].(string); ok && mapping[model] != "" {
 		payload["model"] = mapping[model]
 	}
-	responseFormat, _ := payload["response_format"].(string)
 	if image2True(payload["stream"]) {
 		payload["stream"] = false
 	}
@@ -480,7 +509,7 @@ func prepareImage2JSON(r *http.Request, mapping map[string]string) ([]byte, stri
 	return raw, responseFormat, nil
 }
 
-func prepareImage2Multipart(r *http.Request, mapping map[string]string) (io.ReadCloser, string, string, *image2ProxyError) {
+func prepareImage2Multipart(r *http.Request, mapping map[string]string, blocked map[string]bool) (io.ReadCloser, string, string, *image2ProxyError) {
 	if err := r.ParseMultipartForm(32 << 20); err != nil || r.MultipartForm == nil {
 		code := "invalid_form"
 		status := http.StatusBadRequest
@@ -505,6 +534,9 @@ func prepareImage2Multipart(r *http.Request, mapping map[string]string) (io.Read
 	go func() {
 		defer form.RemoveAll()
 		for name, values := range form.Value {
+			if blocked[name] {
+				continue
+			}
 			for _, value := range values {
 				if name == "stream" && image2True(value) {
 					value = "false"
@@ -519,6 +551,9 @@ func prepareImage2Multipart(r *http.Request, mapping map[string]string) (io.Read
 			}
 		}
 		for name, files := range form.File {
+			if blocked[name] {
+				continue
+			}
 			for _, fileHeader := range files {
 				if err := copyImage2MultipartFile(multipartWriter, name, fileHeader); err != nil {
 					_ = writer.CloseWithError(err)

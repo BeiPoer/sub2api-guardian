@@ -127,7 +127,8 @@ var schemaStatements = []string{
 		api_key TEXT NOT NULL,
 		-- 旧版本字段，当前代理不再读取或写入。
 		supports_url INTEGER NOT NULL DEFAULT 0,
-		model_mapping TEXT NOT NULL DEFAULT ''
+		model_mapping TEXT NOT NULL DEFAULT '',
+		blocked_params TEXT NOT NULL DEFAULT ''
 	)`,
 }
 
@@ -364,6 +365,7 @@ func (s *Store) addMissingColumns() error {
 		ddl    string
 	}{
 		{"samples", "request_model", `ALTER TABLE samples ADD COLUMN request_model TEXT NOT NULL DEFAULT ''`},
+		{"image2_upstreams", "blocked_params", `ALTER TABLE image2_upstreams ADD COLUMN blocked_params TEXT NOT NULL DEFAULT ''`},
 	}
 
 	for _, add := range additions {

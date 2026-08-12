@@ -5,6 +5,9 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -39,6 +42,9 @@ func TestImage2ProxyConvertsBase64ToURL(t *testing.T) {
 		if payload["response_format"] != "url" {
 			t.Errorf("上游未收到 response_format=url: %#v", payload)
 		}
+		if _, exists := payload["quality"]; exists {
+			t.Errorf("上游收到已屏蔽参数 quality: %#v", payload)
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"data": []any{
 			map[string]any{"b64_json": base64.StdEncoding.EncodeToString(image)},
 		}})
@@ -58,6 +64,7 @@ func TestImage2ProxyConvertsBase64ToURL(t *testing.T) {
 	if _, err := st.CreateImage2Upstream(store.Image2Upstream{
 		Name: "主上游", Slug: "primary", BaseURL: upstreamServer.URL,
 		APIKey: "upstream-secret", ModelMapping: "gpt-image-2=provider-image-model",
+		BlockedParams: "quality",
 	}); err != nil {
 		t.Fatalf("创建 image2 上游失败: %v", err)
 	}
@@ -68,7 +75,7 @@ func TestImage2ProxyConvertsBase64ToURL(t *testing.T) {
 	handler := server.Handler()
 
 	request := httptest.NewRequest(http.MethodPost, "/primary/v1/images/generations?trace=1",
-		bytes.NewBufferString(`{"model":"gpt-image-2","stream":true,"response_format":"url"}`))
+		bytes.NewBufferString(`{"model":"gpt-image-2","quality":"high","stream":true,"response_format":"url"}`))
 	request.Host = "203.0.113.8:8787"
 	request.Header.Set("X-Forwarded-Proto", "https")
 	request.Header.Set("Authorization", "Bearer proxy-secret")
@@ -100,6 +107,58 @@ func TestImage2ProxyConvertsBase64ToURL(t *testing.T) {
 	handler.ServeHTTP(fileResponse, fileRequest)
 	if fileResponse.Code != http.StatusOK || !bytes.Equal(fileResponse.Body.Bytes(), image) {
 		t.Fatalf("公开图片返回 %d，内容一致=%v", fileResponse.Code, bytes.Equal(fileResponse.Body.Bytes(), image))
+	}
+}
+
+func TestImage2MultipartBlocksConfiguredParams(t *testing.T) {
+	var input bytes.Buffer
+	inputWriter := multipart.NewWriter(&input)
+	for name, value := range map[string]string{
+		"prompt": "keep", "quality": "drop", "response_format": "url",
+	} {
+		if err := inputWriter.WriteField(name, value); err != nil {
+			t.Fatalf("写入字段 %s 失败: %v", name, err)
+		}
+	}
+	for name, content := range map[string]string{"image": "keep-image", "mask": "drop-mask"} {
+		part, err := inputWriter.CreateFormFile(name, name+".png")
+		if err != nil {
+			t.Fatalf("创建文件字段 %s 失败: %v", name, err)
+		}
+		if _, err := part.Write([]byte(content)); err != nil {
+			t.Fatalf("写入文件字段 %s 失败: %v", name, err)
+		}
+	}
+	if err := inputWriter.Close(); err != nil {
+		t.Fatalf("关闭 multipart 请求失败: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/images/edits", &input)
+	request.Header.Set("Content-Type", inputWriter.FormDataContentType())
+	body, contentType, responseFormat, proxyErr := prepareImage2Multipart(request, nil,
+		map[string]bool{"quality": true, "mask": true, "response_format": true})
+	if proxyErr != nil {
+		t.Fatalf("准备 multipart 请求失败: %#v", proxyErr)
+	}
+	defer body.Close()
+	raw, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatalf("读取 multipart 请求失败: %v", err)
+	}
+	_, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		t.Fatalf("解析 multipart Content-Type 失败: %v", err)
+	}
+	form, err := multipart.NewReader(bytes.NewReader(raw), params["boundary"]).ReadForm(1 << 20)
+	if err != nil {
+		t.Fatalf("解析转发 multipart 请求失败: %v", err)
+	}
+	defer form.RemoveAll()
+	if responseFormat != "url" || form.Value["prompt"][0] != "keep" || len(form.File["image"]) != 1 {
+		t.Fatalf("保留字段错误: response_format=%q values=%v files=%v", responseFormat, form.Value, form.File)
+	}
+	if len(form.Value["quality"]) != 0 || len(form.Value["response_format"]) != 0 || len(form.File["mask"]) != 0 {
+		t.Fatalf("屏蔽字段仍被转发: values=%v files=%v", form.Value, form.File)
 	}
 }
 
@@ -135,6 +194,9 @@ func TestNormalizeImage2URLsUsesRootUpstreamAndDomainOnly(t *testing.T) {
 	}
 	if _, err := normalizeImage2Domain("https://images.example.com"); err == nil {
 		t.Fatal("图片域名不应包含协议")
+	}
+	if got := normalizeImage2BlockedParams(" quality,mask, quality, ,response_format "); got != "quality,mask,response_format" {
+		t.Fatalf("参数屏蔽规范化 = %q", got)
 	}
 }
 

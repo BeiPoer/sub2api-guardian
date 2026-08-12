@@ -15,6 +15,7 @@ export interface Image2Upstream {
   base_url: string
   has_api_key: boolean
   model_mapping: string
+  blocked_params: string
 }
 
 export interface Image2Config {

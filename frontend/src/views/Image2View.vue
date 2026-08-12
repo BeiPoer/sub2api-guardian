@@ -58,13 +58,14 @@
         <span class="spinner text-primary-500" />
       </div>
       <div v-else-if="upstreams.length" class="overflow-x-auto">
-        <table class="table min-w-[980px]">
+        <table class="table min-w-[1080px]">
           <thead>
             <tr>
               <th>名称</th>
               <th>代理 Base URL</th>
               <th>上游 Base URL</th>
               <th>模型映射</th>
+              <th>参数屏蔽</th>
               <th class="w-24">操作</th>
             </tr>
           </thead>
@@ -94,6 +95,11 @@
               <td>
                 <Badge :tone="upstream.model_mapping ? 'purple' : 'gray'">
                   {{ upstream.model_mapping ? `${mappingCount(upstream)} 条` : '未配置' }}
+                </Badge>
+              </td>
+              <td>
+                <Badge :tone="upstream.blocked_params ? 'warning' : 'gray'">
+                  {{ upstream.blocked_params ? `${blockedParamCount(upstream)} 项` : '未配置' }}
                 </Badge>
               </td>
               <td>
@@ -147,6 +153,11 @@
           label="上游 API Key"
           type="password"
           :placeholder="editingID ? '已配置，留空则不修改' : '必填'"
+        />
+        <Field
+          v-model="upstreamForm.blockedParams"
+          label="参数屏蔽"
+          placeholder="key1,key2,key3"
         />
         <label class="block">
           <span class="input-label">模型映射</span>
@@ -207,7 +218,8 @@ const upstreamForm = reactive({
   slug: '',
   baseURL: '',
   apiKey: '',
-  modelMapping: ''
+  modelMapping: '',
+  blockedParams: ''
 })
 
 onMounted(load)
@@ -258,7 +270,8 @@ function resetUpstreamForm() {
     slug: '',
     baseURL: '',
     apiKey: '',
-    modelMapping: ''
+    modelMapping: '',
+    blockedParams: ''
   })
 }
 
@@ -275,7 +288,8 @@ function openEdit(upstream: Image2Upstream) {
     slug: upstream.slug,
     baseURL: upstream.base_url,
     apiKey: '',
-    modelMapping: upstream.model_mapping
+    modelMapping: upstream.model_mapping,
+    blockedParams: upstream.blocked_params
   })
   modalOpen.value = true
 }
@@ -302,7 +316,8 @@ async function saveUpstream() {
       slug: upstreamForm.slug.trim(),
       base_url: upstreamForm.baseURL.trim(),
       api_key: upstreamForm.apiKey.trim(),
-      model_mapping: upstreamForm.modelMapping
+      model_mapping: upstreamForm.modelMapping,
+      blocked_params: upstreamForm.blockedParams
     }
     if (editingID.value) {
       const updated = await api.updateImage2Upstream(editingID.value, payload)
@@ -352,5 +367,9 @@ async function copyProxyURL(upstream: Image2Upstream) {
 
 function mappingCount(upstream: Image2Upstream): number {
   return upstream.model_mapping.split('\n').filter(Boolean).length
+}
+
+function blockedParamCount(upstream: Image2Upstream): number {
+  return upstream.blocked_params.split(',').filter(Boolean).length
 }
 </script>
