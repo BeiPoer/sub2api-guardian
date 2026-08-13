@@ -165,7 +165,7 @@ func TestImage2MultipartBlocksConfiguredParams(t *testing.T) {
 func TestImage2Base64ResponseRequiresImageDomain(t *testing.T) {
 	encoded := base64.StdEncoding.EncodeToString([]byte("not-an-image"))
 	_, proxyErr := (&Server{}).convertImage2Response(context.Background(),
-		[]byte(`{"data":[{"b64_json":"`+encoded+`"}]}`), "", "url")
+		[]byte(`{"data":[{"b64_json":"`+encoded+`"}]}`), "", "url", true)
 	if proxyErr == nil || proxyErr.status != http.StatusServiceUnavailable || proxyErr.code != "image_domain_missing" {
 		t.Fatalf("Base64 响应未要求图片域名: %#v", proxyErr)
 	}
@@ -274,9 +274,11 @@ func TestImage2ProxyHandlesRequestedFormats(t *testing.T) {
 	if err := st.SaveImage2Settings(store.Image2Settings{ProxyAPIKey: "proxy-secret"}); err != nil {
 		t.Fatalf("保存 image2 设置失败: %v", err)
 	}
-	if _, err := st.CreateImage2Upstream(store.Image2Upstream{
+	created, err := st.CreateImage2Upstream(store.Image2Upstream{
 		Name: "主上游", Slug: "primary", BaseURL: upstreamServer.URL, APIKey: "upstream-secret",
-	}); err != nil {
+		ProxyImageURLs: true,
+	})
+	if err != nil {
 		t.Fatalf("创建 image2 上游失败: %v", err)
 	}
 	client := upstream.New(upstreamServer.URL, "unused", 10*time.Second)
@@ -343,6 +345,25 @@ func TestImage2ProxyHandlesRequestedFormats(t *testing.T) {
 	server.Handler().ServeHTTP(tamperedResponse, tamperedRequest)
 	if tamperedResponse.Code != http.StatusNotFound || proxyHits.Load() != 1 {
 		t.Fatalf("篡改 token 返回 %d，图片源请求次数=%d", tamperedResponse.Code, proxyHits.Load())
+	}
+
+	created.ProxyImageURLs = false
+	if _, err := st.UpdateImage2Upstream(created); err != nil {
+		t.Fatalf("关闭 URL 转换失败: %v", err)
+	}
+	response = call(`{"response_format":"url"}`)
+	var passthrough struct {
+		Data []map[string]any `json:"data"`
+	}
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &passthrough) != nil ||
+		len(passthrough.Data) != 1 {
+		t.Fatalf("URL 透传响应无效: %d %s", response.Code, response.Body.String())
+	}
+	if got, _ := passthrough.Data[0]["url"].(string); got != imageServer.URL+"/source.webp?signature=secret" {
+		t.Fatalf("关闭转换后的图片 URL = %q", got)
+	}
+	if proxyHits.Load() != 1 {
+		t.Fatalf("URL 透传不应访问图片源，请求次数=%d", proxyHits.Load())
 	}
 
 	response = call(`{"model":"already-base64","response_format":"b64_json"}`)

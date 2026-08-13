@@ -23,14 +23,15 @@ func DefaultImage2Settings() Image2Settings {
 }
 
 type Image2Upstream struct {
-	ID            int64  `json:"id"`
-	Name          string `json:"name"`
-	Slug          string `json:"slug"`
-	BaseURL       string `json:"base_url"`
-	APIKey        string `json:"-"`
-	HasAPIKey     bool   `json:"has_api_key"`
-	ModelMapping  string `json:"model_mapping"`
-	BlockedParams string `json:"blocked_params"`
+	ID             int64  `json:"id"`
+	Name           string `json:"name"`
+	Slug           string `json:"slug"`
+	BaseURL        string `json:"base_url"`
+	APIKey         string `json:"-"`
+	HasAPIKey      bool   `json:"has_api_key"`
+	ModelMapping   string `json:"model_mapping"`
+	BlockedParams  string `json:"blocked_params"`
+	ProxyImageURLs bool   `json:"proxy_image_urls"`
 }
 
 func (s *Store) Image2Settings() (Image2Settings, error) {
@@ -54,7 +55,8 @@ func (s *Store) SaveImage2Settings(settings Image2Settings) error {
 }
 
 func (s *Store) Image2Upstreams() ([]Image2Upstream, error) {
-	rows, err := s.db.Query(`SELECT id, name, slug, base_url, api_key, model_mapping, blocked_params
+	rows, err := s.db.Query(`SELECT id, name, slug, base_url, api_key, model_mapping, blocked_params,
+		proxy_image_urls
 		FROM image2_upstreams ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -74,12 +76,12 @@ func (s *Store) Image2Upstreams() ([]Image2Upstream, error) {
 
 func (s *Store) Image2UpstreamByID(id int64) (Image2Upstream, error) {
 	return scanImage2Upstream(s.db.QueryRow(`SELECT id, name, slug, base_url, api_key,
-		model_mapping, blocked_params FROM image2_upstreams WHERE id = ?`, id))
+		model_mapping, blocked_params, proxy_image_urls FROM image2_upstreams WHERE id = ?`, id))
 }
 
 func (s *Store) Image2UpstreamBySlug(slug string) (Image2Upstream, error) {
 	return scanImage2Upstream(s.db.QueryRow(`SELECT id, name, slug, base_url, api_key,
-		model_mapping, blocked_params FROM image2_upstreams WHERE slug = ?`, slug))
+		model_mapping, blocked_params, proxy_image_urls FROM image2_upstreams WHERE slug = ?`, slug))
 }
 
 func (s *Store) CreateImage2Upstream(upstream Image2Upstream) (Image2Upstream, error) {
@@ -94,9 +96,10 @@ func (s *Store) CreateImage2Upstream(upstream Image2Upstream) (Image2Upstream, e
 		return Image2Upstream{}, ErrImage2SlugExists
 	}
 	result, err := s.db.Exec(`INSERT INTO image2_upstreams(
-		name, slug, base_url, api_key, model_mapping, blocked_params) VALUES(?, ?, ?, ?, ?, ?)`,
+		name, slug, base_url, api_key, model_mapping, blocked_params, proxy_image_urls)
+		VALUES(?, ?, ?, ?, ?, ?, ?)`,
 		upstream.Name, upstream.Slug, upstream.BaseURL, upstream.APIKey, upstream.ModelMapping,
-		upstream.BlockedParams)
+		upstream.BlockedParams, upstream.ProxyImageURLs)
 	if err != nil {
 		return Image2Upstream{}, err
 	}
@@ -117,8 +120,9 @@ func (s *Store) UpdateImage2Upstream(upstream Image2Upstream) (Image2Upstream, e
 		return Image2Upstream{}, ErrImage2SlugExists
 	}
 	result, err := s.db.Exec(`UPDATE image2_upstreams SET name = ?, slug = ?, base_url = ?,
-		api_key = ?, model_mapping = ?, blocked_params = ? WHERE id = ?`, upstream.Name, upstream.Slug,
-		upstream.BaseURL, upstream.APIKey, upstream.ModelMapping, upstream.BlockedParams, upstream.ID)
+		api_key = ?, model_mapping = ?, blocked_params = ?, proxy_image_urls = ? WHERE id = ?`,
+		upstream.Name, upstream.Slug, upstream.BaseURL, upstream.APIKey, upstream.ModelMapping,
+		upstream.BlockedParams, upstream.ProxyImageURLs, upstream.ID)
 	if err != nil {
 		return Image2Upstream{}, err
 	}
@@ -167,7 +171,7 @@ type image2Scanner interface {
 func scanImage2Upstream(row image2Scanner) (Image2Upstream, error) {
 	var upstream Image2Upstream
 	err := row.Scan(&upstream.ID, &upstream.Name, &upstream.Slug, &upstream.BaseURL,
-		&upstream.APIKey, &upstream.ModelMapping, &upstream.BlockedParams)
+		&upstream.APIKey, &upstream.ModelMapping, &upstream.BlockedParams, &upstream.ProxyImageURLs)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Image2Upstream{}, ErrImage2UpstreamNotFound
 	}

@@ -42,12 +42,13 @@ const (
 )
 
 type image2UpstreamInput struct {
-	Name          string `json:"name"`
-	Slug          string `json:"slug"`
-	BaseURL       string `json:"base_url"`
-	APIKey        string `json:"api_key"`
-	ModelMapping  string `json:"model_mapping"`
-	BlockedParams string `json:"blocked_params"`
+	Name           string `json:"name"`
+	Slug           string `json:"slug"`
+	BaseURL        string `json:"base_url"`
+	APIKey         string `json:"api_key"`
+	ModelMapping   string `json:"model_mapping"`
+	BlockedParams  string `json:"blocked_params"`
+	ProxyImageURLs *bool  `json:"proxy_image_urls"`
 }
 
 func (s *Server) getImage2(w http.ResponseWriter, _ *http.Request) {
@@ -116,7 +117,7 @@ func (s *Server) createImage2Upstream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "请求内容不是有效的 JSON"})
 		return
 	}
-	upstream, err := normalizeImage2Upstream(payload, 0, "")
+	upstream, err := normalizeImage2Upstream(payload, 0, "", true)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
@@ -145,7 +146,7 @@ func (s *Server) updateImage2Upstream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "请求内容不是有效的 JSON"})
 		return
 	}
-	upstream, err := normalizeImage2Upstream(payload, id, current.APIKey)
+	upstream, err := normalizeImage2Upstream(payload, id, current.APIKey, current.ProxyImageURLs)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
@@ -179,7 +180,8 @@ func image2SettingsView(settings store.Image2Settings) map[string]any {
 	}
 }
 
-func normalizeImage2Upstream(input image2UpstreamInput, id int64, currentKey string) (store.Image2Upstream, error) {
+func normalizeImage2Upstream(input image2UpstreamInput, id int64, currentKey string,
+	currentProxyImageURLs bool) (store.Image2Upstream, error) {
 	name := strings.TrimSpace(input.Name)
 	if name == "" {
 		return store.Image2Upstream{}, errors.New("显示名称不能为空")
@@ -206,9 +208,14 @@ func normalizeImage2Upstream(input image2UpstreamInput, id int64, currentKey str
 	if err != nil {
 		return store.Image2Upstream{}, err
 	}
+	proxyImageURLs := currentProxyImageURLs
+	if input.ProxyImageURLs != nil {
+		proxyImageURLs = *input.ProxyImageURLs
+	}
 	return store.Image2Upstream{
 		ID: id, Name: name, Slug: slug, BaseURL: baseURL, APIKey: apiKey,
 		ModelMapping: mapping, BlockedParams: normalizeImage2BlockedParams(input.BlockedParams),
+		ProxyImageURLs: proxyImageURLs,
 	}, nil
 }
 
@@ -435,7 +442,8 @@ func (s *Server) proxyImage2(w http.ResponseWriter, r *http.Request, operation s
 		return
 	}
 	imageBaseURL := image2PublicBaseURL(r, settings.ImageDomain)
-	converted, convertErr := s.convertImage2Response(r.Context(), raw, imageBaseURL, responseFormat)
+	converted, convertErr := s.convertImage2Response(r.Context(), raw, imageBaseURL, responseFormat,
+		upstream.ProxyImageURLs)
 	if convertErr != nil {
 		writeImage2ProxyError(w, convertErr)
 		return
@@ -631,7 +639,8 @@ func copyImage2ResponseHeaders(target, source http.Header) {
 	}
 }
 
-func (s *Server) convertImage2Response(ctx context.Context, raw []byte, imageBaseURL, responseFormat string) ([]byte, *image2ProxyError) {
+func (s *Server) convertImage2Response(ctx context.Context, raw []byte, imageBaseURL, responseFormat string,
+	proxyImageURLs bool) ([]byte, *image2ProxyError) {
 	var payload map[string]any
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return nil, &image2ProxyError{
@@ -684,6 +693,9 @@ func (s *Server) convertImage2Response(ctx context.Context, raw []byte, imageBas
 			if !ok || imageURL == "" {
 				rollback()
 				return nil, image2InvalidBase64()
+			}
+			if !proxyImageURLs {
+				continue
 			}
 			proxyURL, err := s.image2ProxyURL(imageBaseURL, imageURL)
 			if err != nil {

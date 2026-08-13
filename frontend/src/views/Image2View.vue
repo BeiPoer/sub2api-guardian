@@ -159,6 +159,7 @@
           label="参数屏蔽"
           placeholder="key1,key2,key3"
         />
+        <SwitchRow v-model="upstreamForm.proxyImageURLs" label="转换上游图片 URL" />
         <label class="block">
           <span class="input-label">模型映射</span>
           <textarea
@@ -193,6 +194,7 @@ import EmptyState from '@/components/EmptyState.vue'
 import Field from '@/components/Field.vue'
 import Icon from '@/components/Icon.vue'
 import Modal from '@/components/Modal.vue'
+import SwitchRow from '@/components/SwitchRow.vue'
 import { api } from '@/lib/api'
 import type { Image2Upstream } from '@/lib/types'
 import { useUIStore } from '@/stores/ui'
@@ -219,7 +221,8 @@ const upstreamForm = reactive({
   baseURL: '',
   apiKey: '',
   modelMapping: '',
-  blockedParams: ''
+  blockedParams: '',
+  proxyImageURLs: true
 })
 
 onMounted(load)
@@ -271,7 +274,8 @@ function resetUpstreamForm() {
     baseURL: '',
     apiKey: '',
     modelMapping: '',
-    blockedParams: ''
+    blockedParams: '',
+    proxyImageURLs: true
   })
 }
 
@@ -289,7 +293,8 @@ function openEdit(upstream: Image2Upstream) {
     baseURL: upstream.base_url,
     apiKey: '',
     modelMapping: upstream.model_mapping,
-    blockedParams: upstream.blocked_params
+    blockedParams: upstream.blocked_params,
+    proxyImageURLs: upstream.proxy_image_urls
   })
   modalOpen.value = true
 }
@@ -317,7 +322,8 @@ async function saveUpstream() {
       base_url: upstreamForm.baseURL.trim(),
       api_key: upstreamForm.apiKey.trim(),
       model_mapping: upstreamForm.modelMapping,
-      blocked_params: upstreamForm.blockedParams
+      blocked_params: upstreamForm.blockedParams,
+      proxy_image_urls: upstreamForm.proxyImageURLs
     }
     if (editingID.value) {
       const updated = await api.updateImage2Upstream(editingID.value, payload)
