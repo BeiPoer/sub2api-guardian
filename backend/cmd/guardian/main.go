@@ -56,6 +56,7 @@ func main() {
 	defer eng.Stop()
 
 	server := api.NewServer(db, client, eng, web.Handler())
+	server.StartBackgroundJobs()
 	defer server.Close()
 
 	httpServer := &http.Server{

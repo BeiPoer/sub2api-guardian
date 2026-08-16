@@ -24,6 +24,116 @@ export interface Image2Config {
   upstreams: Image2Upstream[]
 }
 
+export type UpstreamChannelType = 'sub2api' | 'newapi' | 'other'
+export type UpstreamChannelStatus = 'active' | 'error' | 'syncing'
+export type UpstreamTaskType =
+  | 'low_balance'
+  | 'burn_rate'
+  | 'group_added'
+  | 'group_removed'
+  | 'group_ratio_changed'
+
+export interface UpstreamChannel {
+  id: number
+  name: string
+  type: UpstreamChannelType
+  base_url: string
+  username: string
+  password: string
+  newapi_access_token: string
+  newapi_user_id: string
+  ignored: boolean
+  status: UpstreamChannelStatus
+  last_sync_at: string
+  last_error: string
+  created_at: string
+  updated_at: string
+  latest_balance?: number | null
+  balance_unit?: string
+  token_count?: number
+}
+
+export interface UpstreamBalanceSnapshot {
+  id: number
+  channel_id: number
+  balance: number
+  used_balance?: number | null
+  unit: string
+  raw?: unknown
+  captured_at: string
+}
+
+export interface UpstreamOverview {
+  channel: UpstreamChannel
+  profile: unknown
+  groups: unknown
+  tokens: unknown
+  subscriptions: unknown
+  latest_snapshot?: UpstreamBalanceSnapshot
+  history: UpstreamBalanceSnapshot[]
+}
+
+export interface UpstreamAutomationTask {
+  id: number
+  channel_id: number
+  type: UpstreamTaskType
+  enabled: boolean
+  interval_minutes: number
+  threshold: number
+  lookback_minutes: number
+  cooldown_minutes: number
+  recipients: string[]
+  last_run_at: string
+  last_alert_at: string
+  created_at: string
+  updated_at: string
+}
+
+export interface UpstreamBalanceLog {
+  id: number
+  channel_id: number
+  status: 'success' | 'error'
+  balance?: number | null
+  used_balance?: number | null
+  unit: string
+  message: string
+  error: string
+  raw?: unknown
+  created_at: string
+}
+
+export interface UpstreamAlert {
+  id: number
+  channel_id: number
+  channel_name?: string
+  task_id?: number
+  type: UpstreamTaskType
+  message: string
+  snapshot?: unknown
+  email_sent: boolean
+  email_error: string
+  created_at: string
+}
+
+export interface UpstreamEmailSettings {
+  smtp_host: string
+  smtp_port: number
+  smtp_secure: boolean
+  smtp_user: string
+  smtp_from: string
+  subject_prefix: string
+  default_recipients: string[]
+  default_interval_minutes: number
+  has_smtp_password: boolean
+}
+
+export interface UpstreamTokenModels {
+  token_id: number
+  token_name: string
+  source: 'token_limits' | 'upstream_models'
+  models: string[]
+}
+
 export type ChannelHealth =
   | 'unknown'
   | 'healthy'

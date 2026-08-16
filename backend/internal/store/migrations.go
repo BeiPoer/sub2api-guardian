@@ -23,6 +23,8 @@ const (
 var schemaStatements = []string{
 	`PRAGMA journal_mode=WAL`,
 	`PRAGMA busy_timeout=5000`,
+	// upstream_channels 的外键只作用于新增表；开启外键不会改变现有缓存表的行为。
+	`PRAGMA foreign_keys=ON`,
 	`CREATE TABLE IF NOT EXISTS meta (
 		key TEXT PRIMARY KEY,
 		value TEXT NOT NULL,
@@ -131,6 +133,97 @@ var schemaStatements = []string{
 		blocked_params TEXT NOT NULL DEFAULT '',
 		proxy_image_urls INTEGER NOT NULL DEFAULT 1
 	)`,
+	// 上游渠道管理使用独立表，绝不复用 Guardian 的 channels 缓存。
+	`CREATE TABLE IF NOT EXISTS upstream_channels (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		name TEXT NOT NULL,
+		type TEXT NOT NULL CHECK (type IN ('sub2api', 'newapi', 'other')),
+		base_url TEXT NOT NULL,
+		username TEXT NOT NULL DEFAULT '',
+		password TEXT NOT NULL DEFAULT '',
+		newapi_access_token TEXT NOT NULL DEFAULT '',
+		newapi_user_id TEXT NOT NULL DEFAULT '',
+		sub2api_access_token TEXT NOT NULL DEFAULT '',
+		sub2api_refresh_token TEXT NOT NULL DEFAULT '',
+		sub2api_token_expires_at TEXT,
+		ignored INTEGER NOT NULL DEFAULT 0 CHECK (ignored IN (0, 1)),
+		status TEXT NOT NULL DEFAULT 'syncing' CHECK (status IN ('active', 'error', 'syncing')),
+		last_sync_at TEXT,
+		last_error TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	)`,
+	`CREATE TABLE IF NOT EXISTS upstream_channel_cache (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		channel_id INTEGER NOT NULL REFERENCES upstream_channels(id) ON DELETE CASCADE,
+		cache_key TEXT NOT NULL CHECK (cache_key IN ('profile', 'groups', 'tokens', 'subscriptions')),
+		raw_json TEXT NOT NULL,
+		normalized_json TEXT NOT NULL,
+		synced_at TEXT NOT NULL,
+		UNIQUE(channel_id, cache_key)
+	)`,
+	`CREATE TABLE IF NOT EXISTS upstream_balance_snapshots (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		channel_id INTEGER NOT NULL REFERENCES upstream_channels(id) ON DELETE CASCADE,
+		balance REAL NOT NULL,
+		used_balance REAL,
+		unit TEXT NOT NULL,
+		raw_json TEXT NOT NULL DEFAULT '',
+		captured_at TEXT NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_upstream_balance_snapshots_channel_time
+		ON upstream_balance_snapshots(channel_id, captured_at DESC)`,
+	`CREATE TABLE IF NOT EXISTS upstream_balance_query_logs (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		channel_id INTEGER NOT NULL REFERENCES upstream_channels(id) ON DELETE CASCADE,
+		status TEXT NOT NULL CHECK (status IN ('success', 'error')),
+		balance REAL,
+		used_balance REAL,
+		unit TEXT,
+		message TEXT NOT NULL,
+		error TEXT NOT NULL DEFAULT '',
+		raw_json TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_upstream_balance_logs_channel_time
+		ON upstream_balance_query_logs(channel_id, created_at DESC)`,
+	`CREATE TABLE IF NOT EXISTS upstream_automation_tasks (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		channel_id INTEGER NOT NULL REFERENCES upstream_channels(id) ON DELETE CASCADE,
+		type TEXT NOT NULL CHECK (type IN ('low_balance', 'burn_rate', 'group_added', 'group_removed', 'group_ratio_changed')),
+		enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+		interval_minutes INTEGER NOT NULL,
+		threshold REAL NOT NULL DEFAULT 0,
+		lookback_minutes INTEGER NOT NULL DEFAULT 60,
+		cooldown_minutes INTEGER NOT NULL,
+		recipients_json TEXT NOT NULL DEFAULT '[]',
+		last_run_at TEXT,
+		last_alert_at TEXT,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_upstream_automation_tasks_channel
+		ON upstream_automation_tasks(channel_id, id DESC)`,
+	`CREATE TABLE IF NOT EXISTS upstream_automation_task_state (
+		task_id INTEGER NOT NULL REFERENCES upstream_automation_tasks(id) ON DELETE CASCADE,
+		state_key TEXT NOT NULL,
+		value_json TEXT NOT NULL,
+		updated_at TEXT NOT NULL,
+		PRIMARY KEY(task_id, state_key)
+	)`,
+	`CREATE TABLE IF NOT EXISTS upstream_alert_events (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		channel_id INTEGER NOT NULL REFERENCES upstream_channels(id) ON DELETE CASCADE,
+		task_id INTEGER REFERENCES upstream_automation_tasks(id) ON DELETE SET NULL,
+		type TEXT NOT NULL,
+		message TEXT NOT NULL,
+		snapshot_json TEXT NOT NULL DEFAULT '',
+		email_sent INTEGER NOT NULL DEFAULT 0 CHECK (email_sent IN (0, 1)),
+		email_error TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_upstream_alert_events_channel_time
+		ON upstream_alert_events(channel_id, created_at DESC)`,
 }
 
 // migrate 建表并在必要时从 0.1 版原型库升级。

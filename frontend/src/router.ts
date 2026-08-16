@@ -6,6 +6,11 @@ const router = createRouter({
     { path: '/', name: 'overview', component: () => import('@/views/OverviewView.vue') },
     { path: '/groups', name: 'groups', component: () => import('@/views/GroupsView.vue') },
     { path: '/channels', name: 'channels', component: () => import('@/views/ChannelsView.vue') },
+    {
+      path: '/upstream-channels',
+      name: 'upstream-channels',
+      component: () => import('@/views/UpstreamChannelsView.vue')
+    },
     { path: '/policy', name: 'policy', component: () => import('@/views/PolicyView.vue') },
     { path: '/events', name: 'events', component: () => import('@/views/EventsView.vue') },
     {

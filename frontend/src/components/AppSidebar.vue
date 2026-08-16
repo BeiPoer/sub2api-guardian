@@ -141,6 +141,7 @@ const monitorNav = [
 ]
 
 const configNav = [
+  { to: '/upstream-channels', label: '上游渠道', icon: 'server' as const },
   { to: '/policy', label: '策略配置', icon: 'cog' as const },
   { to: '/connection', label: '连接设置', icon: 'link' as const }
 ]

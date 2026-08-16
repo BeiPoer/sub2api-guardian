@@ -8,7 +8,14 @@ import type {
   Image2Settings,
   Image2Upstream,
   Overview,
-  Policy
+  Policy,
+  UpstreamAlert,
+  UpstreamAutomationTask,
+  UpstreamBalanceLog,
+  UpstreamChannel,
+  UpstreamEmailSettings,
+  UpstreamOverview,
+  UpstreamTokenModels
 } from './types'
 
 export interface EventPage {
@@ -190,5 +197,76 @@ export const api = {
   updateImage2Upstream: (id: number, payload: Record<string, unknown>) =>
     put<Image2Upstream>(`/api/image2/upstreams/${id}`, payload),
   deleteImage2Upstream: (id: number) =>
-    request<{ ok: boolean }>(`/api/image2/upstreams/${id}`, { method: 'DELETE' })
+    request<{ ok: boolean }>(`/api/image2/upstreams/${id}`, { method: 'DELETE' }),
+
+  upstreamChannels: () =>
+    request<{ items: UpstreamChannel[]; total: number; active: number; ignored: number }>(
+      '/api/upstream-channels'
+    ),
+  createUpstreamChannel: (payload: Record<string, unknown>) =>
+    post<UpstreamChannel>('/api/upstream-channels', payload, LONG_TIMEOUT_MS),
+  updateUpstreamChannel: (id: number, payload: Record<string, unknown>) =>
+    put<UpstreamChannel>(`/api/upstream-channels/${id}`, payload, LONG_TIMEOUT_MS),
+  deleteUpstreamChannel: (id: number) =>
+    request<{ ok: boolean }>(`/api/upstream-channels/${id}`, { method: 'DELETE' }),
+  syncUpstreamChannel: (id: number) =>
+    post<{ ok: boolean; channel: UpstreamChannel }>(
+      `/api/upstream-channels/${id}/sync`,
+      undefined,
+      LONG_TIMEOUT_MS
+    ),
+  syncAllUpstreamChannels: () =>
+    post<{ ok: boolean; synced: number; failed: number }>(
+      '/api/upstream-channels/sync',
+      undefined,
+      LONG_TIMEOUT_MS
+    ),
+  upstreamOverview: (id: number) =>
+    request<UpstreamOverview>(`/api/upstream-channels/${id}/overview`),
+  upstreamTokenModels: (channelID: number, tokenID: number) =>
+    request<UpstreamTokenModels>(
+      `/api/upstream-channels/${channelID}/tokens/${tokenID}/models`,
+      undefined,
+      LONG_TIMEOUT_MS
+    ),
+  updateUpstreamTokenGroup: (channelID: number, tokenID: number, payload: unknown) =>
+    put<{ token: unknown; tokens: unknown[] }>(
+      `/api/upstream-channels/${channelID}/tokens/${tokenID}/group`,
+      payload,
+      LONG_TIMEOUT_MS
+    ),
+  upstreamTasks: (channelID: number) =>
+    request<{ items: UpstreamAutomationTask[] }>(
+      `/api/upstream-channels/${channelID}/tasks`
+    ),
+  createUpstreamTask: (channelID: number, payload: Record<string, unknown>) =>
+    post<UpstreamAutomationTask>(`/api/upstream-channels/${channelID}/tasks`, payload),
+  updateUpstreamTask: (channelID: number, taskID: number, payload: Record<string, unknown>) =>
+    put<UpstreamAutomationTask>(
+      `/api/upstream-channels/${channelID}/tasks/${taskID}`,
+      payload
+    ),
+  deleteUpstreamTask: (channelID: number, taskID: number) =>
+    request<{ ok: boolean }>(
+      `/api/upstream-channels/${channelID}/tasks/${taskID}`,
+      { method: 'DELETE' }
+    ),
+  upstreamBalanceLogs: (channelID: number, page = 1) =>
+    request<{
+      items: UpstreamBalanceLog[]
+      total: number
+      page: number
+      page_size: number
+      pages: number
+    }>(`/api/upstream-channels/${channelID}/balance-logs?page=${page}`),
+  upstreamAlerts: (channelID: number) =>
+    request<{ items: UpstreamAlert[] }>(`/api/upstream-channels/${channelID}/alerts`),
+  upstreamEmailSettings: () =>
+    request<UpstreamEmailSettings>('/api/upstream-email-settings'),
+  saveUpstreamEmailSettings: (payload: Record<string, unknown>) =>
+    put<UpstreamEmailSettings>('/api/upstream-email-settings', payload),
+  testUpstreamEmailSettings: (recipients: string[]) =>
+    post<{ ok: boolean; message_id: string }>('/api/upstream-email-settings/test', {
+      recipients
+    })
 }

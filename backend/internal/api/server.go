@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"sub2api-guardian/backend/internal/channelmanager"
 	"sub2api-guardian/backend/internal/engine"
 	"sub2api-guardian/backend/internal/store"
 	"sub2api-guardian/backend/internal/upstream"
@@ -22,11 +23,12 @@ import (
 
 // Server 聚合 HTTP 处理所需的依赖。
 type Server struct {
-	store  *store.Store
-	client *upstream.Client
-	engine *engine.Engine
-	hub    *hub
-	assets http.Handler
+	store            *store.Store
+	client           *upstream.Client
+	engine           *engine.Engine
+	hub              *hub
+	assets           http.Handler
+	upstreamChannels *channelmanager.Manager
 
 	// lastRenew 给会话滑动续期做限流，避免每个请求都写一次库。
 	renewMu   sync.Mutex
@@ -59,14 +61,15 @@ func NewServer(st *store.Store, client *upstream.Client, eng *engine.Engine, ass
 	image2ProxyTransport.DialContext = (&net.Dialer{Timeout: 10 * time.Second}).DialContext
 	image2Dir := filepath.Join(st.DataDir(), "image2", "images")
 	s := &Server{
-		store:     st,
-		client:    client,
-		engine:    eng,
-		hub:       newHub(),
-		assets:    assets,
-		lastRenew: make(map[string]time.Time, 64),
-		authRates: make(map[string]authRateEntry, 64),
-		image2Dir: image2Dir,
+		store:            st,
+		client:           client,
+		engine:           eng,
+		hub:              newHub(),
+		assets:           assets,
+		lastRenew:        make(map[string]time.Time, 64),
+		authRates:        make(map[string]authRateEntry, 64),
+		upstreamChannels: channelmanager.New(st),
+		image2Dir:        image2Dir,
 		image2Client: &http.Client{
 			Transport:     image2Transport,
 			CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
@@ -101,9 +104,15 @@ func NewServer(st *store.Store, client *upstream.Client, eng *engine.Engine, ass
 	return s
 }
 
+// StartBackgroundJobs 只由主程序显式调用，避免 API 测试构造时启动定时任务。
+func (s *Server) StartBackgroundJobs() {
+	s.upstreamChannels.Start()
+}
+
 // Close 释放 SSE 资源。
 func (s *Server) Close() {
 	s.closeOnce.Do(func() {
+		s.upstreamChannels.Stop()
 		close(s.image2Stop)
 		<-s.image2Done
 		s.hub.close()
@@ -117,41 +126,67 @@ func (s *Server) Close() {
 // 新增接口时往表里加一行，漏加会被测试抓住。
 func (s *Server) protectedRoutes() map[string]http.HandlerFunc {
 	return map[string]http.HandlerFunc{
-		"GET /api/overview":                 s.overview,
-		"GET /api/groups":                   s.listGroups,
-		"PUT /api/groups/{id}/policy":       s.saveGroupPolicy,
-		"DELETE /api/groups/{id}/policy":    s.deleteGroupPolicy,
-		"POST /api/groups/{id}/exclude":     s.excludeGroup,
-		"GET /api/channels":                 s.listChannels,
-		"GET /api/channels/{id}":            s.getChannel,
-		"PUT /api/channels/{id}":            s.updateChannel,
-		"POST /api/channels/{id}/probe":     s.probeChannel,
-		"POST /api/channels/{id}/fuse":      s.fuseChannel,
-		"POST /api/channels/{id}/recover":   s.recoverChannel,
-		"POST /api/channels/{id}/exclude":   s.excludeChannel,
-		"POST /api/channels/{id}/pause":     s.pauseChannel,
-		"GET /api/channels/{id}/models":     s.channelModels,
-		"PUT /api/channels/{id}/test-model": s.setChannelTestModel,
-		"GET /api/policy":                   s.getPolicy,
-		"PUT /api/policy":                   s.savePolicy,
-		"GET /api/connection":               s.getConnection,
-		"PUT /api/connection":               s.saveConnection,
-		"POST /api/sync":                    s.sync,
-		"POST /api/run-once":                s.runOnce,
-		"POST /api/cancel":                  s.cancelRun,
-		"POST /api/resume":                  s.resumeRun,
-		"POST /api/restore-all":             s.restoreAll,
-		"GET /api/events":                   s.listEvents,
-		"GET /api/actions":                  s.listActions,
-		"GET /api/image2":                   s.getImage2,
-		"PUT /api/image2/settings":          s.saveImage2Settings,
-		"POST /api/image2/upstreams":        s.createImage2Upstream,
-		"PUT /api/image2/upstreams/{id}":    s.updateImage2Upstream,
-		"DELETE /api/image2/upstreams/{id}": s.deleteImage2Upstream,
-		"GET /api/stream":                   s.stream,
-		"GET /api/me":                       s.me,
-		"PUT /api/account":                  s.updateAccount,
-		"POST /api/logout":                  s.logout,
+		"GET /api/overview":                                       s.overview,
+		"GET /api/groups":                                         s.listGroups,
+		"PUT /api/groups/{id}/policy":                             s.saveGroupPolicy,
+		"DELETE /api/groups/{id}/policy":                          s.deleteGroupPolicy,
+		"POST /api/groups/{id}/exclude":                           s.excludeGroup,
+		"GET /api/channels":                                       s.listChannels,
+		"GET /api/channels/{id}":                                  s.getChannel,
+		"PUT /api/channels/{id}":                                  s.updateChannel,
+		"POST /api/channels/{id}/probe":                           s.probeChannel,
+		"POST /api/channels/{id}/fuse":                            s.fuseChannel,
+		"POST /api/channels/{id}/recover":                         s.recoverChannel,
+		"POST /api/channels/{id}/exclude":                         s.excludeChannel,
+		"POST /api/channels/{id}/pause":                           s.pauseChannel,
+		"GET /api/channels/{id}/models":                           s.channelModels,
+		"PUT /api/channels/{id}/test-model":                       s.setChannelTestModel,
+		"GET /api/policy":                                         s.getPolicy,
+		"PUT /api/policy":                                         s.savePolicy,
+		"GET /api/connection":                                     s.getConnection,
+		"PUT /api/connection":                                     s.saveConnection,
+		"POST /api/sync":                                          s.sync,
+		"POST /api/run-once":                                      s.runOnce,
+		"POST /api/cancel":                                        s.cancelRun,
+		"POST /api/resume":                                        s.resumeRun,
+		"POST /api/restore-all":                                   s.restoreAll,
+		"GET /api/events":                                         s.listEvents,
+		"GET /api/actions":                                        s.listActions,
+		"GET /api/image2":                                         s.getImage2,
+		"PUT /api/image2/settings":                                s.saveImage2Settings,
+		"POST /api/image2/upstreams":                              s.createImage2Upstream,
+		"PUT /api/image2/upstreams/{id}":                          s.updateImage2Upstream,
+		"DELETE /api/image2/upstreams/{id}":                       s.deleteImage2Upstream,
+		"GET /api/upstream-channels":                              s.upstreamNoStore(s.listUpstreamChannels),
+		"POST /api/upstream-channels":                             s.upstreamNoStore(s.createUpstreamChannel),
+		"POST /api/upstream-channels/sync":                        s.upstreamNoStore(s.syncAllUpstreamChannels),
+		"GET /api/upstream-channels/{id}":                         s.upstreamNoStore(s.getUpstreamChannel),
+		"PUT /api/upstream-channels/{id}":                         s.upstreamNoStore(s.updateUpstreamChannel),
+		"DELETE /api/upstream-channels/{id}":                      s.upstreamNoStore(s.deleteUpstreamChannel),
+		"POST /api/upstream-channels/{id}/sync":                   s.upstreamNoStore(s.syncUpstreamChannel),
+		"GET /api/upstream-channels/{id}/login":                   s.upstreamNoStore(s.loginUpstreamChannel),
+		"GET /api/upstream-channels/{id}/upstream-login":          s.upstreamNoStore(s.loginUpstreamChannel),
+		"GET /api/upstream-channels/{id}/overview":                s.upstreamNoStore(s.upstreamChannelOverview),
+		"GET /api/upstream-channels/{id}/groups":                  s.upstreamNoStore(s.upstreamChannelGroups),
+		"GET /api/upstream-channels/{id}/tokens":                  s.upstreamNoStore(s.upstreamChannelTokens),
+		"GET /api/upstream-channels/{id}/subscriptions":           s.upstreamNoStore(s.upstreamChannelSubscriptions),
+		"GET /api/upstream-channels/{id}/balance-history":         s.upstreamNoStore(s.upstreamBalanceHistory),
+		"GET /api/upstream-channels/{id}/balance-query-logs":      s.upstreamNoStore(s.upstreamBalanceLogs),
+		"GET /api/upstream-channels/{id}/tokens/{tokenId}/models": s.upstreamNoStore(s.upstreamTokenModels),
+		"PUT /api/upstream-channels/{id}/tokens/{tokenId}/group":  s.upstreamNoStore(s.updateUpstreamTokenGroup),
+		"GET /api/upstream-channels/{id}/tasks":                   s.upstreamNoStore(s.listUpstreamTasks),
+		"POST /api/upstream-channels/{id}/tasks":                  s.upstreamNoStore(s.createUpstreamTask),
+		"PUT /api/upstream-channels/{id}/tasks/{taskId}":          s.upstreamNoStore(s.updateUpstreamTask),
+		"DELETE /api/upstream-channels/{id}/tasks/{taskId}":       s.upstreamNoStore(s.deleteUpstreamTask),
+		"GET /api/upstream-channels/{id}/balance-logs":            s.upstreamNoStore(s.upstreamBalanceLogs),
+		"GET /api/upstream-channels/{id}/alerts":                  s.upstreamNoStore(s.upstreamAlerts),
+		"GET /api/upstream-email-settings":                        s.upstreamNoStore(s.getUpstreamEmailSettings),
+		"PUT /api/upstream-email-settings":                        s.upstreamNoStore(s.saveUpstreamEmailSettings),
+		"POST /api/upstream-email-settings/test":                  s.upstreamNoStore(s.testUpstreamEmailSettings),
+		"GET /api/stream":                                         s.stream,
+		"GET /api/me":                                             s.me,
+		"PUT /api/account":                                        s.updateAccount,
+		"POST /api/logout":                                        s.logout,
 	}
 }
 

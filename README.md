@@ -31,6 +31,7 @@ Guardian 把这件事自动化：**你只需为每个分组选择「价格优先
 | 调权 | 按策略把权重预算分配到组内渠道，落成 `priority` 与 `load_factor`，带防抖与冷却 |
 | 回池 | 熔断渠道低频探测，健康分回升并持续一段时间后自动恢复原配置并上线 |
 | 失效处置 | 反复出现指定错误码（如 401/403）的渠道自动暂停 / 停用 / 删除，**默认关闭** |
+| 上游渠道 | 独立管理 Sub2API、New API 与其它站点，查看余额、分组、令牌、订阅并配置邮件告警 |
 
 所有对 sub2api 的写操作都会**先记录基线**（接管前的 `priority` / `load_factor` /
 `concurrency` / `rate_multiplier` / `schedulable`），随时可以一键交还控制权。
@@ -68,6 +69,12 @@ sub2api 自己已经在处理限流：上游返回 429 时它写入 `rate_limit_
 ![渠道池](docs/images/channels.png)
 
 > 健康分环、最近 10 次结果、首字 P50/P95、调度倍率、权重、优先级与负载的现值→目标值。
+
+### 上游渠道
+
+侧栏「上游渠道」使用独立的数据与接口，不会加入 Guardian 的渠道池调度。支持
+Sub2API / New API 同步、余额历史、分组与令牌、订阅、令牌模型和分组修改，以及
+低余额、消耗速率、分组新增/移除/倍率变化五类邮件告警；`other` 类型只保存站点记录。
 
 ### 策略配置
 
@@ -372,6 +379,9 @@ WantedBy=multi-user.target
 
 备份只需拷走 `data/` 目录；迁移时把它和二进制一起搬走即可。
 
+上游渠道管理的数据使用 `upstream_` 前缀表，与 Guardian 的分组、渠道缓存、样本和事件隔离。
+余额快照、余额查询日志和告警事件保留 7 天；渠道配置、缓存、任务与邮件设置不会随历史清理删除。
+
 ### 忘记密码
 
 没有邮件找回。恢复方式是停掉服务后清空账号表，重启即会重新进入初始化向导
@@ -471,8 +481,11 @@ sqlite3 data/guardian.sqlite "DELETE FROM users; DELETE FROM sessions;"
   所有 `/api/*` 未登录一律返回 401
 - **会话用 HttpOnly Cookie**：`SameSite=Strict`（挡 CSRF），JS 读不到（防 XSS），
   HTTPS 下自动加 `Secure`。有效期 14 天，使用中自动续期
-- **库里不存明文**：口令存 PBKDF2-SHA256（20 万次迭代 + 每人独立随机盐），
+- **Guardian 登录口令不存明文**：口令存 PBKDF2-SHA256（20 万次迭代 + 每人独立随机盐），
   会话只存令牌的 SHA-256 摘要 —— 数据库被读走也无法直接冒用会话
+- **上游渠道凭据可逆保存并直接展示**：上游密码和 New API 系统令牌需要用于远端登录，
+  已登录 Guardian 的用户可以查看和复制；请保护数据库文件并限制面板访问。Sub2API 的临时
+  access / refresh token 不通过 API 返回，SMTP 密码也只显示“已配置”状态
 - **改密码会吊销其他会话**，只保留当前这一个
 - **CORS 不使用通配符**：生产同源，只有开发端口在白名单里
 
@@ -499,6 +512,7 @@ backend/
     auth/                口令哈希与会话令牌（标准库 pbkdf2）
     store/               SQLite：策略、缓存、样本、状态、基线、事件、账号
     upstream/            sub2api 管理端客户端
+    channelmanager/      独立上游渠道同步、余额、令牌、告警与 SMTP
     scoring/             错误分类与健康分（纯函数）
     engine/              采样、决策、调权、扩缩容、写回、分组聚合
     api/                 HTTP 接口与 SSE
@@ -517,6 +531,7 @@ frontend/                Vue 3 + TypeScript + Tailwind + Pinia + Vue Router
 - **鉴权**：遍历路由表验证每条 `/api/*` 未登录返回 401
 - **数据目录**：与工作目录无关、`go run` 临时目录回退
 - **迁移**：老库补新字段、不覆盖用户显式设置、只执行一次
+- **上游渠道**：独立表级联、Sub2API/New API 同步、401 映射、告警冷却与 SMTP 密码掩码
 
 ```bash
 cd backend && go test ./...
