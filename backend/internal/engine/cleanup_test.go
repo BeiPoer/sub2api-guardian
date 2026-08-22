@@ -154,6 +154,7 @@ func authFailChannel(id int64, p policy.Policy, fatalCount int, fusedFor time.Du
 	ch.state.AccountID = id
 	ch.state.Health = domain.HealthFused
 	ch.state.HealthSince = now.Add(-fusedFor)
+	ch.state.CleanupEligibleSince = now.Add(-fusedFor)
 	ch.desired.health = domain.HealthFused
 	return ch
 }
@@ -335,6 +336,30 @@ func TestCleanupRequiresMinFusedDuration(t *testing.T) {
 	}
 	if fake.wasDeleted(101) {
 		t.Fatal("刚熔断的渠道被立即删除了")
+	}
+}
+
+func TestCleanupObservationStartsWhenConditionFirstMatches(t *testing.T) {
+	fake := newCleanupFake()
+	eng, _ := cleanupEngine(t, fake)
+	p := enabledCleanup(policy.FatalActionDelete)
+
+	bad := authFailChannel(101, p, 5, 24*time.Hour)
+	bad.state.Health = domain.HealthDegraded
+	bad.state.HealthSince = time.Now().Add(-24 * time.Hour)
+	bad.state.CleanupEligibleSince = time.Time{}
+	bad.desired.health = domain.HealthDegraded
+	spare := authFailChannel(102, p, 0, 0)
+	spare.desired.health = domain.HealthHealthy
+
+	if got := eng.applyCleanup(context.Background(), cleanupRound(p, bad, spare)); got != 0 {
+		t.Fatalf("首次达到处置条件必须重新开始观察，实际处置 %d 个", got)
+	}
+	if bad.state.CleanupEligibleSince.IsZero() {
+		t.Fatal("首次达到处置条件时应记录独立的观察起点")
+	}
+	if fake.wasDeleted(101) {
+		t.Fatal("长期降级渠道刚出现认证失效时不应立即删除")
 	}
 }
 
@@ -548,6 +573,7 @@ func TestCleanupPauseAction(t *testing.T) {
 	}
 
 	bad := authFailChannel(101, p, 5, time.Hour)
+	bad.account.Schedulable = true
 	spare := authFailChannel(102, p, 0, 0)
 	spare.desired.health = domain.HealthHealthy
 
@@ -556,6 +582,9 @@ func TestCleanupPauseAction(t *testing.T) {
 	}
 	if fake.wasDeleted(101) {
 		t.Fatal("暂停动作不应删除账号")
+	}
+	if !fake.wasUnschedulable(101) {
+		t.Fatal("暂停动作必须在当前轮次立即写入 schedulable=false")
 	}
 
 	saved, _ := st.Policy()

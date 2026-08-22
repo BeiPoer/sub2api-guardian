@@ -83,6 +83,13 @@ type Account struct {
 	TempUnschedulableReason string `json:"temp_unschedulable_reason,omitempty"`
 }
 
+// UpstreamMultiplierSnapshot 保存 API Key 渠道最近一次成功读取到的上游倍率。
+// 凭据和上游地址只参与单次请求，绝不进入该快照。
+type UpstreamMultiplierSnapshot struct {
+	Value     float64   `json:"value"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 // BlockKind 表示 sub2api 不把请求发给某个渠道的原因类别。
 type BlockKind string
 
@@ -338,9 +345,12 @@ type ChannelState struct {
 	LastApplyError string `json:"last_apply_error,omitempty"`
 
 	HealthSince time.Time `json:"health_since"`
-	ShortScore  float64   `json:"short_score"`
-	LongScore   float64   `json:"long_score"`
-	HealthScore float64   `json:"health_score"`
+	// CleanupEligibleSince 单独记录渠道持续满足自动处置条件的起点。
+	// 不能复用 HealthSince：渠道可能已经降级很久，但认证失效是本轮才首次达到阈值。
+	CleanupEligibleSince time.Time `json:"cleanup_eligible_since,omitempty"`
+	ShortScore           float64   `json:"short_score"`
+	LongScore            float64   `json:"long_score"`
+	HealthScore          float64   `json:"health_score"`
 
 	ConsecutiveOK   int `json:"consecutive_ok"`
 	ConsecutiveFail int `json:"consecutive_fail"`

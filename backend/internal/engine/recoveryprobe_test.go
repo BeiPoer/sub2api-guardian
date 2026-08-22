@@ -66,6 +66,13 @@ func TestFusedChannelRecoversWithProbeDisabled(t *testing.T) {
 	if value, ok := fake.schedulableOf(102); !ok || !value {
 		t.Fatal("回池后应把 schedulable=true 写回 sub2api")
 	}
+	group, err := st.GroupState(1)
+	if err != nil {
+		t.Fatalf("读取分组状态失败: %v", err)
+	}
+	if group.AvailableAccounts != 2 {
+		t.Fatalf("恢复成功的轮次就应计入可用池，实际可用 %d 个", group.AvailableAccounts)
+	}
 }
 
 // TestProbeDisabledSkipsHealthyChannels 确认修复没有把探测总开关变成空设置：

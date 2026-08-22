@@ -46,16 +46,23 @@ type Engine struct {
 	cancelRun context.CancelFunc
 	// canceled 标记本轮是被人工取消的，用于区分「取消」与「失败」。
 	canceled bool
+	// runDone 在当前轮次退出时关闭，Stop 用它等待所有数据库写入完成。
+	runDone  chan struct{}
+	stopping bool
 
-	monitoringOK      bool
-	monitoringChecked time.Time
-	lastCatalogSync   time.Time
+	monitoringOK       bool
+	monitoringChecked  time.Time
+	lastCatalogSync    time.Time
+	multiplierMu       sync.Mutex
+	multiplierAttempts map[int64]time.Time
 
 	notifyMu sync.RWMutex
 	notify   func()
 
-	stopCh   chan struct{}
-	stopOnce sync.Once
+	stopCh    chan struct{}
+	startOnce sync.Once
+	stopOnce  sync.Once
+	loopWG    sync.WaitGroup
 }
 
 // Summary 是一轮调度的结果概要。
@@ -84,7 +91,10 @@ type Status struct {
 
 // New 创建引擎。
 func New(st *store.Store, client *upstream.Client) *Engine {
-	return &Engine{store: st, client: client, stopCh: make(chan struct{})}
+	return &Engine{
+		store: st, client: client, stopCh: make(chan struct{}),
+		multiplierAttempts: map[int64]time.Time{},
+	}
 }
 
 // SetNotifier 注册状态变更回调，用于向前端推送 SSE。
@@ -105,31 +115,61 @@ func (e *Engine) fireNotify() {
 
 // Start 启动后台心跳。
 func (e *Engine) Start() {
-	go func() {
-		ticker := time.NewTicker(tickInterval)
-		defer ticker.Stop()
-
-		// 启动后稍等一下，让 HTTP 服务先就绪。
-		select {
-		case <-e.stopCh:
+	e.startOnce.Do(func() {
+		e.mu.Lock()
+		if e.stopping {
+			e.mu.Unlock()
 			return
-		case <-time.After(3 * time.Second):
 		}
+		e.loopWG.Add(1)
+		e.mu.Unlock()
+		go func() {
+			defer e.loopWG.Done()
+			ticker := time.NewTicker(tickInterval)
+			defer ticker.Stop()
 
-		for {
-			e.tick()
+			// 启动后稍等一下，让 HTTP 服务先就绪。
 			select {
 			case <-e.stopCh:
 				return
-			case <-ticker.C:
+			case <-time.After(3 * time.Second):
 			}
-		}
-	}()
+
+			for {
+				e.tick()
+				select {
+				case <-e.stopCh:
+					return
+				case <-ticker.C:
+				}
+			}
+		}()
+	})
 }
 
-// Stop 停止后台心跳。
+// Stop 停止后台心跳，取消并等待当前轮次退出。它只影响进程生命周期，
+// 不会像用户点击「停止自动调度」那样修改持久化开关。
 func (e *Engine) Stop() {
-	e.stopOnce.Do(func() { close(e.stopCh) })
+	var done chan struct{}
+	var cancel context.CancelFunc
+	e.stopOnce.Do(func() {
+		e.mu.Lock()
+		e.stopping = true
+		done = e.runDone
+		cancel = e.cancelRun
+		e.mu.Unlock()
+		close(e.stopCh)
+		if cancel != nil {
+			cancel()
+		}
+	})
+	e.mu.Lock()
+	done = e.runDone
+	e.mu.Unlock()
+	e.loopWG.Wait()
+	if done != nil {
+		<-done
+	}
 }
 
 // tick 是心跳的一次执行。
@@ -144,12 +184,17 @@ func (e *Engine) tick() {
 
 	if !conn.Enabled {
 		e.syncCatalogIfStale(conn)
+		if err := e.refreshCachedUpstreamMultipliers(conn); err != nil {
+			e.store.Log("warn", "upstream_multiplier_refresh_failed", nil, nil,
+				fmt.Sprintf("自动守护已关闭，定时同步上游倍率失败: %s", err), nil)
+		}
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	if err := e.RunOnce(ctx); err != nil && !errors.Is(err, ErrAlreadyRunning) {
+	if err := e.RunOnce(ctx); err != nil &&
+		!errors.Is(err, ErrAlreadyRunning) && !errors.Is(err, context.Canceled) {
 		e.store.Log("error", "run_failed", nil, nil, err.Error(), nil)
 	}
 }
@@ -213,6 +258,10 @@ func (e *Engine) refreshGroupStates() error {
 	}
 
 	r := buildRound(time.Now(), global, overrides, groups, accounts, states, baselines)
+	r.upstreamMultipliers, err = e.store.UpstreamMultipliers()
+	if err != nil {
+		return err
+	}
 	resolveMultipliers(r)
 	e.loadSamplesAndScore(r)
 	for _, ch := range r.channels {
@@ -285,6 +334,10 @@ func (e *Engine) RunOnce(ctx context.Context) error {
 	defer cancel()
 
 	e.mu.Lock()
+	if e.stopping {
+		e.mu.Unlock()
+		return context.Canceled
+	}
 	if e.running {
 		e.mu.Unlock()
 		return ErrAlreadyRunning
@@ -292,6 +345,7 @@ func (e *Engine) RunOnce(ctx context.Context) error {
 	e.running = true
 	e.canceled = false
 	e.cancelRun = cancel
+	e.runDone = make(chan struct{})
 	e.mu.Unlock()
 
 	started := time.Now()
@@ -301,10 +355,13 @@ func (e *Engine) RunOnce(ctx context.Context) error {
 	e.running = false
 	e.cancelRun = nil
 	wasCanceled := e.canceled
+	stopping := e.stopping
+	done := e.runDone
+	e.runDone = nil
 	e.lastRun = time.Now()
 	e.lastMs = time.Since(started).Milliseconds()
 	switch {
-	case wasCanceled:
+	case wasCanceled || (stopping && errors.Is(err, context.Canceled)):
 		// 人工取消不是故障，不该在界面上显示成错误。
 		e.lastErr = ""
 		e.lastPlan = summary
@@ -314,10 +371,13 @@ func (e *Engine) RunOnce(ctx context.Context) error {
 		e.lastErr = ""
 		e.lastPlan = summary
 	}
+	if done != nil {
+		close(done)
+	}
 	e.mu.Unlock()
 
 	e.fireNotify()
-	if wasCanceled {
+	if wasCanceled || (stopping && errors.Is(err, context.Canceled)) {
 		return nil
 	}
 	return err
@@ -429,6 +489,10 @@ func (e *Engine) runOnce(ctx context.Context) (Summary, error) {
 	}
 
 	r := buildRound(time.Now(), global, overrides, groups, accounts, states, baselines)
+	r.upstreamMultipliers, err = e.store.UpstreamMultipliers()
+	if err != nil {
+		return summary, err
+	}
 	r.monitoringOK = e.checkMonitoring(ctx, global)
 
 	summary.Channels = len(r.channels)
@@ -559,6 +623,12 @@ func (e *Engine) Sync(ctx context.Context) error {
 		keep[account.ID] = struct{}{}
 	}
 	if err := e.store.DeleteChannelStates(keep); err != nil {
+		return err
+	}
+	if err := e.store.PruneUpstreamMultipliers(keep); err != nil {
+		return err
+	}
+	if _, err := e.refreshEnabledUpstreamMultipliers(ctx, merged); err != nil {
 		return err
 	}
 	return nil

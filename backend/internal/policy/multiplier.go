@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"math"
 	"strconv"
 	"strings"
 )
@@ -27,20 +28,76 @@ var apiKeyTypes = map[string]struct{}{
 	"key":     {},
 }
 
+const (
+	MultiplierSourceDefault          = "default"
+	MultiplierSourceManual           = "manual"
+	MultiplierSourceUpstream         = "upstream"
+	MultiplierSourceUpstreamFallback = "upstream_fallback"
+)
+
+// IsAPIKeyType 报告账号类型是否属于按量付费的 API Key 渠道。
+func IsAPIKeyType(accountType string) bool {
+	_, ok := apiKeyTypes[strings.ToLower(strings.TrimSpace(accountType))]
+	return ok
+}
+
+func validMultiplier(value float64) bool {
+	return value > 0 && !math.IsNaN(value) && !math.IsInf(value, 0)
+}
+
 // DefaultMultiplierFor 返回某账号类型的默认倍率。
 //
 // 判定规则刻意反向：只有明确是 API Key 的才按量付费，
 // 其余（oauth、setup_token、以及未来新增的订阅类型）都当订阅账号优先用。
 func DefaultMultiplierFor(accountType string) float64 {
-	if _, ok := apiKeyTypes[strings.ToLower(strings.TrimSpace(accountType))]; ok {
+	if IsAPIKeyType(accountType) {
 		return DefaultAPIKeyMultiplier
 	}
 	return DefaultOAuthMultiplier
 }
 
-// MultiplierFor 返回某账号生效的调度倍率：人工设置优先，否则按类型取默认值。
+// ResolveMultiplier 保留旧调用口径，供不持有倍率快照的兼容代码使用。
+// 新的运行链路使用 ResolveMultiplierSnapshot。
+func (p Policy) ResolveMultiplier(accountID int64, accountType string, upstream float64) (float64, string) {
+	if p.UpstreamMultiplierEnabled(accountID, accountType) {
+		if validMultiplier(upstream) {
+			return upstream, MultiplierSourceUpstream
+		}
+		return DefaultAPIKeyMultiplier, MultiplierSourceUpstreamFallback
+	}
+	if value, ok := p.ManualMultiplier(accountID); ok {
+		return value, MultiplierSourceManual
+	}
+	return DefaultMultiplierFor(accountType), MultiplierSourceDefault
+}
+
+// ResolveMultiplierSnapshot 使用真正向 API Key 上游读取并持久化的倍率快照。
+// 从未成功读取过时沿用 Sub2API 账号当前倍率；读取失败不会删除旧快照。
+func (p Policy) ResolveMultiplierSnapshot(
+	accountID int64,
+	accountType string,
+	accountMultiplier float64,
+	upstreamSnapshot float64,
+	hasSnapshot bool,
+) (float64, string) {
+	if p.UpstreamMultiplierEnabled(accountID, accountType) {
+		if hasSnapshot && validMultiplier(upstreamSnapshot) {
+			return upstreamSnapshot, MultiplierSourceUpstream
+		}
+		if validMultiplier(accountMultiplier) {
+			return accountMultiplier, MultiplierSourceUpstreamFallback
+		}
+		return DefaultAPIKeyMultiplier, MultiplierSourceUpstreamFallback
+	}
+	if value, ok := p.ManualMultiplier(accountID); ok {
+		return value, MultiplierSourceManual
+	}
+	return DefaultMultiplierFor(accountType), MultiplierSourceDefault
+}
+
+// MultiplierFor 保留原有调用口径：不提供上游倍率时解析本地配置。
 func (p Policy) MultiplierFor(accountID int64, accountType string) float64 {
-	if value, ok := p.AccountMultipliers[itoa(accountID)]; ok && value > 0 {
+	if value, ok := p.ManualMultiplier(accountID); ok {
 		return value
 	}
 	return DefaultMultiplierFor(accountType)
@@ -48,6 +105,31 @@ func (p Policy) MultiplierFor(accountID int64, accountType string) float64 {
 
 // HasManualMultiplier 报告某账号是否被人工设置过倍率。
 func (p Policy) HasManualMultiplier(accountID int64) bool {
+	_, ok := p.ManualMultiplier(accountID)
+	return ok
+}
+
+// ManualMultiplier 返回某账号保存的人工倍率。
+func (p Policy) ManualMultiplier(accountID int64) (float64, bool) {
 	value, ok := p.AccountMultipliers[itoa(accountID)]
-	return ok && value > 0
+	return value, ok && validMultiplier(value)
+}
+
+// UpstreamMultiplierEnabled 报告某 API Key 账号是否开启实时倍率。
+// 类型校验放在读取路径上，避免被手工篡改的策略影响 OAuth 渠道。
+func (p Policy) UpstreamMultiplierEnabled(accountID int64, accountType string) bool {
+	return IsAPIKeyType(accountType) && p.AccountUpstreamMultiplierEnabled[itoa(accountID)]
+}
+
+// UpstreamMultiplierBreakerFor 返回渠道保存的倍率上限配置。
+// 自动倍率关闭或渠道不是 API Key 类型时，配置一律不生效。
+func (p Policy) UpstreamMultiplierBreakerFor(
+	accountID int64,
+	accountType string,
+) (UpstreamMultiplierBreaker, bool) {
+	if !p.UpstreamMultiplierEnabled(accountID, accountType) {
+		return UpstreamMultiplierBreaker{}, false
+	}
+	breaker, ok := p.AccountUpstreamMultiplierBreakers[itoa(accountID)]
+	return breaker, ok && validMultiplier(breaker.Threshold)
 }

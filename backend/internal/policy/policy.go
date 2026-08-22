@@ -11,6 +11,9 @@ import (
 // minProbeIntervalSeconds 是探测间隔的下限，防止把上游打爆。
 const minProbeIntervalSeconds = 30
 
+// minUpstreamMultiplierIntervalSeconds 限制自动倍率读取的最短周期，避免上游探测接口被打爆。
+const minUpstreamMultiplierIntervalSeconds = 30
+
 // Strategy 是组内渠道的排序与调权策略。
 type Strategy string
 
@@ -223,6 +226,19 @@ type Traffic struct {
 	MaxSamplesPerAccount int  `json:"max_samples_per_account"`
 }
 
+// UpstreamMultiplier 控制所有已开启实时倍率渠道的自动读取周期。
+type UpstreamMultiplier struct {
+	IntervalSeconds int `json:"interval_seconds"`
+}
+
+// UpstreamMultiplierBreaker 是单渠道的倍率上限熔断配置。
+//
+// Threshold 只和 Guardian 调度使用的上游倍率比较，不会修改 Sub2API 的计费配置。
+type UpstreamMultiplierBreaker struct {
+	Enabled   bool    `json:"enabled"`
+	Threshold float64 `json:"threshold"`
+}
+
 // Classify 控制错误分类关键字。
 type Classify struct {
 	FatalPatterns      []string `json:"fatal_patterns"`
@@ -231,18 +247,19 @@ type Classify struct {
 
 // Policy 是全局策略。分组可以覆盖其中一部分。
 type Policy struct {
-	Strategy  Strategy     `json:"strategy"`
-	Scoring   Scoring      `json:"scoring"`
-	Breaker   Breaker      `json:"breaker"`
-	Degrade   Degrade      `json:"degrade"`
-	Recovery  Recovery     `json:"recovery"`
-	Weights   Weights      `json:"weights"`
-	Cleanup   FatalCleanup `json:"cleanup"`
-	Scaling   Scaling      `json:"scaling"`
-	AutoApply AutoApply    `json:"auto_apply"`
-	Probe     Probe        `json:"probe"`
-	Traffic   Traffic      `json:"traffic"`
-	Classify  Classify     `json:"classify"`
+	Strategy           Strategy           `json:"strategy"`
+	Scoring            Scoring            `json:"scoring"`
+	Breaker            Breaker            `json:"breaker"`
+	Degrade            Degrade            `json:"degrade"`
+	Recovery           Recovery           `json:"recovery"`
+	Weights            Weights            `json:"weights"`
+	Cleanup            FatalCleanup       `json:"cleanup"`
+	Scaling            Scaling            `json:"scaling"`
+	AutoApply          AutoApply          `json:"auto_apply"`
+	Probe              Probe              `json:"probe"`
+	Traffic            Traffic            `json:"traffic"`
+	UpstreamMultiplier UpstreamMultiplier `json:"upstream_multiplier"`
+	Classify           Classify           `json:"classify"`
 
 	ManagedGroupMode    string   `json:"managed_group_mode"` // all | selected
 	ManagedGroupIDs     []int64  `json:"managed_group_ids"`
@@ -259,6 +276,14 @@ type Policy struct {
 	// 这是 Guardian 内部的调度口径，**不会写回 sub2api**，与网站计费无关。
 	// 未设置的账号按类型取默认值（见 DefaultMultiplierFor）。
 	AccountMultipliers map[string]float64 `json:"account_multipliers"`
+
+	// AccountUpstreamMultiplierEnabled 控制 API Key 渠道是否使用 sub2api
+	// 账号目录返回的最新倍率。只保存开启项，键为账号 ID。
+	AccountUpstreamMultiplierEnabled map[string]bool `json:"account_upstream_multiplier_enabled"`
+
+	// AccountUpstreamMultiplierBreakers 保存各渠道的倍率上限熔断配置。
+	// 只有对应渠道开启实时倍率时才保留并生效。
+	AccountUpstreamMultiplierBreakers map[string]UpstreamMultiplierBreaker `json:"account_upstream_multiplier_breakers"`
 }
 
 // GroupOverride 是分组级覆盖，nil 字段表示沿用全局。
@@ -387,6 +412,9 @@ func Default() Policy {
 			LookbackMinutes:      120,
 			MaxSamplesPerAccount: 60,
 		},
+		UpstreamMultiplier: UpstreamMultiplier{
+			IntervalSeconds: 120,
+		},
 		Classify: Classify{
 			FatalPatterns: []string{
 				"invalid api key", "unauthorized", "forbidden", "authentication",
@@ -396,15 +424,17 @@ func Default() Policy {
 			},
 			GatewayStatusCodes: []int{429, 500, 502, 503, 504},
 		},
-		ManagedGroupMode:    "all",
-		ManagedGroupIDs:     []int64{},
-		ManagedAccountTypes: []string{},
-		ManagedPlatforms:    []string{},
-		ExcludedGroupIDs:    []int64{},
-		ExcludedAccountIDs:  []int64{},
-		PausedAccountIDs:    []int64{},
-		AccountTestModels:   map[string]string{},
-		AccountMultipliers:  map[string]float64{},
+		ManagedGroupMode:                  "all",
+		ManagedGroupIDs:                   []int64{},
+		ManagedAccountTypes:               []string{},
+		ManagedPlatforms:                  []string{},
+		ExcludedGroupIDs:                  []int64{},
+		ExcludedAccountIDs:                []int64{},
+		PausedAccountIDs:                  []int64{},
+		AccountTestModels:                 map[string]string{},
+		AccountMultipliers:                map[string]float64{},
+		AccountUpstreamMultiplierEnabled:  map[string]bool{},
+		AccountUpstreamMultiplierBreakers: map[string]UpstreamMultiplierBreaker{},
 	}
 }
 
@@ -535,6 +565,12 @@ func Normalize(p *Policy) {
 		tf.MaxSamplesPerAccount = 200
 	}
 
+	um := &p.UpstreamMultiplier
+	positiveInt(&um.IntervalSeconds, d.UpstreamMultiplier.IntervalSeconds)
+	if um.IntervalSeconds < minUpstreamMultiplierIntervalSeconds {
+		um.IntervalSeconds = minUpstreamMultiplierIntervalSeconds
+	}
+
 	cl := &p.Classify
 	cl.FatalPatterns = cleanPatterns(cl.FatalPatterns)
 	if len(cl.GatewayStatusCodes) == 0 {
@@ -564,10 +600,27 @@ func Normalize(p *Policy) {
 	if p.AccountMultipliers == nil {
 		p.AccountMultipliers = map[string]float64{}
 	}
-	// 倍率必须为正：0 或负数会让价格优先的除法失去意义。
+	// 倍率必须是有限正数：0、负数、NaN 或无穷值都会破坏权重计算。
 	for key, value := range p.AccountMultipliers {
-		if value <= 0 {
+		if !validMultiplier(value) {
 			delete(p.AccountMultipliers, key)
+		}
+	}
+	if p.AccountUpstreamMultiplierEnabled == nil {
+		p.AccountUpstreamMultiplierEnabled = map[string]bool{}
+	}
+	// false 与缺省语义一致，移除它可以避免策略 JSON 无限制积累废项。
+	for key, enabled := range p.AccountUpstreamMultiplierEnabled {
+		if !enabled {
+			delete(p.AccountUpstreamMultiplierEnabled, key)
+		}
+	}
+	if p.AccountUpstreamMultiplierBreakers == nil {
+		p.AccountUpstreamMultiplierBreakers = map[string]UpstreamMultiplierBreaker{}
+	}
+	for key, breaker := range p.AccountUpstreamMultiplierBreakers {
+		if !p.AccountUpstreamMultiplierEnabled[key] || !validMultiplier(breaker.Threshold) {
+			delete(p.AccountUpstreamMultiplierBreakers, key)
 		}
 	}
 }

@@ -13,9 +13,10 @@ import (
 )
 
 const (
-	metaSchemaVersion = "schema_version"
-	metaConnection    = "connection"
-	metaPolicy        = "policy_global"
+	metaSchemaVersion       = "schema_version"
+	metaConnection          = "connection"
+	metaPolicy              = "policy_global"
+	metaUpstreamMultipliers = "upstream_multipliers"
 
 	currentSchemaVersion = "6"
 )

@@ -2,10 +2,85 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
+	"math"
+	"strconv"
+	"time"
 
 	"sub2api-guardian/backend/internal/domain"
 	"sub2api-guardian/backend/internal/policy"
 )
+
+// UpstreamMultipliers 返回各账号最近一次成功读取到的上游倍率。
+func (s *Store) UpstreamMultipliers() (map[int64]domain.UpstreamMultiplierSnapshot, error) {
+	raw := map[string]domain.UpstreamMultiplierSnapshot{}
+	if err := s.getJSON(metaUpstreamMultipliers, &raw); err != nil {
+		if IsNotFound(err) {
+			return map[int64]domain.UpstreamMultiplierSnapshot{}, nil
+		}
+		return nil, err
+	}
+	out := make(map[int64]domain.UpstreamMultiplierSnapshot, len(raw))
+	for key, snapshot := range raw {
+		id, err := strconv.ParseInt(key, 10, 64)
+		if err != nil || id <= 0 || snapshot.Value <= 0 || math.IsNaN(snapshot.Value) || math.IsInf(snapshot.Value, 0) {
+			continue
+		}
+		out[id] = snapshot
+	}
+	return out, nil
+}
+
+// SaveUpstreamMultiplier 只在成功取得有限正数倍率后更新单个账号的快照。
+func (s *Store) SaveUpstreamMultiplier(accountID int64, value float64, updatedAt time.Time) error {
+	if accountID <= 0 || value <= 0 || math.IsNaN(value) || math.IsInf(value, 0) {
+		return errors.New("上游倍率必须是有限正数")
+	}
+	if updatedAt.IsZero() {
+		updatedAt = time.Now()
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	raw := map[string]domain.UpstreamMultiplierSnapshot{}
+	if err := s.getJSON(metaUpstreamMultipliers, &raw); err != nil && !IsNotFound(err) {
+		return err
+	}
+	raw[strconv.FormatInt(accountID, 10)] = domain.UpstreamMultiplierSnapshot{
+		Value: value, UpdatedAt: updatedAt,
+	}
+	return s.setJSON(metaUpstreamMultipliers, raw)
+}
+
+// PruneUpstreamMultipliers 清理已从 Sub2API 删除账号留下的倍率快照。
+func (s *Store) PruneUpstreamMultipliers(keep map[int64]struct{}) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	raw := map[string]domain.UpstreamMultiplierSnapshot{}
+	if err := s.getJSON(metaUpstreamMultipliers, &raw); err != nil {
+		if IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	changed := false
+	for key := range raw {
+		id, err := strconv.ParseInt(key, 10, 64)
+		if err != nil {
+			delete(raw, key)
+			changed = true
+			continue
+		}
+		if _, ok := keep[id]; !ok {
+			delete(raw, key)
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return s.setJSON(metaUpstreamMultipliers, raw)
+}
 
 // Connection 读取 sub2api 连接配置。
 func (s *Store) Connection() (domain.Connection, error) {

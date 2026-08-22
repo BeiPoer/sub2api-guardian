@@ -5,9 +5,12 @@ import (
 	"crypto/cipher"
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
+	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -20,6 +23,8 @@ import (
 	"sub2api-guardian/backend/internal/store"
 	"sub2api-guardian/backend/internal/upstream"
 )
+
+const maxRequestBodyBytes int64 = 1 << 20
 
 // Server 聚合 HTTP 处理所需的依赖。
 type Server struct {
@@ -134,6 +139,7 @@ func (s *Server) protectedRoutes() map[string]http.HandlerFunc {
 		"GET /api/channels":                                       s.listChannels,
 		"GET /api/channels/{id}":                                  s.getChannel,
 		"PUT /api/channels/{id}":                                  s.updateChannel,
+		"POST /api/channels/{id}/sync-upstream-multiplier":        s.syncChannelUpstreamMultiplier,
 		"POST /api/channels/{id}/probe":                           s.probeChannel,
 		"POST /api/channels/{id}/fuse":                            s.fuseChannel,
 		"POST /api/channels/{id}/recover":                         s.recoverChannel,
@@ -215,7 +221,7 @@ func (s *Server) Handler() http.Handler {
 	if s.assets != nil {
 		mux.Handle("/", s.assets)
 	}
-	return cors(mux)
+	return hardenHTTP(cors(mux))
 }
 
 // health 只回一个存活标记。
@@ -233,6 +239,69 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 var devOrigins = map[string]bool{
 	"http://127.0.0.1:5177": true,
 	"http://localhost:5177": true,
+}
+
+// hardenHTTP 给 API 与静态页面统一加上边界保护。Origin 只用于阻止浏览器
+// 发起的跨站写请求；没有 Origin 的 CLI、systemd 探活和同源反代不受影响。
+func hardenHTTP(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Permissions-Policy", "camera=(), geolocation=(), microphone=()")
+
+		origin := strings.TrimSpace(r.Header.Get("Origin"))
+		if origin != "" && (isStateChanging(r.Method) || r.Method == http.MethodOptions) && !allowedOrigin(origin, r) {
+			writeErrorMessage(w, http.StatusForbidden, "拒绝跨站请求")
+			return
+		}
+
+		image2ProxyRequest := isImage2ProxyRequest(r)
+		if r.Body != nil && !image2ProxyRequest {
+			r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+		}
+		if !image2ProxyRequest && isStateChanging(r.Method) && requestHasBody(r) {
+			mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+			if err != nil || !strings.EqualFold(mediaType, "application/json") {
+				writeErrorMessage(w, http.StatusUnsupportedMediaType, "请求正文必须使用 application/json")
+				return
+			}
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func isImage2ProxyRequest(r *http.Request) bool {
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/"), "/")
+	return r.Method == http.MethodPost && len(parts) == 4 && parts[0] != "" &&
+		parts[1] == "v1" && parts[2] == "images" &&
+		(parts[3] == "generations" || parts[3] == "edits")
+}
+
+func isStateChanging(method string) bool {
+	switch method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return true
+	default:
+		return false
+	}
+}
+
+func requestHasBody(r *http.Request) bool {
+	return r.ContentLength != 0 || len(r.TransferEncoding) > 0
+}
+
+func allowedOrigin(origin string, r *http.Request) bool {
+	if devOrigins[origin] {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil {
+		return false
+	}
+	return strings.EqualFold(u.Host, r.Host)
 }
 
 // cors 按白名单回显 Origin。
@@ -284,7 +353,18 @@ func pathID(r *http.Request) (int64, error) {
 
 func decodeBody(r *http.Request, out any) error {
 	defer func() { _ = r.Body.Close() }()
-	return json.NewDecoder(r.Body).Decode(out)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(out); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("请求体只能包含一个 JSON 值")
+		}
+		return err
+	}
+	return nil
 }
 
 func queryInt(r *http.Request, key string, fallback int) int {

@@ -11,7 +11,7 @@ import (
 
 // decide 计算本轮每个渠道的期望状态。
 //
-// 顺序固定：初始化 → 排除名单 → 人工暂停 → 回池 → 硬熔断 → 软熔断（受保底与
+// 顺序固定：初始化 → 排除名单 → 人工暂停 → 回池 → 倍率阈值熔断 → 硬熔断 → 软熔断（受保底与
 // 切换上限约束）→ 健康/降级分级 → 调权 → 扩缩容。
 //
 // 人工暂停刻意排在回池之前：它是运维的显式意图，不能被健康分回升覆盖。
@@ -27,6 +27,7 @@ func (e *Engine) decide(r *round) {
 		applyPause(ch)
 	}
 	e.applyRecovery(r)
+	e.applyUpstreamMultiplierBreaker(r)
 	e.applyHardBreaker(r)
 	e.applySoftBreaker(r)
 	for _, ch := range r.channels {
@@ -34,6 +35,31 @@ func (e *Engine) decide(r *round) {
 	}
 	applyWeights(r)
 	applyScaling(r)
+}
+
+// applyUpstreamMultiplierBreaker 对最近一次成功读取的真实上游倍率执行渠道级熔断。
+//
+// 拉取失败不会覆盖快照，因此价格调权仍使用最近成功值；没有成功快照时不触发。
+// 阈值熔断是显式渠道配置，不受普通健康熔断总开关影响，但仍遵守分组保底规则。
+func (e *Engine) applyUpstreamMultiplierBreaker(r *round) {
+	for _, ch := range r.channels {
+		breaker, configured := r.global.UpstreamMultiplierBreakerFor(ch.account.ID, ch.account.Type)
+		if !configured || !breaker.Enabled || ch.excluded || ch.paused ||
+			ch.desired.health == domain.HealthFused {
+			continue
+		}
+		snapshot, hasSnapshot := r.upstreamMultipliers[ch.account.ID]
+		if !hasSnapshot || !validUpstreamMultiplier(snapshot.Value) || snapshot.Value <= breaker.Threshold {
+			continue
+		}
+
+		reason := fmt.Sprintf("上游倍率 %g 超过配置阈值 %g", snapshot.Value, breaker.Threshold)
+		if blockingGroup, blocked := fuseBlockedByAnyGroup(r, ch); blocked {
+			keepAsSurvivor(ch, r, fmt.Sprintf("%s（会使分组 %d 低于保底容量）", reason, blockingGroup))
+			continue
+		}
+		fuse(ch, r, reason, false)
+	}
 }
 
 // initDesired 以「维持现状」为起点初始化期望值。

@@ -21,12 +21,18 @@ import (
 
 // fakeUpstream 是一个最小可用的假 sub2api，用于验证 API 层行为。
 type fakeUpstream struct {
-	groupCalls   atomic.Int64
-	accountCalls atomic.Int64
-	updateCalls  atomic.Int64
+	groupCalls      atomic.Int64
+	accountCalls    atomic.Int64
+	updateCalls     atomic.Int64
+	multiplierCalls atomic.Int64
 
 	// groupCount 控制假分组数量，用来放大 Sync 的调用次数。
-	groupCount int
+	groupCount               int
+	accountType              string
+	rateMultiplier           float64
+	baseURL                  string
+	upstreamMultiplier       float64
+	upstreamMultiplierStatus int
 }
 
 func (f *fakeUpstream) handler() http.Handler {
@@ -46,17 +52,106 @@ func (f *fakeUpstream) handler() http.Handler {
 
 	mux.HandleFunc("/api/v1/admin/accounts", func(w http.ResponseWriter, r *http.Request) {
 		f.accountCalls.Add(1)
+		accountType := f.accountType
+		if accountType == "" {
+			accountType = "apikey"
+		}
+		rateMultiplier := f.rateMultiplier
+		if rateMultiplier == 0 {
+			rateMultiplier = 1
+		}
 		writeEnvelope(w, map[string]any{
 			"items": []map[string]any{{
-				"id": 101, "name": "渠道A", "platform": "anthropic", "type": "apikey",
+				"id": 101, "name": "渠道A", "platform": "anthropic", "type": accountType,
 				"status": "active", "schedulable": true, "priority": 10, "concurrency": 5,
-				"rate_multiplier": 1.0, "group_ids": []int64{1},
+				"rate_multiplier": rateMultiplier, "group_ids": []int64{1},
 			}},
 			"total": 1, "page": 1, "page_size": 200, "pages": 1,
 		})
 	})
 
+	mux.HandleFunc("/api/v1/admin/accounts/data", func(w http.ResponseWriter, r *http.Request) {
+		accountType := f.accountType
+		if accountType == "" {
+			accountType = "apikey"
+		}
+		writeEnvelope(w, map[string]any{
+			"accounts": []map[string]any{{
+				"name": "渠道A", "platform": "anthropic", "type": accountType,
+				"credentials": map[string]any{"api_key": "sk-upstream", "base_url": f.baseURL},
+			}},
+			"proxies": []any{},
+		})
+	})
+
+	mux.HandleFunc("/api/v1/admin/accounts/upstream-billing-probe/batch", func(w http.ResponseWriter, r *http.Request) {
+		f.multiplierCalls.Add(1)
+		if f.upstreamMultiplierStatus != 0 {
+			w.WriteHeader(f.upstreamMultiplierStatus)
+			return
+		}
+		var request struct {
+			AccountIDs []int64 `json:"account_ids"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		value := f.upstreamMultiplier
+		if value == 0 {
+			value = 1.25
+		}
+		results := make([]map[string]any, 0, len(request.AccountIDs))
+		for _, accountID := range request.AccountIDs {
+			results = append(results, map[string]any{
+				"account_id": accountID,
+				"snapshot": map[string]any{
+					"status": "ok",
+					"data": map[string]any{
+						"billing_scope":             "token",
+						"resolved_rate_multiplier":  value,
+						"effective_rate_multiplier": value,
+					},
+				},
+			})
+		}
+		writeEnvelope(w, map[string]any{"results": results})
+	})
+
+	mux.HandleFunc("/v1/usage", func(w http.ResponseWriter, r *http.Request) {
+		f.multiplierCalls.Add(1)
+		if f.upstreamMultiplierStatus != 0 {
+			w.WriteHeader(f.upstreamMultiplierStatus)
+			return
+		}
+		value := f.upstreamMultiplier
+		if value == 0 {
+			value = 1.25
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"rate_multiplier": value})
+	})
+
 	mux.HandleFunc("/api/v1/admin/accounts/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/upstream-billing-probe") && r.Method == http.MethodPost {
+			f.multiplierCalls.Add(1)
+			if f.upstreamMultiplierStatus != 0 {
+				w.WriteHeader(f.upstreamMultiplierStatus)
+				return
+			}
+			value := f.upstreamMultiplier
+			if value == 0 {
+				value = 1.25
+			}
+			writeEnvelope(w, map[string]any{
+				"account_id": 101,
+				"snapshot": map[string]any{
+					"status": "ok",
+					"data": map[string]any{
+						"billing_scope":             "token",
+						"resolved_rate_multiplier":  value,
+						"effective_rate_multiplier": value,
+					},
+				},
+			})
+			return
+		}
 		if r.Method == http.MethodPut {
 			f.updateCalls.Add(1)
 		}
@@ -82,6 +177,7 @@ func setupAPI(t *testing.T, fake *fakeUpstream) (http.Handler, *store.Store) {
 
 	upstreamServer := httptest.NewServer(fake.handler())
 	t.Cleanup(upstreamServer.Close)
+	fake.baseURL = upstreamServer.URL
 
 	st, err := store.Open(filepath.Join(t.TempDir(), "guardian.sqlite"))
 	if err != nil {
@@ -221,6 +317,300 @@ func TestUpdateChannelMultiplierClears(t *testing.T) {
 	p, _ := st.Policy()
 	if _, ok := p.AccountMultipliers["101"]; ok {
 		t.Fatalf("填 0 应清除调度倍率，实际仍为 %v", p.AccountMultipliers["101"])
+	}
+}
+
+func TestUpdateChannelUpstreamMultiplierOnly(t *testing.T) {
+	fake := &fakeUpstream{groupCount: 1, rateMultiplier: 1.75}
+	handler, st := setupAPI(t, fake)
+	syncCatalog(t, handler)
+
+	baselineGroupCalls := fake.groupCalls.Load()
+	baselineAccountCalls := fake.accountCalls.Load()
+	rec := doJSON(t, handler, http.MethodPut, "/api/channels/101", map[string]any{
+		"upstream_multiplier_enabled": true,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d, 响应 = %s", rec.Code, rec.Body.String())
+	}
+	if fake.updateCalls.Load() != 0 {
+		t.Fatal("实时倍率开关不应写回 sub2api")
+	}
+	if fake.groupCalls.Load() != baselineGroupCalls || fake.accountCalls.Load() != baselineAccountCalls {
+		t.Fatal("实时倍率开关不应触发全量同步")
+	}
+	p, _ := st.Policy()
+	if !p.AccountUpstreamMultiplierEnabled["101"] {
+		t.Fatal("实时倍率开关未保存")
+	}
+}
+
+func TestUpdateChannelRejectsUpstreamMultiplierForOAuth(t *testing.T) {
+	fake := &fakeUpstream{groupCount: 1, accountType: "oauth"}
+	handler, st := setupAPI(t, fake)
+	syncCatalog(t, handler)
+
+	rec := doJSON(t, handler, http.MethodPut, "/api/channels/101", map[string]any{
+		"upstream_multiplier_enabled": true,
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("状态码 = %d, 期望 400，响应 = %s", rec.Code, rec.Body.String())
+	}
+	p, _ := st.Policy()
+	if p.AccountUpstreamMultiplierEnabled["101"] {
+		t.Fatal("OAuth 渠道不应保存实时倍率开关")
+	}
+}
+
+func TestChannelsExposeUpstreamMultiplierState(t *testing.T) {
+	fake := &fakeUpstream{groupCount: 1, rateMultiplier: 1.75}
+	handler, _ := setupAPI(t, fake)
+	syncCatalog(t, handler)
+
+	rec := doJSON(t, handler, http.MethodPut, "/api/channels/101", map[string]any{
+		"multiplier":                  0.5,
+		"upstream_multiplier_enabled": true,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("保存失败: %d %s", rec.Code, rec.Body.String())
+	}
+
+	rec = doJSON(t, handler, http.MethodGet, "/api/channels", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("读取渠道失败: %d %s", rec.Code, rec.Body.String())
+	}
+	var result struct {
+		Items []ChannelDTO `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatalf("解析渠道响应失败: %v", err)
+	}
+	if len(result.Items) != 1 {
+		t.Fatalf("渠道数 = %d, 期望 1", len(result.Items))
+	}
+	ch := result.Items[0]
+	if !ch.UpstreamMultiplierEnabled || ch.MultiplierSource != "upstream_fallback" || ch.Multiplier != 1.75 {
+		t.Fatalf("实时倍率状态错误: %+v", ch)
+	}
+	if ch.ManualMultiplier == nil || *ch.ManualMultiplier != 0.5 {
+		t.Fatalf("人工倍率配置未保留: %v", ch.ManualMultiplier)
+	}
+}
+
+func TestUpdateChannelUpstreamMultiplierBreaker(t *testing.T) {
+	fake := &fakeUpstream{groupCount: 1, rateMultiplier: 1.75}
+	handler, st := setupAPI(t, fake)
+	syncCatalog(t, handler)
+	baselineUpdates := fake.updateCalls.Load()
+
+	rec := doJSON(t, handler, http.MethodPut, "/api/channels/101", map[string]any{
+		"upstream_multiplier_enabled":         true,
+		"upstream_multiplier_breaker_enabled": true,
+		"upstream_multiplier_threshold":       1.5,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("保存倍率阈值失败: %d %s", rec.Code, rec.Body.String())
+	}
+	if fake.updateCalls.Load() != baselineUpdates {
+		t.Fatal("Guardian 倍率阈值字段不应写回 Sub2API")
+	}
+
+	p, err := st.Policy()
+	if err != nil {
+		t.Fatalf("读取策略失败: %v", err)
+	}
+	breaker, ok := p.AccountUpstreamMultiplierBreakers["101"]
+	if !p.AccountUpstreamMultiplierEnabled["101"] || !ok || !breaker.Enabled || breaker.Threshold != 1.5 {
+		t.Fatalf("倍率阈值配置未完整保存: enabled=%v breaker=%+v", p.AccountUpstreamMultiplierEnabled["101"], breaker)
+	}
+
+	rec = doJSON(t, handler, http.MethodGet, "/api/channels", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("读取渠道失败: %d %s", rec.Code, rec.Body.String())
+	}
+	var channels struct {
+		Items []ChannelDTO `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &channels); err != nil || len(channels.Items) != 1 {
+		t.Fatalf("解析渠道失败: %v %s", err, rec.Body.String())
+	}
+	channel := channels.Items[0]
+	if !channel.UpstreamMultiplierBreakerEnabled || channel.UpstreamMultiplierThreshold == nil ||
+		*channel.UpstreamMultiplierThreshold != 1.5 {
+		t.Fatalf("渠道 DTO 未返回倍率阈值配置: %+v", channel)
+	}
+}
+
+func TestUpdateChannelRejectsBreakerWithoutAutomaticMultiplier(t *testing.T) {
+	fake := &fakeUpstream{groupCount: 1}
+	handler, st := setupAPI(t, fake)
+	syncCatalog(t, handler)
+
+	rec := doJSON(t, handler, http.MethodPut, "/api/channels/101", map[string]any{
+		"upstream_multiplier_breaker_enabled": true,
+		"upstream_multiplier_threshold":       1.5,
+	})
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "先开启实时使用上游倍率") {
+		t.Fatalf("未开启实时倍率时应拒绝阈值配置: %d %s", rec.Code, rec.Body.String())
+	}
+	p, _ := st.Policy()
+	if len(p.AccountUpstreamMultiplierBreakers) != 0 {
+		t.Fatalf("非法请求不应保存阈值配置: %#v", p.AccountUpstreamMultiplierBreakers)
+	}
+}
+
+func TestDisablingAutomaticMultiplierClearsBreaker(t *testing.T) {
+	fake := &fakeUpstream{groupCount: 1}
+	handler, st := setupAPI(t, fake)
+	syncCatalog(t, handler)
+
+	if rec := doJSON(t, handler, http.MethodPut, "/api/channels/101", map[string]any{
+		"upstream_multiplier_enabled":         true,
+		"upstream_multiplier_breaker_enabled": true,
+		"upstream_multiplier_threshold":       1.5,
+	}); rec.Code != http.StatusOK {
+		t.Fatalf("准备阈值配置失败: %d %s", rec.Code, rec.Body.String())
+	}
+	rec := doJSON(t, handler, http.MethodPut, "/api/channels/101", map[string]any{
+		"upstream_multiplier_enabled": false,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("关闭实时倍率失败: %d %s", rec.Code, rec.Body.String())
+	}
+	p, _ := st.Policy()
+	if p.AccountUpstreamMultiplierEnabled["101"] {
+		t.Fatal("实时倍率开关未关闭")
+	}
+	if _, ok := p.AccountUpstreamMultiplierBreakers["101"]; ok {
+		t.Fatal("关闭实时倍率后应清除阈值配置")
+	}
+}
+
+func TestSyncChannelUpstreamMultiplierUpdatesSnapshot(t *testing.T) {
+	fake := &fakeUpstream{groupCount: 1, rateMultiplier: 1.75, upstreamMultiplier: 2.5}
+	handler, st := setupAPI(t, fake)
+	syncCatalog(t, handler)
+
+	rec := doJSON(t, handler, http.MethodPost, "/api/channels/101/sync-upstream-multiplier", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("同步失败: %d %s", rec.Code, rec.Body.String())
+	}
+	var result struct {
+		Multiplier         float64 `json:"multiplier"`
+		PreviousMultiplier float64 `json:"previous_multiplier"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatalf("解析响应失败: %v", err)
+	}
+	if result.Multiplier != 2.5 || result.PreviousMultiplier != 1.75 {
+		t.Fatalf("同步结果错误: %+v", result)
+	}
+	snapshots, err := st.UpstreamMultipliers()
+	if err != nil || snapshots[101].Value != 2.5 || snapshots[101].UpdatedAt.IsZero() {
+		t.Fatalf("倍率快照未保存: %#v, err=%v", snapshots, err)
+	}
+
+	rec = doJSON(t, handler, http.MethodGet, "/api/channels", nil)
+	var channels struct {
+		Items []ChannelDTO `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &channels); err != nil || len(channels.Items) != 1 {
+		t.Fatalf("读取渠道失败: %v %s", err, rec.Body.String())
+	}
+	channel := channels.Items[0]
+	if channel.UpstreamMultiplier == nil || *channel.UpstreamMultiplier != 2.5 || channel.UpstreamMultiplierUpdatedAt == nil {
+		t.Fatalf("渠道未返回倍率快照: %+v", channel)
+	}
+}
+
+func TestSyncChannelUpstreamMultiplierFailureKeepsSnapshot(t *testing.T) {
+	fake := &fakeUpstream{groupCount: 1, upstreamMultiplier: 2.5}
+	handler, st := setupAPI(t, fake)
+	syncCatalog(t, handler)
+
+	first := doJSON(t, handler, http.MethodPost, "/api/channels/101/sync-upstream-multiplier", nil)
+	if first.Code != http.StatusOK {
+		t.Fatalf("首次同步失败: %d %s", first.Code, first.Body.String())
+	}
+	before, _ := st.UpstreamMultipliers()
+	fake.upstreamMultiplierStatus = http.StatusBadGateway
+
+	failed := doJSON(t, handler, http.MethodPost, "/api/channels/101/sync-upstream-multiplier", nil)
+	if failed.Code != http.StatusBadGateway || !strings.Contains(failed.Body.String(), "继续使用原倍率") {
+		t.Fatalf("失败响应错误: %d %s", failed.Code, failed.Body.String())
+	}
+	after, _ := st.UpstreamMultipliers()
+	if after[101] != before[101] {
+		t.Fatalf("失败覆盖了旧快照: before=%+v after=%+v", before[101], after[101])
+	}
+}
+
+func TestSyncChannelUpstreamMultiplierRejectsOAuth(t *testing.T) {
+	fake := &fakeUpstream{groupCount: 1, accountType: "oauth"}
+	handler, st := setupAPI(t, fake)
+	syncCatalog(t, handler)
+
+	rec := doJSON(t, handler, http.MethodPost, "/api/channels/101/sync-upstream-multiplier", nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("状态码 = %d, 期望 400: %s", rec.Code, rec.Body.String())
+	}
+	if fake.multiplierCalls.Load() != 0 {
+		t.Fatal("OAuth 渠道不应请求上游倍率")
+	}
+	if snapshots, _ := st.UpstreamMultipliers(); len(snapshots) != 0 {
+		t.Fatalf("OAuth 渠道不应保存倍率快照: %#v", snapshots)
+	}
+}
+
+func TestRealtimeMultiplierRefreshesDuringCatalogSync(t *testing.T) {
+	fake := &fakeUpstream{groupCount: 1, rateMultiplier: 1.75, upstreamMultiplier: 2.25}
+	handler, _ := setupAPI(t, fake)
+	syncCatalog(t, handler)
+	if rec := doJSON(t, handler, http.MethodPut, "/api/channels/101", map[string]any{
+		"upstream_multiplier_enabled": true,
+	}); rec.Code != http.StatusOK {
+		t.Fatalf("开启实时倍率失败: %d %s", rec.Code, rec.Body.String())
+	}
+
+	syncCatalog(t, handler)
+	if fake.multiplierCalls.Load() != 1 {
+		t.Fatalf("自动倍率同步调用 %d 次，期望 1 次", fake.multiplierCalls.Load())
+	}
+	rec := doJSON(t, handler, http.MethodGet, "/api/channels", nil)
+	var channels struct {
+		Items []ChannelDTO `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &channels); err != nil || len(channels.Items) != 1 {
+		t.Fatalf("读取渠道失败: %v %s", err, rec.Body.String())
+	}
+	if channel := channels.Items[0]; channel.Multiplier != 2.25 || channel.MultiplierSource != "upstream" {
+		t.Fatalf("自动同步倍率未生效: %+v", channel)
+	}
+}
+
+func TestAutomaticMultiplierFailureKeepsLastSuccessfulSnapshot(t *testing.T) {
+	fake := &fakeUpstream{groupCount: 1, upstreamMultiplierStatus: http.StatusBadGateway}
+	handler, st := setupAPI(t, fake)
+	syncCatalog(t, handler)
+
+	oldTime := time.Now().Add(-time.Hour).UTC().Truncate(time.Millisecond)
+	if err := st.SaveUpstreamMultiplier(101, 2.5, oldTime); err != nil {
+		t.Fatalf("准备旧倍率快照失败: %v", err)
+	}
+	if rec := doJSON(t, handler, http.MethodPut, "/api/channels/101", map[string]any{
+		"upstream_multiplier_enabled": true,
+	}); rec.Code != http.StatusOK {
+		t.Fatalf("开启实时倍率失败: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// 目录同步会触发到期渠道的自动倍率读取；假上游失败后旧快照必须原样保留。
+	syncCatalog(t, handler)
+	snapshots, err := st.UpstreamMultipliers()
+	if err != nil {
+		t.Fatalf("读取倍率快照失败: %v", err)
+	}
+	if snapshot := snapshots[101]; snapshot.Value != 2.5 || !snapshot.UpdatedAt.Equal(oldTime) {
+		t.Fatalf("自动拉取失败覆盖了旧快照: %+v", snapshot)
 	}
 }
 

@@ -162,6 +162,24 @@ func TestImage2MultipartBlocksConfiguredParams(t *testing.T) {
 	}
 }
 
+func TestHardenHTTPPreservesImage2RequestRules(t *testing.T) {
+	body := bytes.Repeat([]byte("x"), int(maxRequestBodyBytes)+1)
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := io.Copy(io.Discard, r.Body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	request := httptest.NewRequest(http.MethodPost, "/primary/v1/images/edits", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "multipart/form-data; boundary=test")
+	response := httptest.NewRecorder()
+	hardenHTTP(next).ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("图片编辑请求返回 %d: %s", response.Code, response.Body.String())
+	}
+}
+
 func TestImage2Base64ResponseRequiresImageDomain(t *testing.T) {
 	encoded := base64.StdEncoding.EncodeToString([]byte("not-an-image"))
 	_, proxyErr := (&Server{}).convertImage2Response(context.Background(),

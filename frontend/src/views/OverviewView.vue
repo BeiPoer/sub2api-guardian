@@ -57,14 +57,20 @@
             :to="`/groups?focus=${group.id}`"
             class="card card-hover block p-4"
           >
-            <div class="flex items-start justify-between gap-2">
+            <div class="grid grid-cols-[minmax(0,1fr)_5rem] items-start gap-2">
               <div class="min-w-0">
-                <p class="truncate font-medium text-gray-900 dark:text-white">{{ group.name }}</p>
-                <p class="mt-0.5 text-xs text-gray-500 dark:text-dark-400">
+                <p class="truncate font-medium text-gray-900 dark:text-white" :title="group.name">
+                  {{ group.name }}
+                </p>
+                <p class="mt-0.5 truncate text-xs text-gray-500 dark:text-dark-400">
                   #{{ group.id }} · {{ group.platform || '全平台' }} · 倍率 {{ group.rate_multiplier }}
                 </p>
               </div>
-              <Badge :tone="groupStatusMeta(group.state.status).tone" dot>
+              <Badge
+                class="w-20 justify-center whitespace-nowrap"
+                :tone="groupStatusMeta(group.state.status).tone"
+                dot
+              >
                 {{ groupStatusMeta(group.state.status).label }}
               </Badge>
             </div>

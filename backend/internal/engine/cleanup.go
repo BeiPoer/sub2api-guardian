@@ -22,7 +22,7 @@ type cleanupCandidate struct {
 //
 // 这是全流程里唯一可能删数据的环节，因此守卫条件写得很保守：
 //  1. 总开关必须显式打开（默认关闭）；
-//  2. 渠道必须已经处于熔断态，且熔断满 MinFusedMinutes；
+//  2. 渠道持续满足清理条件达到 MinFusedMinutes；
 //  3. 最近 Window 条样本里认证失效达到 Occurrences 次；
 //  4. 开启 OnlyAuthErrors 时，余额/额度类错误一律不处置；
 //  5. KeepLastInGroup 为真时绝不动分组里最后一个渠道；
@@ -32,6 +32,9 @@ type cleanupCandidate struct {
 // 快照里不含 api_key，删除后 Guardian 无法重建该渠道。
 func (e *Engine) applyCleanup(ctx context.Context, r *round) int {
 	if !r.global.Cleanup.Enabled {
+		for _, ch := range r.channels {
+			ch.state.CleanupEligibleSince = time.Time{}
+		}
 		return 0
 	}
 
@@ -66,6 +69,7 @@ func (e *Engine) collectCleanupCandidates(r *round) []cleanupCandidate {
 	for _, ch := range r.channels {
 		p := ch.pol
 		if !p.Cleanup.Enabled || ch.excluded {
+			ch.state.CleanupEligibleSince = time.Time{}
 			continue
 		}
 
@@ -78,6 +82,7 @@ func (e *Engine) collectCleanupCandidates(r *round) []cleanupCandidate {
 		//
 		// 想清理真正废掉的渠道，请用 401/403（凭据失效）作为触发条件。
 		if isRateLimited(ch, r.now) {
+			ch.state.CleanupEligibleSince = time.Time{}
 			continue
 		}
 
@@ -98,6 +103,7 @@ func (e *Engine) collectCleanupCandidates(r *round) []cleanupCandidate {
 		// 安全性不靠「先熔断」保证，而靠下面几道：观察期、保留组内最后一个、
 		// 每轮上限，以及删除前先把 schedulable 摘掉（见 cleanupByDelete）。
 		if hits < p.Cleanup.Occurrences {
+			ch.state.CleanupEligibleSince = time.Time{}
 			if hasHits {
 				e.store.Log("info", "cleanup_skipped", accountRef(ch.account.ID),
 					accountRef(ch.primaryGroup),
@@ -109,6 +115,7 @@ func (e *Engine) collectCleanupCandidates(r *round) []cleanupCandidate {
 
 		// 保底强留的渠道不处置：它是分组最后的防线，优先级高于自动清理。
 		if ch.desired.health == domain.HealthSurvivor {
+			ch.state.CleanupEligibleSince = time.Time{}
 			e.store.Log("info", "cleanup_skipped", accountRef(ch.account.ID),
 				accountRef(ch.primaryGroup),
 				fmt.Sprintf("渠道 %s 命中 %d 次失效样本，但它是分组的保底强留渠道，暂不处置",
@@ -116,14 +123,15 @@ func (e *Engine) collectCleanupCandidates(r *round) []cleanupCandidate {
 			continue
 		}
 
-		// 最短观察期：从状态变化时刻起算，给人工介入留出窗口。
+		// 最短观察期从“首次持续满足处置条件”起算，而不是复用 HealthSince。
+		// 后者可能是很久以前进入降级态的时间，会让刚出现的认证错误绕过观察窗口。
+		if ch.state.CleanupEligibleSince.IsZero() {
+			ch.state.CleanupEligibleSince = r.now
+		}
 		if p.Cleanup.MinFusedMinutes > 0 {
-			since := ch.state.HealthSince
-			if since.IsZero() || r.now.Sub(since) < time.Duration(p.Cleanup.MinFusedMinutes)*time.Minute {
-				waited := time.Duration(0)
-				if !since.IsZero() {
-					waited = r.now.Sub(since)
-				}
+			since := ch.state.CleanupEligibleSince
+			if r.now.Sub(since) < time.Duration(p.Cleanup.MinFusedMinutes)*time.Minute {
+				waited := r.now.Sub(since)
 				e.store.Log("info", "cleanup_skipped", accountRef(ch.account.ID),
 					accountRef(ch.primaryGroup),
 					fmt.Sprintf("渠道 %s 已满足处置条件，但当前状态仅持续 %.0f 分钟，需满 %d 分钟观察期",
@@ -185,7 +193,7 @@ func (e *Engine) executeCleanup(ctx context.Context, r *round, candidate cleanup
 
 	switch p.Cleanup.Action {
 	case policy.FatalActionPause:
-		return e.cleanupByPause(accountID, candidate, snapshot)
+		return e.cleanupByPause(ctx, accountID, candidate, snapshot)
 	case policy.FatalActionDisable:
 		return e.cleanupByDisable(ctx, accountID, candidate, snapshot)
 	case policy.FatalActionDelete:
@@ -196,12 +204,23 @@ func (e *Engine) executeCleanup(ctx context.Context, r *round, candidate cleanup
 }
 
 // cleanupByPause 把渠道转为人工暂停：不再自动回池，等人来处理。
-func (e *Engine) cleanupByPause(accountID int64, candidate cleanupCandidate, snapshot string) bool {
+func (e *Engine) cleanupByPause(ctx context.Context, accountID int64, candidate cleanupCandidate, snapshot string) bool {
 	global, err := e.store.Policy()
 	if err != nil {
 		return false
 	}
 	if global.AccountPaused(accountID) {
+		return false
+	}
+	if err := e.ensureBaseline(candidate.ch); err != nil {
+		e.store.Log("error", "cleanup_failed", accountRef(accountID), accountRef(candidate.groupID),
+			fmt.Sprintf("保存暂停前基线失败: %s", err), nil)
+		return false
+	}
+	managedSchedulable := false
+	if err := e.persistManagedIntent(candidate.ch, nil, &managedSchedulable); err != nil {
+		e.store.Log("error", "cleanup_failed", accountRef(accountID), accountRef(candidate.groupID),
+			fmt.Sprintf("保存暂停写入所有权失败: %s", err), nil)
 		return false
 	}
 	global.PausedAccountIDs = append(global.PausedAccountIDs, accountID)
@@ -211,7 +230,29 @@ func (e *Engine) cleanupByPause(accountID int64, candidate cleanupCandidate, sna
 		return false
 	}
 
-	e.recordAction(accountID, "cleanup_pause", nil, map[string]any{"paused": true}, nil)
+	if candidate.ch.account.Schedulable {
+		err := e.client.SetSchedulable(ctx, accountID, false)
+		e.recordAction(accountID, "cleanup_pause", map[string]any{"schedulable": true},
+			map[string]any{"schedulable": false}, err)
+		if err != nil {
+			// 上游没有暂停成功就撤销本地名单，避免页面显示“已暂停”而实际仍在接流量。
+			filtered := make([]int64, 0, len(global.PausedAccountIDs))
+			for _, id := range global.PausedAccountIDs {
+				if id != accountID {
+					filtered = append(filtered, id)
+				}
+			}
+			global.PausedAccountIDs = filtered
+			_, _ = e.store.SavePolicy(global)
+			e.store.Log("error", "cleanup_failed", accountRef(accountID), accountRef(candidate.groupID),
+				fmt.Sprintf("暂停渠道失败: %s", err), nil)
+			return false
+		}
+		candidate.ch.account.Schedulable = false
+	} else {
+		e.recordAction(accountID, "cleanup_pause", nil, map[string]any{"paused": true}, nil)
+	}
+
 	e.store.AddEvent(domain.Event{
 		Level:     "warn",
 		Action:    "cleanup_paused",

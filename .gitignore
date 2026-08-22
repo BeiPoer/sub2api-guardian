@@ -2,6 +2,7 @@
 backend/data/*
 !backend/data/
 !backend/data/.gitkeep
+backend/.gocache/
 backend/guardian
 backend/guardian.exe
 backend/guardian.exe~

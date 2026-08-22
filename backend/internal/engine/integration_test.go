@@ -46,6 +46,9 @@ type fakeSub2API struct {
 	// 这是网站「此刻会不会把请求发给这个账号」的权威依据，Guardian 探测不出来，
 	// 只能从账号列表接口读。有它才能测出「探测成功但上游仍在限流」这种情形。
 	rateLimitReset map[int64]time.Time
+
+	// upstreamMultipliers 模拟新版 Sub2API 原生上游计费探测的当前有效倍率。
+	upstreamMultipliers map[int64]float64
 }
 
 // probeResult 是假 sub2api 可以返回的探测结果类型。
@@ -58,16 +61,17 @@ const (
 
 func newFakeSub2API() *fakeSub2API {
 	return &fakeSub2API{
-		probeFatal:     map[int64]bool{},
-		updates:        map[int64]map[string]any{},
-		schedulable:    map[int64]bool{},
-		clearedErr:     map[int64]bool{},
-		hidden:         map[int64]bool{},
-		failWrites:     map[int64]bool{},
-		deletes:        map[int64]int{},
-		status:         map[int64]string{},
-		probeResults:   map[int64]probeResult{},
-		rateLimitReset: map[int64]time.Time{},
+		probeFatal:          map[int64]bool{},
+		updates:             map[int64]map[string]any{},
+		schedulable:         map[int64]bool{},
+		clearedErr:          map[int64]bool{},
+		hidden:              map[int64]bool{},
+		failWrites:          map[int64]bool{},
+		deletes:             map[int64]int{},
+		status:              map[int64]string{},
+		probeResults:        map[int64]probeResult{},
+		rateLimitReset:      map[int64]time.Time{},
+		upstreamMultipliers: map[int64]float64{},
 	}
 }
 
@@ -120,6 +124,32 @@ func (f *fakeSub2API) handler(t *testing.T) http.Handler {
 		})
 	})
 
+	mux.HandleFunc("/api/v1/admin/accounts/upstream-billing-probe/batch", func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			AccountIDs []int64 `json:"account_ids"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		results := make([]map[string]any, 0, len(request.AccountIDs))
+		for _, accountID := range request.AccountIDs {
+			value := f.upstreamMultiplier(accountID)
+			results = append(results, map[string]any{
+				"account_id": accountID,
+				"snapshot": map[string]any{
+					"status": "ok",
+					"data": map[string]any{
+						"billing_scope":             "token",
+						"resolved_rate_multiplier":  value,
+						"effective_rate_multiplier": value,
+					},
+				},
+			})
+		}
+		writeEnvelope(w, map[string]any{"results": results})
+	})
+
 	mux.HandleFunc("/api/v1/admin/accounts/", func(w http.ResponseWriter, r *http.Request) {
 		rest := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/accounts/")
 		parts := strings.Split(rest, "/")
@@ -145,6 +175,19 @@ func (f *fakeSub2API) handler(t *testing.T) http.Handler {
 		switch {
 		case action == "test" && r.Method == http.MethodPost:
 			f.serveProbe(w, accountID)
+		case action == "upstream-billing-probe" && r.Method == http.MethodPost:
+			value := f.upstreamMultiplier(accountID)
+			writeEnvelope(w, map[string]any{
+				"account_id": accountID,
+				"snapshot": map[string]any{
+					"status": "ok",
+					"data": map[string]any{
+						"billing_scope":             "token",
+						"resolved_rate_multiplier":  value,
+						"effective_rate_multiplier": value,
+					},
+				},
+			})
 		case action == "" && r.Method == http.MethodDelete:
 			f.mu.Lock()
 			f.deletes[accountID]++
@@ -267,6 +310,21 @@ func (f *fakeSub2API) setFatal(accountID int64, fatal bool) {
 	f.mu.Lock()
 	f.probeFatal[accountID] = fatal
 	f.mu.Unlock()
+}
+
+func (f *fakeSub2API) setUpstreamMultiplier(accountID int64, value float64) {
+	f.mu.Lock()
+	f.upstreamMultipliers[accountID] = value
+	f.mu.Unlock()
+}
+
+func (f *fakeSub2API) upstreamMultiplier(accountID int64) float64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if value := f.upstreamMultipliers[accountID]; value > 0 {
+		return value
+	}
+	return 1
 }
 
 // setFailWrites 让指定账号的所有写操作失败，模拟 sub2api 短暂不可写。
@@ -489,6 +547,73 @@ func TestEndToEndFuseAndRecover(t *testing.T) {
 	}
 	if schedulable, ok := fake.schedulableOf(102); !ok || !schedulable {
 		t.Fatalf("回池后应写入 schedulable=true，实际 %v", schedulable)
+	}
+}
+
+func TestAutomaticUpstreamMultiplierDrivesPricePriority(t *testing.T) {
+	eng, st, fake := setupEngine(t)
+	ctx := context.Background()
+	if err := eng.RunOnce(ctx); err != nil {
+		t.Fatalf("准备健康状态失败: %v", err)
+	}
+
+	fake.setUpstreamMultiplier(101, 0.25)
+	fake.setUpstreamMultiplier(102, 2.5)
+	p, _ := st.Policy()
+	p.Strategy = policy.StrategyPrice
+	p.AccountUpstreamMultiplierEnabled = map[string]bool{"101": true, "102": true}
+	if _, err := st.SavePolicy(p); err != nil {
+		t.Fatalf("保存实时倍率配置失败: %v", err)
+	}
+
+	if err := eng.RunOnce(ctx); err != nil {
+		t.Fatalf("实时倍率调度失败: %v", err)
+	}
+	states, err := st.ChannelStateMap()
+	if err != nil {
+		t.Fatalf("读取渠道状态失败: %v", err)
+	}
+	if states[101].Multiplier != 0.25 || states[102].Multiplier != 2.5 {
+		t.Fatalf("自动倍率未进入本轮状态: 101=%g 102=%g", states[101].Multiplier, states[102].Multiplier)
+	}
+	if states[101].DesiredPriority >= states[102].DesiredPriority {
+		t.Fatalf("价格优先未按自动倍率重排: 101=%d 102=%d",
+			states[101].DesiredPriority, states[102].DesiredPriority)
+	}
+}
+
+func TestAutomaticUpstreamMultiplierFusesAboveThresholdInSameRun(t *testing.T) {
+	eng, st, fake := setupEngine(t)
+	ctx := context.Background()
+	if err := eng.RunOnce(ctx); err != nil {
+		t.Fatalf("准备健康状态失败: %v", err)
+	}
+
+	fake.setUpstreamMultiplier(102, 2.5)
+	p, _ := st.Policy()
+	p.AccountUpstreamMultiplierEnabled = map[string]bool{"102": true}
+	p.AccountUpstreamMultiplierBreakers = map[string]policy.UpstreamMultiplierBreaker{
+		"102": {Enabled: true, Threshold: 1.5},
+	}
+	if _, err := st.SavePolicy(p); err != nil {
+		t.Fatalf("保存倍率阈值配置失败: %v", err)
+	}
+
+	if err := eng.RunOnce(ctx); err != nil {
+		t.Fatalf("倍率阈值调度失败: %v", err)
+	}
+	state, err := st.ChannelState(102)
+	if err != nil {
+		t.Fatalf("读取渠道状态失败: %v", err)
+	}
+	if state.Multiplier != 2.5 || state.Health != domain.HealthFused {
+		t.Fatalf("超阈值倍率未在同轮熔断: multiplier=%g health=%s", state.Multiplier, state.Health)
+	}
+	if !strings.Contains(state.FusedReason, "2.5") || !strings.Contains(state.FusedReason, "1.5") {
+		t.Fatalf("倍率熔断原因不完整: %q", state.FusedReason)
+	}
+	if schedulable, ok := fake.schedulableOf(102); !ok || schedulable {
+		t.Fatalf("超阈值渠道未写回 schedulable=false: %v/%v", schedulable, ok)
 	}
 }
 

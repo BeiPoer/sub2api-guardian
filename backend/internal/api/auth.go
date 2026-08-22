@@ -258,7 +258,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 }
 
 // consumeAuthAttempt 对无需会话的敏感入口做进程内短窗口限流。
-// 使用 TCP 来源地址，不信任可伪造的 X-Forwarded-For。
+// 只有 TCP 对端是回环地址时才采信反向代理传入的 X-Forwarded-For。
 func (s *Server) consumeAuthAttempt(w http.ResponseWriter, r *http.Request, scope string, limit int) bool {
 	now := time.Now()
 	key := scope + ":" + requestRemoteHost(r)
@@ -292,11 +292,23 @@ func (s *Server) resetAuthAttempts(r *http.Request, scope string) {
 }
 
 func requestRemoteHost(r *http.Request) string {
-	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
-	if err == nil && host != "" {
-		return host
+	remote := strings.TrimSpace(r.RemoteAddr)
+	host, _, err := net.SplitHostPort(remote)
+	if err != nil {
+		host = remote
 	}
-	return strings.TrimSpace(r.RemoteAddr)
+	peer := net.ParseIP(strings.TrimSpace(host))
+	if peer != nil && peer.IsLoopback() {
+		if forwarded := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0]); forwarded != "" {
+			if ip := net.ParseIP(forwarded); ip != nil {
+				return ip.String()
+			}
+		}
+	}
+	if peer != nil {
+		return peer.String()
+	}
+	return host
 }
 
 // logout 注销当前会话。

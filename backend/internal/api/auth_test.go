@@ -421,6 +421,84 @@ func TestAuthRateLimitIgnoresForwardedFor(t *testing.T) {
 	}
 }
 
+func TestAuthRateLimitTrustsLoopbackProxy(t *testing.T) {
+	fx := setupAuthAPI(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader([]byte(`{}`)))
+	req.RemoteAddr = "127.0.0.1:9000"
+	req.Header.Set("X-Forwarded-For", "198.51.100.40, 127.0.0.1")
+	rec := httptest.NewRecorder()
+
+	if !fx.server.consumeAuthAttempt(rec, req, "login", 1) {
+		t.Fatal("首次请求不应被限流")
+	}
+	fx.server.authRateMu.Lock()
+	_, forwardedTracked := fx.server.authRates["login:198.51.100.40"]
+	_, proxyTracked := fx.server.authRates["login:127.0.0.1"]
+	fx.server.authRateMu.Unlock()
+	if !forwardedTracked || proxyTracked {
+		t.Fatalf("回环代理应按真实客户端限流，forwarded=%v proxy=%v", forwardedTracked, proxyTracked)
+	}
+}
+
+func TestSetupRejectsCrossSiteAndNonJSONRequests(t *testing.T) {
+	t.Run("cross-site", func(t *testing.T) {
+		fx := setupAuthAPI(t)
+		req := httptest.NewRequest(http.MethodPost, "/api/setup", bytes.NewReader([]byte(`{
+			"username":"admin","password":"hunter2hunter2","base_url":"http://example.com","admin_api_key":"k"
+		}`)))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Origin", "http://evil.example")
+		rec := httptest.NewRecorder()
+		fx.handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("跨站初始化返回 %d，期望 403", rec.Code)
+		}
+		if count, _ := fx.store.UserCount(); count != 0 {
+			t.Fatalf("跨站请求不该创建用户，实际用户数 %d", count)
+		}
+	})
+
+	t.Run("text-plain", func(t *testing.T) {
+		fx := setupAuthAPI(t)
+		req := httptest.NewRequest(http.MethodPost, "/api/setup", strings.NewReader(`{
+			"username":"admin","password":"hunter2hunter2","base_url":"http://example.com","admin_api_key":"k"
+		}`))
+		req.Header.Set("Content-Type", "text/plain")
+		rec := httptest.NewRecorder()
+		fx.handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnsupportedMediaType {
+			t.Fatalf("text/plain 初始化返回 %d，期望 415", rec.Code)
+		}
+		if count, _ := fx.store.UserCount(); count != 0 {
+			t.Fatalf("非 JSON 请求不该创建用户，实际用户数 %d", count)
+		}
+	})
+}
+
+func TestHTTPBoundaryProtection(t *testing.T) {
+	fx := setupAuthAPI(t)
+
+	response := raw(t, fx.handler, http.MethodGet, "/healthz", nil)
+	for _, header := range []string{
+		"Content-Security-Policy", "X-Content-Type-Options", "X-Frame-Options",
+		"Referrer-Policy", "Permissions-Policy",
+	} {
+		if response.Header().Get(header) == "" {
+			t.Fatalf("响应缺少安全头 %s", header)
+		}
+	}
+
+	tooLarge := append([]byte{'"'}, bytes.Repeat([]byte("x"), int(maxRequestBodyBytes)+1)...)
+	tooLarge = append(tooLarge, '"')
+	req := httptest.NewRequest(http.MethodPost, "/api/login", bytes.NewReader(tooLarge))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	fx.handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "request body too large") {
+		t.Fatalf("超限正文返回 %d %s，期望 400 且说明过大", rec.Code, rec.Body.String())
+	}
+}
+
 // TestInvalidSessionRejected 确认伪造的令牌不被接受。
 func TestInvalidSessionRejected(t *testing.T) {
 	fx := setupAuthAPI(t)
