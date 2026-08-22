@@ -574,6 +574,16 @@
     @apply text-gray-400 dark:text-dark-500;
   }
 
+  .upstream-rail-item {
+    @apply flex min-h-[5.5rem] w-full items-stretch gap-2.5 rounded-lg border border-transparent p-2.5;
+    @apply text-left transition-colors hover:border-gray-200 hover:bg-gray-50;
+    @apply dark:hover:border-dark-600 dark:hover:bg-dark-800;
+  }
+
+  .upstream-rail-item-selected {
+    @apply border-primary-200 bg-primary-50 dark:border-primary-800 dark:bg-primary-900/20;
+  }
+
   /* ============ 页面头部 ============ */
   .page-header {
     @apply mb-6;

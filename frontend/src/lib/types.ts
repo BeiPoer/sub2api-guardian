@@ -26,6 +26,7 @@ export interface Image2Config {
 
 export type UpstreamChannelType = 'sub2api' | 'newapi' | 'other'
 export type UpstreamChannelStatus = 'active' | 'error' | 'syncing'
+export type UpstreamRechargeMethod = 'alipay' | 'wechat' | 'card'
 export type UpstreamTaskType =
   | 'low_balance'
   | 'burn_rate'
@@ -42,6 +43,9 @@ export interface UpstreamChannel {
   password: string
   newapi_access_token: string
   newapi_user_id: string
+  recharge_ratio: number
+  recharge_methods: UpstreamRechargeMethod[]
+  recharge_fee: string
   ignored: boolean
   status: UpstreamChannelStatus
   last_sync_at: string
@@ -112,6 +116,8 @@ export interface UpstreamAlert {
   snapshot?: unknown
   email_sent: boolean
   email_error: string
+  wecom_sent: boolean
+  wecom_error: string
   created_at: string
 }
 
@@ -125,6 +131,13 @@ export interface UpstreamEmailSettings {
   default_recipients: string[]
   default_interval_minutes: number
   has_smtp_password: boolean
+}
+
+export interface UpstreamWeComSettings {
+  corp_id: string
+  agent_id: number
+  target: string
+  has_secret: boolean
 }
 
 export interface UpstreamTokenModels {

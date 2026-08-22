@@ -8,6 +8,7 @@
       class="input"
       :type="type"
       :value="modelValue"
+      :inputmode="inputmode"
       :min="min"
       :max="max"
       :step="step"
@@ -25,6 +26,7 @@ const props = withDefaults(
     label: string
     modelValue: string | number
     type?: 'text' | 'number' | 'password'
+    inputmode?: 'none' | 'text' | 'decimal' | 'numeric' | 'tel' | 'search' | 'email' | 'url'
     hint?: string
     suffix?: string
     placeholder?: string

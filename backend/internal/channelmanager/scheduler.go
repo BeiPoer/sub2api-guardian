@@ -265,9 +265,17 @@ func (m *Manager) recordAlert(ctx context.Context, channel store.UpstreamChannel
 	} else {
 		emailSent = true
 	}
+	wecomSent := false
+	wecomError := ""
+	if _, err := m.sendWeCom(ctx, "", subject+"\n"+evaluation.Message); err != nil {
+		wecomError = err.Error()
+	} else {
+		wecomSent = true
+	}
 	if err := m.store.AddUpstreamAlertEvent(store.UpstreamAlertEvent{
 		ChannelID: channel.ID, TaskID: &task.ID, Type: string(task.Type), Message: evaluation.Message,
-		Snapshot: evaluation.Snapshot, EmailSent: emailSent, EmailError: emailError, CreatedAt: now.Format(time.RFC3339Nano),
+		Snapshot: evaluation.Snapshot, EmailSent: emailSent, EmailError: emailError,
+		WeComSent: wecomSent, WeComError: wecomError, CreatedAt: now.Format(time.RFC3339Nano),
 	}); err != nil {
 		return err
 	}

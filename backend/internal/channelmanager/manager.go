@@ -21,6 +21,11 @@ type Manager struct {
 	store  *store.Store
 	client *http.Client
 
+	wecomMu             sync.Mutex
+	wecomBaseURL        string
+	wecomAccessToken    string
+	wecomTokenExpiresAt time.Time
+
 	lockMu sync.Mutex
 	locks  map[int64]*sync.Mutex
 
@@ -33,11 +38,12 @@ type Manager struct {
 
 func New(st *store.Store) *Manager {
 	return &Manager{
-		store:  st,
-		client: &http.Client{Timeout: defaultHTTPTimeout},
-		locks:  make(map[int64]*sync.Mutex),
-		stop:   make(chan struct{}),
-		done:   make(chan struct{}),
+		store:        st,
+		client:       &http.Client{Timeout: defaultHTTPTimeout},
+		wecomBaseURL: wecomAPIBaseURL,
+		locks:        make(map[int64]*sync.Mutex),
+		stop:         make(chan struct{}),
+		done:         make(chan struct{}),
 	}
 }
 

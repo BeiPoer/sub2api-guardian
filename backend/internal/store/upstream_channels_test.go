@@ -70,6 +70,43 @@ func TestUpstreamChannelTablesStayIsolatedAndCascade(t *testing.T) {
 	}
 }
 
+func TestUpstreamChannelRechargeSettingsDefaultAndPersistence(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "guardian.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	channel, err := st.CreateUpstreamChannel(UpstreamChannelInput{
+		Name: "充值渠道", Type: UpstreamChannelOther, BaseURL: "https://example.test",
+		Username: "user", Password: "secret",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if channel.RechargeRatio != 1 || len(channel.RechargeMethods) != 0 || channel.RechargeFee != "" {
+		t.Fatalf("充值配置默认值异常: %+v", channel)
+	}
+
+	updated, err := st.UpdateUpstreamChannel(channel.ID, UpstreamChannelInput{
+		Name: channel.Name, Type: channel.Type, BaseURL: channel.BaseURL,
+		Username: channel.Username, Password: channel.Password,
+		RechargeRatio: 1.2,
+		RechargeMethods: []UpstreamRechargeMethod{
+			UpstreamRechargeWechat, UpstreamRechargeAlipay, UpstreamRechargeWechat,
+		},
+		RechargeFee: "每笔 2 元",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.RechargeRatio != 1.2 || len(updated.RechargeMethods) != 2 ||
+		updated.RechargeMethods[0] != UpstreamRechargeWechat || updated.RechargeMethods[1] != UpstreamRechargeAlipay ||
+		updated.RechargeFee != "每笔 2 元" {
+		t.Fatalf("充值配置持久化异常: %+v", updated)
+	}
+}
+
 func TestCleanupUpstreamHistoryDoesNotTouchGuardianEvents(t *testing.T) {
 	st, err := Open(filepath.Join(t.TempDir(), "guardian.sqlite"))
 	if err != nil {
@@ -113,5 +150,51 @@ func TestUpstreamSMTPPasswordPersistsButIsNotJSONVisible(t *testing.T) {
 	raw, _ := json.Marshal(loaded)
 	if strings.Contains(string(raw), "secret") {
 		t.Fatalf("SMTP 密码不应出现在 JSON 中: %s", raw)
+	}
+}
+
+func TestUpstreamWeComSecretPersistsButIsNotJSONVisible(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "guardian.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	_, err = st.SaveUpstreamWeComSettings(UpstreamWeComSettings{
+		CorpID: "ww-corp", AgentID: 1000002, Secret: "app-secret", Target: "zhangsan",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := st.UpstreamWeComSettings()
+	if err != nil || loaded.Secret != "app-secret" || !loaded.HasSecret || loaded.AgentID != 1000002 || loaded.Target != "zhangsan" {
+		t.Fatalf("企微配置未持久化: %+v err=%v", loaded, err)
+	}
+	raw, _ := json.Marshal(loaded)
+	if strings.Contains(string(raw), "app-secret") {
+		t.Fatalf("企微 Secret 不应出现在 JSON 中: %s", raw)
+	}
+}
+
+func TestUpstreamAlertStoresWeComDeliveryResult(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "guardian.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	channel, err := st.CreateUpstreamChannel(UpstreamChannelInput{
+		Name: "告警渠道", Type: UpstreamChannelOther, BaseURL: "https://example.test", Username: "u", Password: "p",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddUpstreamAlertEvent(UpstreamAlertEvent{
+		ChannelID: channel.ID, Type: string(UpstreamTaskLowBalance), Message: "余额低",
+		WeComSent: true, WeComError: "",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	alerts, err := st.UpstreamAlertEvents(channel.ID, 10)
+	if err != nil || len(alerts) != 1 || !alerts[0].WeComSent || alerts[0].WeComError != "" {
+		t.Fatalf("企微告警结果读取异常: %+v err=%v", alerts, err)
 	}
 }

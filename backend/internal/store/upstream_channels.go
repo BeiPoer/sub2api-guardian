@@ -18,6 +18,18 @@ const (
 	UpstreamChannelOther   UpstreamChannelType = "other"
 )
 
+const (
+	UpstreamRechargeAlipay UpstreamRechargeMethod = "alipay"
+	UpstreamRechargeWechat UpstreamRechargeMethod = "wechat"
+	UpstreamRechargeCard   UpstreamRechargeMethod = "card"
+)
+
+type UpstreamRechargeMethod string
+
+func (m UpstreamRechargeMethod) Valid() bool {
+	return m == UpstreamRechargeAlipay || m == UpstreamRechargeWechat || m == UpstreamRechargeCard
+}
+
 func (t UpstreamChannelType) Valid() bool {
 	return t == UpstreamChannelSub2API || t == UpstreamChannelNewAPI || t == UpstreamChannelOther
 }
@@ -25,23 +37,26 @@ func (t UpstreamChannelType) Valid() bool {
 // UpstreamChannel 包含用户明确要求可在已登录面板中查看的上游凭据。
 // access / refresh 会话令牌只供服务端刷新使用，永不序列化给前端。
 type UpstreamChannel struct {
-	ID                    int64               `json:"id"`
-	Name                  string              `json:"name"`
-	Type                  UpstreamChannelType `json:"type"`
-	BaseURL               string              `json:"base_url"`
-	Username              string              `json:"username"`
-	Password              string              `json:"password"`
-	NewAPIAccessToken     string              `json:"newapi_access_token"`
-	NewAPIUserID          string              `json:"newapi_user_id"`
-	Sub2APIAccessToken    string              `json:"-"`
-	Sub2APIRefreshToken   string              `json:"-"`
-	Sub2APITokenExpiresAt string              `json:"-"`
-	Ignored               bool                `json:"ignored"`
-	Status                string              `json:"status"`
-	LastSyncAt            string              `json:"last_sync_at"`
-	LastError             string              `json:"last_error"`
-	CreatedAt             string              `json:"created_at"`
-	UpdatedAt             string              `json:"updated_at"`
+	ID                    int64                    `json:"id"`
+	Name                  string                   `json:"name"`
+	Type                  UpstreamChannelType      `json:"type"`
+	BaseURL               string                   `json:"base_url"`
+	Username              string                   `json:"username"`
+	Password              string                   `json:"password"`
+	NewAPIAccessToken     string                   `json:"newapi_access_token"`
+	NewAPIUserID          string                   `json:"newapi_user_id"`
+	RechargeRatio         float64                  `json:"recharge_ratio"`
+	RechargeMethods       []UpstreamRechargeMethod `json:"recharge_methods"`
+	RechargeFee           string                   `json:"recharge_fee"`
+	Sub2APIAccessToken    string                   `json:"-"`
+	Sub2APIRefreshToken   string                   `json:"-"`
+	Sub2APITokenExpiresAt string                   `json:"-"`
+	Ignored               bool                     `json:"ignored"`
+	Status                string                   `json:"status"`
+	LastSyncAt            string                   `json:"last_sync_at"`
+	LastError             string                   `json:"last_error"`
+	CreatedAt             string                   `json:"created_at"`
+	UpdatedAt             string                   `json:"updated_at"`
 }
 
 type UpstreamChannelInput struct {
@@ -52,6 +67,9 @@ type UpstreamChannelInput struct {
 	Password          string
 	NewAPIAccessToken string
 	NewAPIUserID      string
+	RechargeRatio     float64
+	RechargeMethods   []UpstreamRechargeMethod
+	RechargeFee       string
 	Ignored           bool
 }
 
@@ -62,7 +80,8 @@ var (
 
 const upstreamChannelColumns = `id, name, type, base_url, username, password,
 	newapi_access_token, newapi_user_id, sub2api_access_token, sub2api_refresh_token,
-	sub2api_token_expires_at, ignored, status, last_sync_at, last_error, created_at, updated_at`
+	sub2api_token_expires_at, recharge_ratio, recharge_methods, recharge_fee,
+	ignored, status, last_sync_at, last_error, created_at, updated_at`
 
 type upstreamScanner interface {
 	Scan(...any) error
@@ -70,21 +89,32 @@ type upstreamScanner interface {
 
 func scanUpstreamChannel(row upstreamScanner) (UpstreamChannel, error) {
 	var (
-		channel    UpstreamChannel
-		typeName   string
-		ignored    int
-		expiresAt  sql.NullString
-		lastSyncAt sql.NullString
+		channel             UpstreamChannel
+		typeName            string
+		ignored             int
+		expiresAt           sql.NullString
+		lastSyncAt          sql.NullString
+		rechargeMethodsJSON string
 	)
 	err := row.Scan(
 		&channel.ID, &channel.Name, &typeName, &channel.BaseURL, &channel.Username, &channel.Password,
 		&channel.NewAPIAccessToken, &channel.NewAPIUserID, &channel.Sub2APIAccessToken, &channel.Sub2APIRefreshToken,
-		&expiresAt, &ignored, &channel.Status, &lastSyncAt, &channel.LastError, &channel.CreatedAt, &channel.UpdatedAt,
+		&expiresAt, &channel.RechargeRatio, &rechargeMethodsJSON, &channel.RechargeFee,
+		&ignored, &channel.Status, &lastSyncAt, &channel.LastError, &channel.CreatedAt, &channel.UpdatedAt,
 	)
 	if err != nil {
 		return UpstreamChannel{}, err
 	}
 	channel.Type = UpstreamChannelType(typeName)
+	if channel.RechargeRatio <= 0 {
+		channel.RechargeRatio = 1
+	}
+	if rechargeMethodsJSON != "" {
+		if err := json.Unmarshal([]byte(rechargeMethodsJSON), &channel.RechargeMethods); err != nil {
+			return UpstreamChannel{}, fmt.Errorf("解析上游充值方式: %w", err)
+		}
+	}
+	channel.RechargeMethods = normalizeUpstreamRechargeMethods(channel.RechargeMethods)
 	channel.Ignored = ignored != 0
 	if expiresAt.Valid {
 		channel.Sub2APITokenExpiresAt = expiresAt.String
@@ -133,13 +163,22 @@ func (s *Store) CreateUpstreamChannel(input UpstreamChannelInput) (UpstreamChann
 	if input.Type == UpstreamChannelOther {
 		status = "active"
 	}
+	if input.RechargeRatio <= 0 {
+		input.RechargeRatio = 1
+	}
+	input.RechargeMethods = normalizeUpstreamRechargeMethods(input.RechargeMethods)
+	rechargeMethodsJSON, err := marshalJSON(input.RechargeMethods)
+	if err != nil {
+		return UpstreamChannel{}, err
+	}
 	s.mu.Lock()
 	result, err := s.db.Exec(`INSERT INTO upstream_channels (
 		name, type, base_url, username, password, newapi_access_token, newapi_user_id,
-		ignored, status, created_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		recharge_ratio, recharge_methods, recharge_fee, ignored, status, created_at, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		input.Name, string(input.Type), input.BaseURL, input.Username, input.Password,
-		input.NewAPIAccessToken, input.NewAPIUserID, boolInt(input.Ignored), status, now, now)
+		input.NewAPIAccessToken, input.NewAPIUserID, input.RechargeRatio, rechargeMethodsJSON, input.RechargeFee,
+		boolInt(input.Ignored), status, now, now)
 	s.mu.Unlock()
 	if err != nil {
 		return UpstreamChannel{}, err
@@ -154,12 +193,22 @@ func (s *Store) CreateUpstreamChannel(input UpstreamChannelInput) (UpstreamChann
 // UpdateUpstreamChannel 有意不修改 Type：跨协议编辑会留下不兼容的缓存和会话。
 func (s *Store) UpdateUpstreamChannel(id int64, input UpstreamChannelInput) (UpstreamChannel, error) {
 	now := nowString()
+	if input.RechargeRatio <= 0 {
+		input.RechargeRatio = 1
+	}
+	input.RechargeMethods = normalizeUpstreamRechargeMethods(input.RechargeMethods)
+	rechargeMethodsJSON, err := marshalJSON(input.RechargeMethods)
+	if err != nil {
+		return UpstreamChannel{}, err
+	}
 	s.mu.Lock()
 	result, err := s.db.Exec(`UPDATE upstream_channels SET
 		name = ?, base_url = ?, username = ?, password = ?, newapi_access_token = ?,
-		newapi_user_id = ?, ignored = ?, updated_at = ? WHERE id = ?`,
+		newapi_user_id = ?, recharge_ratio = ?, recharge_methods = ?, recharge_fee = ?,
+		ignored = ?, updated_at = ? WHERE id = ?`,
 		input.Name, input.BaseURL, input.Username, input.Password, input.NewAPIAccessToken,
-		input.NewAPIUserID, boolInt(input.Ignored), now, id)
+		input.NewAPIUserID, input.RechargeRatio, rechargeMethodsJSON, input.RechargeFee,
+		boolInt(input.Ignored), now, id)
 	s.mu.Unlock()
 	if err != nil {
 		return UpstreamChannel{}, err
@@ -169,6 +218,23 @@ func (s *Store) UpdateUpstreamChannel(id int64, input UpstreamChannelInput) (Ups
 		return UpstreamChannel{}, ErrUpstreamChannelNotFound
 	}
 	return s.UpstreamChannel(id)
+}
+
+func normalizeUpstreamRechargeMethods(methods []UpstreamRechargeMethod) []UpstreamRechargeMethod {
+	out := make([]UpstreamRechargeMethod, 0, len(methods))
+	seen := make(map[UpstreamRechargeMethod]struct{}, len(methods))
+	for _, method := range methods {
+		method = UpstreamRechargeMethod(strings.ToLower(strings.TrimSpace(string(method))))
+		if !method.Valid() {
+			continue
+		}
+		if _, exists := seen[method]; exists {
+			continue
+		}
+		seen[method] = struct{}{}
+		out = append(out, method)
+	}
+	return out
 }
 
 func (s *Store) DeleteUpstreamChannel(id int64) error {
@@ -686,6 +752,8 @@ type UpstreamAlertEvent struct {
 	Snapshot    any    `json:"snapshot,omitempty"`
 	EmailSent   bool   `json:"email_sent"`
 	EmailError  string `json:"email_error"`
+	WeComSent   bool   `json:"wecom_sent"`
+	WeComError  string `json:"wecom_error"`
 	CreatedAt   string `json:"created_at"`
 }
 
@@ -698,9 +766,10 @@ func (s *Store) AddUpstreamAlertEvent(event UpstreamAlertEvent) error {
 		return err
 	}
 	s.mu.Lock()
-	_, err = s.db.Exec(`INSERT INTO upstream_alert_events(channel_id, task_id, type, message, snapshot_json, email_sent, email_error, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, event.ChannelID, nullableID(event.TaskID), event.Type,
-		truncate(event.Message, 4000), raw, boolInt(event.EmailSent), truncate(event.EmailError, 2000), event.CreatedAt)
+	_, err = s.db.Exec(`INSERT INTO upstream_alert_events(channel_id, task_id, type, message, snapshot_json, email_sent, email_error, wecom_sent, wecom_error, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, event.ChannelID, nullableID(event.TaskID), event.Type,
+		truncate(event.Message, 4000), raw, boolInt(event.EmailSent), truncate(event.EmailError, 2000),
+		boolInt(event.WeComSent), truncate(event.WeComError, 2000), event.CreatedAt)
 	s.mu.Unlock()
 	return err
 }
@@ -710,7 +779,7 @@ func (s *Store) UpstreamAlertEvents(channelID int64, limit int) ([]UpstreamAlert
 		limit = 200
 	}
 	args := []any{limit}
-	query := `SELECT a.id, a.channel_id, c.name, a.task_id, a.type, a.message, a.snapshot_json, a.email_sent, a.email_error, a.created_at
+	query := `SELECT a.id, a.channel_id, c.name, a.task_id, a.type, a.message, a.snapshot_json, a.email_sent, a.email_error, a.wecom_sent, a.wecom_error, a.created_at
 		FROM upstream_alert_events a JOIN upstream_channels c ON c.id = a.channel_id`
 	if channelID > 0 {
 		query += ` WHERE a.channel_id = ?`
@@ -725,11 +794,11 @@ func (s *Store) UpstreamAlertEvents(channelID int64, limit int) ([]UpstreamAlert
 	items := make([]UpstreamAlertEvent, 0)
 	for rows.Next() {
 		var taskID sql.NullInt64
-		var sent int
+		var sent, wecomSent int
 		var snapshot string
 		var item UpstreamAlertEvent
 		if err := rows.Scan(&item.ID, &item.ChannelID, &item.ChannelName, &taskID, &item.Type, &item.Message,
-			&snapshot, &sent, &item.EmailError, &item.CreatedAt); err != nil {
+			&snapshot, &sent, &item.EmailError, &wecomSent, &item.WeComError, &item.CreatedAt); err != nil {
 			return nil, err
 		}
 		if taskID.Valid {
@@ -737,6 +806,7 @@ func (s *Store) UpstreamAlertEvents(channelID int64, limit int) ([]UpstreamAlert
 			item.TaskID = &value
 		}
 		item.EmailSent = sent != 0
+		item.WeComSent = wecomSent != 0
 		if snapshot != "" {
 			if err := json.Unmarshal([]byte(snapshot), &item.Snapshot); err != nil {
 				item.Snapshot = snapshot
@@ -765,6 +835,8 @@ func (s *Store) CleanupUpstreamHistory(before time.Time) error {
 }
 
 const metaUpstreamEmailSettings = "upstream_email_settings"
+
+const metaUpstreamWeComSettings = "upstream_wecom_settings"
 
 type UpstreamEmailSettings struct {
 	SMTPHost               string   `json:"smtp_host"`
@@ -844,6 +916,70 @@ func (s *Store) SaveUpstreamEmailSettings(settings UpstreamEmailSettings) (Upstr
 	s.mu.Unlock()
 	if err != nil {
 		return UpstreamEmailSettings{}, err
+	}
+	return settings, nil
+}
+
+// UpstreamWeComSettings 保存直接调用企业微信应用 API 所需的配置。
+// Secret 只供服务端使用，HasSecret 让面板知道是否已经配置而不会泄露密钥。
+type UpstreamWeComSettings struct {
+	CorpID    string `json:"corp_id"`
+	AgentID   int64  `json:"agent_id"`
+	Secret    string `json:"-"`
+	Target    string `json:"target"`
+	HasSecret bool   `json:"has_secret"`
+}
+
+type upstreamWeComSettingsRecord struct {
+	CorpID  string `json:"corp_id"`
+	AgentID int64  `json:"agent_id"`
+	Secret  string `json:"secret"`
+	Target  string `json:"target"`
+}
+
+func DefaultUpstreamWeComSettings() UpstreamWeComSettings {
+	return UpstreamWeComSettings{}
+}
+
+func normalizeUpstreamWeComSettings(settings *UpstreamWeComSettings) {
+	settings.CorpID = strings.TrimSpace(settings.CorpID)
+	settings.Secret = strings.TrimSpace(settings.Secret)
+	settings.Target = strings.TrimSpace(settings.Target)
+	settings.HasSecret = settings.Secret != ""
+}
+
+func (s *Store) UpstreamWeComSettings() (UpstreamWeComSettings, error) {
+	settings := DefaultUpstreamWeComSettings()
+	var record upstreamWeComSettingsRecord
+	if err := s.getJSON(metaUpstreamWeComSettings, &record); err != nil {
+		if IsNotFound(err) {
+			return settings, nil
+		}
+		return UpstreamWeComSettings{}, err
+	}
+	settings = UpstreamWeComSettings{
+		CorpID:  record.CorpID,
+		AgentID: record.AgentID,
+		Secret:  record.Secret,
+		Target:  record.Target,
+	}
+	normalizeUpstreamWeComSettings(&settings)
+	return settings, nil
+}
+
+func (s *Store) SaveUpstreamWeComSettings(settings UpstreamWeComSettings) (UpstreamWeComSettings, error) {
+	normalizeUpstreamWeComSettings(&settings)
+	record := upstreamWeComSettingsRecord{
+		CorpID:  settings.CorpID,
+		AgentID: settings.AgentID,
+		Secret:  settings.Secret,
+		Target:  settings.Target,
+	}
+	s.mu.Lock()
+	err := s.setJSON(metaUpstreamWeComSettings, record)
+	s.mu.Unlock()
+	if err != nil {
+		return UpstreamWeComSettings{}, err
 	}
 	return settings, nil
 }

@@ -1,5 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
+const upstreamChannelsView = () => import('@/views/UpstreamChannelsView.vue')
+
 const router = createRouter({
   history: createWebHistory(),
   routes: [
@@ -8,8 +10,20 @@ const router = createRouter({
     { path: '/channels', name: 'channels', component: () => import('@/views/ChannelsView.vue') },
     {
       path: '/upstream-channels',
-      name: 'upstream-channels',
-      component: () => import('@/views/UpstreamChannelsView.vue')
+      redirect: to => ({
+        path: to.query.id ? '/upstream-channels/list' : '/upstream-channels/summary',
+        query: to.query
+      })
+    },
+    {
+      path: '/upstream-channels/summary',
+      name: 'upstream-channel-summary',
+      component: upstreamChannelsView
+    },
+    {
+      path: '/upstream-channels/list',
+      name: 'upstream-channel-list',
+      component: upstreamChannelsView
     },
     { path: '/policy', name: 'policy', component: () => import('@/views/PolicyView.vue') },
     { path: '/events', name: 'events', component: () => import('@/views/EventsView.vue') },

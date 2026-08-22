@@ -18,15 +18,18 @@ import (
 const upstreamSyncTimeout = 3 * time.Minute
 
 type upstreamChannelPayload struct {
-	Name              *string                    `json:"name"`
-	Type              *store.UpstreamChannelType `json:"type"`
-	BaseURL           *string                    `json:"base_url"`
-	Username          *string                    `json:"username"`
-	Password          *string                    `json:"password"`
-	NewAPIAccessToken *string                    `json:"newapi_access_token"`
-	NewAPIUserID      *string                    `json:"newapi_user_id"`
-	Ignored           *bool                      `json:"ignored"`
-	Sync              bool                       `json:"sync"`
+	Name              *string                         `json:"name"`
+	Type              *store.UpstreamChannelType      `json:"type"`
+	BaseURL           *string                         `json:"base_url"`
+	Username          *string                         `json:"username"`
+	Password          *string                         `json:"password"`
+	NewAPIAccessToken *string                         `json:"newapi_access_token"`
+	NewAPIUserID      *string                         `json:"newapi_user_id"`
+	RechargeRatio     *float64                        `json:"recharge_ratio"`
+	RechargeMethods   *[]store.UpstreamRechargeMethod `json:"recharge_methods"`
+	RechargeFee       *string                         `json:"recharge_fee"`
+	Ignored           *bool                           `json:"ignored"`
+	Sync              bool                            `json:"sync"`
 }
 
 type upstreamChannelListItem struct {
@@ -168,6 +171,7 @@ func normalizeUpstreamChannelPayload(payload upstreamChannelPayload, existing *s
 			Name: existing.Name, Type: existing.Type, BaseURL: existing.BaseURL,
 			Username: existing.Username, Password: existing.Password,
 			NewAPIAccessToken: existing.NewAPIAccessToken, NewAPIUserID: existing.NewAPIUserID,
+			RechargeRatio: existing.RechargeRatio, RechargeMethods: existing.RechargeMethods, RechargeFee: existing.RechargeFee,
 			Ignored: existing.Ignored,
 		}
 	}
@@ -208,6 +212,31 @@ func normalizeUpstreamChannelPayload(payload upstreamChannelPayload, existing *s
 	}
 	if payload.NewAPIUserID != nil {
 		input.NewAPIUserID = strings.TrimSpace(*payload.NewAPIUserID)
+	}
+	if payload.RechargeRatio != nil {
+		if *payload.RechargeRatio <= 0 {
+			return store.UpstreamChannelInput{}, &channelmanager.Error{Status: http.StatusBadRequest, Message: "充值比例必须大于 0"}
+		}
+		input.RechargeRatio = *payload.RechargeRatio
+	}
+	if payload.RechargeMethods != nil {
+		methods := make([]store.UpstreamRechargeMethod, 0, len(*payload.RechargeMethods))
+		seen := make(map[store.UpstreamRechargeMethod]struct{}, len(*payload.RechargeMethods))
+		for _, method := range *payload.RechargeMethods {
+			method = store.UpstreamRechargeMethod(strings.ToLower(strings.TrimSpace(string(method))))
+			if !method.Valid() {
+				return store.UpstreamChannelInput{}, &channelmanager.Error{Status: http.StatusBadRequest, Message: "充值方式仅支持支付宝、微信和卡网"}
+			}
+			if _, exists := seen[method]; exists {
+				continue
+			}
+			seen[method] = struct{}{}
+			methods = append(methods, method)
+		}
+		input.RechargeMethods = methods
+	}
+	if payload.RechargeFee != nil {
+		input.RechargeFee = strings.TrimSpace(*payload.RechargeFee)
 	}
 	if payload.Ignored != nil {
 		input.Ignored = *payload.Ignored
@@ -702,6 +731,79 @@ func (s *Server) testUpstreamEmailSettings(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
 	defer cancel()
 	messageID, err := s.upstreamChannels.TestEmail(ctx, recipients)
+	if err != nil {
+		writeUpstreamError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message_id": messageID})
+}
+
+type upstreamWeComPayload struct {
+	CorpID  *string `json:"corp_id"`
+	AgentID *int64  `json:"agent_id"`
+	Secret  *string `json:"secret"`
+	Target  *string `json:"target"`
+	ToUser  *string `json:"to_user"`
+}
+
+func (s *Server) getUpstreamWeComSettings(w http.ResponseWriter, _ *http.Request) {
+	settings, err := s.upstreamChannels.WeComSettings()
+	if err != nil {
+		writeUpstreamError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, settings)
+}
+
+func (s *Server) saveUpstreamWeComSettings(w http.ResponseWriter, r *http.Request) {
+	settings, err := s.upstreamChannels.WeComSettings()
+	if err != nil {
+		writeUpstreamError(w, err)
+		return
+	}
+	var payload upstreamWeComPayload
+	if err := decodeBody(r, &payload); err != nil {
+		writeUpstreamError(w, err)
+		return
+	}
+	if payload.CorpID != nil {
+		settings.CorpID = strings.TrimSpace(*payload.CorpID)
+	}
+	if payload.AgentID != nil {
+		settings.AgentID = *payload.AgentID
+	}
+	if payload.Secret != nil && strings.TrimSpace(*payload.Secret) != "" {
+		settings.Secret = strings.TrimSpace(*payload.Secret)
+	}
+	if payload.Target != nil {
+		settings.Target = strings.TrimSpace(*payload.Target)
+	} else if payload.ToUser != nil {
+		settings.Target = strings.TrimSpace(*payload.ToUser)
+	}
+	saved, err := s.upstreamChannels.SaveWeComSettings(settings)
+	if err != nil {
+		writeUpstreamError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, saved)
+}
+
+func (s *Server) testUpstreamWeComSettings(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Target string `json:"target"`
+		ToUser string `json:"to_user"`
+	}
+	if err := decodeBody(r, &payload); err != nil {
+		writeUpstreamError(w, err)
+		return
+	}
+	target := strings.TrimSpace(payload.Target)
+	if target == "" {
+		target = strings.TrimSpace(payload.ToUser)
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
+	defer cancel()
+	messageID, err := s.upstreamChannels.TestWeCom(ctx, target)
 	if err != nil {
 		writeUpstreamError(w, err)
 		return

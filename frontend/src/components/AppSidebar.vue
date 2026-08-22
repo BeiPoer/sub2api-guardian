@@ -65,6 +65,24 @@
       </div>
 
       <div class="sidebar-section">
+        <p v-if="!ui.sidebarCollapsed" class="sidebar-section-title">渠道管理</p>
+        <div :class="!ui.sidebarCollapsed && 'ml-4 border-l border-gray-200 pl-2 dark:border-dark-700'">
+          <RouterLink
+            v-for="item in channelManagementNav"
+            :key="item.to"
+            :to="item.to"
+            class="sidebar-link mb-1"
+            :class="isActive(item.to) && 'sidebar-link-active'"
+            :title="item.label"
+            @click="emit('navigate')"
+          >
+            <Icon :name="item.icon" size="sm" class="flex-shrink-0" />
+            <span v-if="!ui.sidebarCollapsed" class="truncate">{{ item.label }}</span>
+          </RouterLink>
+        </div>
+      </div>
+
+      <div class="sidebar-section">
         <p v-if="!ui.sidebarCollapsed" class="sidebar-section-title">系统</p>
         <RouterLink
           v-for="item in systemNav"
@@ -141,12 +159,16 @@ const monitorNav = [
 ]
 
 const configNav = [
-  { to: '/upstream-channels', label: '上游渠道', icon: 'server' as const },
   { to: '/policy', label: '策略配置', icon: 'cog' as const },
   { to: '/connection', label: '连接设置', icon: 'link' as const }
 ]
 
 const toolsNav = [{ to: '/tools/image2', label: 'image2路由', icon: 'beaker' as const }]
+
+const channelManagementNav = [
+  { to: '/upstream-channels/summary', label: '渠道汇总', icon: 'chartBar' as const },
+  { to: '/upstream-channels/list', label: '渠道列表', icon: 'server' as const }
+]
 
 /** 系统：与调度无关的账号自身设置。 */
 const systemNav = [{ to: '/account', label: '信息修改', icon: 'userCircle' as const }]

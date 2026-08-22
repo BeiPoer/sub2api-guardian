@@ -14,6 +14,7 @@ import type {
   UpstreamBalanceLog,
   UpstreamChannel,
   UpstreamEmailSettings,
+  UpstreamWeComSettings,
   UpstreamOverview,
   UpstreamTokenModels
 } from './types'
@@ -268,5 +269,13 @@ export const api = {
   testUpstreamEmailSettings: (recipients: string[]) =>
     post<{ ok: boolean; message_id: string }>('/api/upstream-email-settings/test', {
       recipients
+    }),
+  upstreamWeComSettings: () =>
+    request<UpstreamWeComSettings>('/api/upstream-wecom-settings'),
+  saveUpstreamWeComSettings: (payload: Record<string, unknown>) =>
+    put<UpstreamWeComSettings>('/api/upstream-wecom-settings', payload),
+  testUpstreamWeComSettings: (target?: string) =>
+    post<{ ok: boolean; message_id: string }>('/api/upstream-wecom-settings/test', {
+      target: target || ''
     })
 }

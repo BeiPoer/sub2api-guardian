@@ -17,7 +17,7 @@ const (
 	metaConnection    = "connection"
 	metaPolicy        = "policy_global"
 
-	currentSchemaVersion = "5"
+	currentSchemaVersion = "6"
 )
 
 var schemaStatements = []string{
@@ -146,6 +146,9 @@ var schemaStatements = []string{
 		sub2api_access_token TEXT NOT NULL DEFAULT '',
 		sub2api_refresh_token TEXT NOT NULL DEFAULT '',
 		sub2api_token_expires_at TEXT,
+		recharge_ratio REAL NOT NULL DEFAULT 1,
+		recharge_methods TEXT NOT NULL DEFAULT '[]',
+		recharge_fee TEXT NOT NULL DEFAULT '',
 		ignored INTEGER NOT NULL DEFAULT 0 CHECK (ignored IN (0, 1)),
 		status TEXT NOT NULL DEFAULT 'syncing' CHECK (status IN ('active', 'error', 'syncing')),
 		last_sync_at TEXT,
@@ -220,6 +223,8 @@ var schemaStatements = []string{
 		snapshot_json TEXT NOT NULL DEFAULT '',
 		email_sent INTEGER NOT NULL DEFAULT 0 CHECK (email_sent IN (0, 1)),
 		email_error TEXT NOT NULL DEFAULT '',
+		wecom_sent INTEGER NOT NULL DEFAULT 0 CHECK (wecom_sent IN (0, 1)),
+		wecom_error TEXT NOT NULL DEFAULT '',
 		created_at TEXT NOT NULL
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_upstream_alert_events_channel_time
@@ -461,6 +466,11 @@ func (s *Store) addMissingColumns() error {
 		{"samples", "request_model", `ALTER TABLE samples ADD COLUMN request_model TEXT NOT NULL DEFAULT ''`},
 		{"image2_upstreams", "blocked_params", `ALTER TABLE image2_upstreams ADD COLUMN blocked_params TEXT NOT NULL DEFAULT ''`},
 		{"image2_upstreams", "proxy_image_urls", `ALTER TABLE image2_upstreams ADD COLUMN proxy_image_urls INTEGER NOT NULL DEFAULT 1`},
+		{"upstream_channels", "recharge_ratio", `ALTER TABLE upstream_channels ADD COLUMN recharge_ratio REAL NOT NULL DEFAULT 1`},
+		{"upstream_channels", "recharge_methods", `ALTER TABLE upstream_channels ADD COLUMN recharge_methods TEXT NOT NULL DEFAULT '[]'`},
+		{"upstream_channels", "recharge_fee", `ALTER TABLE upstream_channels ADD COLUMN recharge_fee TEXT NOT NULL DEFAULT ''`},
+		{"upstream_alert_events", "wecom_sent", `ALTER TABLE upstream_alert_events ADD COLUMN wecom_sent INTEGER NOT NULL DEFAULT 0`},
+		{"upstream_alert_events", "wecom_error", `ALTER TABLE upstream_alert_events ADD COLUMN wecom_error TEXT NOT NULL DEFAULT ''`},
 	}
 
 	for _, add := range additions {

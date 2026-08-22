@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"sub2api-guardian/backend/internal/fileperm"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -27,7 +29,7 @@ func Open(path string) (*Store, error) {
 	// Admin API Key 必须可逆读取以调用 sub2api，因此用文件权限保护整个数据库。
 	// 对已存在的库先收紧权限，避免迁移期间仍保持旧的宽松模式。
 	if _, err := os.Stat(path); err == nil {
-		if err := os.Chmod(path, 0o600); err != nil {
+		if err := fileperm.Chmod(path, 0o600); err != nil {
 			return nil, err
 		}
 	}
@@ -41,7 +43,7 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	if err := os.Chmod(path, 0o600); err != nil {
+	if err := fileperm.Chmod(path, 0o600); err != nil {
 		_ = db.Close()
 		return nil, err
 	}

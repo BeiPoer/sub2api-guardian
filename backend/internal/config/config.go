@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"sub2api-guardian/backend/internal/fileperm"
 )
 
 // Config 是进程级配置，只能通过环境变量设置。
@@ -98,7 +100,7 @@ func (c Config) EnsureDataDir() error {
 	if err := os.MkdirAll(c.DataDir, 0o700); err != nil {
 		return err
 	}
-	return os.Chmod(c.DataDir, 0o700)
+	return fileperm.Chmod(c.DataDir, 0o700)
 }
 
 func env(key, fallback string) string {
