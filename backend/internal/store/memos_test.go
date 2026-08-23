@@ -24,10 +24,15 @@ func TestMemoCRUDAndDefaults(t *testing.T) {
 		t.Fatalf("创建表格失败: %v", err)
 	}
 	var content struct {
-		Cells [][]string `json:"cells"`
+		Cells        [][]string `json:"cells"`
+		ColumnWidths []int      `json:"column_widths"`
+		WrapText     bool       `json:"wrap_text"`
 	}
 	if err := json.Unmarshal(sheet.Content, &content); err != nil || len(content.Cells) != 20 || len(content.Cells[0]) != 8 {
 		t.Fatalf("表格默认尺寸错误: rows=%d err=%v", len(content.Cells), err)
+	}
+	if len(content.ColumnWidths) != 8 || content.ColumnWidths[0] != defaultColumnWidth || !content.WrapText {
+		t.Fatalf("表格默认显示设置错误: widths=%v wrap=%v", content.ColumnWidths, content.WrapText)
 	}
 
 	items, err := st.Memos()
@@ -111,6 +116,9 @@ func TestMemoValidation(t *testing.T) {
 		json.RawMessage(`{"cells":[]}`),
 		json.RawMessage(`{"cells":[["a"],["b","c"]]}`),
 		json.RawMessage(`{"cells":[[1]]}`),
+		json.RawMessage(`{"cells":[[""]],"column_widths":[140,140],"wrap_text":true}`),
+		json.RawMessage(`{"cells":[[""]],"column_widths":[71],"wrap_text":true}`),
+		json.RawMessage(`{"cells":[[""]],"column_widths":[601],"wrap_text":true}`),
 	}
 	tooManyRows := make([][]string, maxSheetRows+1)
 	for row := range tooManyRows {
@@ -125,6 +133,9 @@ func TestMemoValidation(t *testing.T) {
 		if _, err := st.UpdateMemo(sheet.ID, sheet.Title, content, 1, false); err == nil {
 			t.Fatalf("非法表格应被拒绝: %s", content)
 		}
+	}
+	if _, err := st.UpdateMemo(sheet.ID, sheet.Title, json.RawMessage(`{"cells":[["兼容旧数据"]]}`), 1, false); err != nil {
+		t.Fatalf("不含显示设置的旧表格应继续有效: %v", err)
 	}
 }
 

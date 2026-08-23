@@ -14,10 +14,13 @@ const (
 	MemoDocument MemoType = "document"
 	MemoSheet    MemoType = "sheet"
 
-	maxMemoTitleRunes = 100
-	maxSheetRows      = 200
-	maxSheetColumns   = 50
-	maxSheetCellRunes = 10_000
+	maxMemoTitleRunes  = 100
+	maxSheetRows       = 200
+	maxSheetColumns    = 50
+	maxSheetCellRunes  = 10_000
+	defaultColumnWidth = 140
+	minColumnWidth     = 72
+	maxColumnWidth     = 600
 )
 
 var (
@@ -217,9 +220,15 @@ func defaultMemoContent(memoType MemoType) (json.RawMessage, error) {
 	for row := range cells {
 		cells[row] = make([]string, 8)
 	}
+	columnWidths := make([]int, 8)
+	for column := range columnWidths {
+		columnWidths[column] = defaultColumnWidth
+	}
 	raw, err := json.Marshal(struct {
-		Cells [][]string `json:"cells"`
-	}{Cells: cells})
+		Cells        [][]string `json:"cells"`
+		ColumnWidths []int      `json:"column_widths"`
+		WrapText     bool       `json:"wrap_text"`
+	}{Cells: cells, ColumnWidths: columnWidths, WrapText: true})
 	return json.RawMessage(raw), err
 }
 
@@ -310,7 +319,9 @@ func validMemoLink(value string) bool {
 
 func validateSheetContent(content json.RawMessage) error {
 	var sheet struct {
-		Cells [][]string `json:"cells"`
+		Cells        [][]string `json:"cells"`
+		ColumnWidths []int      `json:"column_widths,omitempty"`
+		WrapText     bool       `json:"wrap_text,omitempty"`
 	}
 	if err := decodeStrictJSON(content, &sheet); err != nil {
 		return fmt.Errorf("表格内容无效: %w", err)
@@ -321,6 +332,16 @@ func validateSheetContent(content json.RawMessage) error {
 	columns := len(sheet.Cells[0])
 	if columns < 1 || columns > maxSheetColumns {
 		return fmt.Errorf("表格列数必须在 1–%d 之间", maxSheetColumns)
+	}
+	if len(sheet.ColumnWidths) > 0 {
+		if len(sheet.ColumnWidths) != columns {
+			return errors.New("表格列宽数量必须与列数一致")
+		}
+		for _, width := range sheet.ColumnWidths {
+			if width < minColumnWidth || width > maxColumnWidth {
+				return fmt.Errorf("表格列宽必须在 %d–%d 像素之间", minColumnWidth, maxColumnWidth)
+			}
+		}
 	}
 	for _, row := range sheet.Cells {
 		if len(row) != columns {

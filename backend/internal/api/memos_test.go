@@ -108,6 +108,10 @@ func TestMemoAPIValidation(t *testing.T) {
 	})
 	var sheet store.Memo
 	_ = json.Unmarshal(sheetResponse.Body.Bytes(), &sheet)
+	if !strings.Contains(sheetResponse.Body.String(), `"column_widths":[140,140,140,140,140,140,140,140]`) ||
+		!strings.Contains(sheetResponse.Body.String(), `"wrap_text":true`) {
+		t.Fatalf("表格默认显示设置缺失: %s", sheetResponse.Body.String())
+	}
 	invalidSheet := doJSON(t, handler, http.MethodPut, "/api/memos/"+itoa(sheet.ID), map[string]any{
 		"title": "表格", "content": map[string]any{"cells": []any{[]string{"a"}, []string{"b", "c"}}},
 		"expected_revision": 1,
@@ -124,5 +128,23 @@ func TestMemoAPIValidation(t *testing.T) {
 	})
 	if oversizedSheet.Code != http.StatusBadRequest {
 		t.Fatalf("超行数表格返回 %d: %s", oversizedSheet.Code, oversizedSheet.Body.String())
+	}
+	invalidWidth := doJSON(t, handler, http.MethodPut, "/api/memos/"+itoa(sheet.ID), map[string]any{
+		"title": "表格", "content": map[string]any{
+			"cells": [][]string{{""}}, "column_widths": []int{71}, "wrap_text": true,
+		}, "expected_revision": 1,
+	})
+	if invalidWidth.Code != http.StatusBadRequest {
+		t.Fatalf("非法列宽返回 %d: %s", invalidWidth.Code, invalidWidth.Body.String())
+	}
+	validDisplaySettings := doJSON(t, handler, http.MethodPut, "/api/memos/"+itoa(sheet.ID), map[string]any{
+		"title": "表格", "content": map[string]any{
+			"cells": [][]string{{"a", "b"}}, "column_widths": []int{220, 140}, "wrap_text": false,
+		}, "expected_revision": 1,
+	})
+	if validDisplaySettings.Code != http.StatusOK ||
+		!strings.Contains(validDisplaySettings.Body.String(), `"column_widths":[220,140]`) ||
+		!strings.Contains(validDisplaySettings.Body.String(), `"wrap_text":false`) {
+		t.Fatalf("合法显示设置未完整保存: %d %s", validDisplaySettings.Code, validDisplaySettings.Body.String())
 	}
 }

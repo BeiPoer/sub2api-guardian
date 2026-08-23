@@ -18,6 +18,15 @@
           <Icon name="trash" size="xs" />
           当前列
         </button>
+        <label class="memo-sheet-wrap-toggle">
+          <input
+            v-model="wrapText"
+            type="checkbox"
+            :disabled="disabled"
+            @change="emitValue"
+          />
+          <span>自动换行</span>
+        </label>
       </div>
       <span class="text-xs text-gray-500 dark:text-dark-400">{{ rowCount }} 行 × {{ columnCount }} 列</span>
     </div>
@@ -25,6 +34,7 @@
     <div
       ref="gridElement"
       class="memo-sheet-grid"
+      :class="{ 'memo-sheet-grid-wrapping': wrapText, 'memo-sheet-grid-resizing': resizingColumn !== null }"
       tabindex="0"
       role="grid"
       :aria-rowcount="rowCount"
@@ -33,12 +43,33 @@
       @copy="copySelection"
       @paste="pasteSelection"
     >
-      <table>
+      <table :style="{ width: `${tableWidth}px` }">
+        <colgroup>
+          <col class="memo-sheet-row-number-column" />
+          <col
+            v-for="column in columnCount"
+            :key="column"
+            :style="{ width: `${columnWidths[column - 1]}px` }"
+          />
+        </colgroup>
         <thead>
           <tr>
             <th class="memo-sheet-corner" aria-hidden="true" />
-            <th v-for="column in columnCount" :key="column" class="memo-sheet-column-header">
-              {{ columnLabel(column - 1) }}
+            <th
+              v-for="column in columnCount"
+              :key="column"
+              class="memo-sheet-column-header"
+              :class="{ 'memo-sheet-column-resizing': resizingColumn === column - 1 }"
+            >
+              <span>{{ columnLabel(column - 1) }}</span>
+              <button
+                type="button"
+                class="memo-sheet-column-resizer"
+                :disabled="disabled"
+                :aria-label="`调整 ${columnLabel(column - 1)} 列宽度`"
+                :title="`拖动调整 ${columnLabel(column - 1)} 列宽度`"
+                @pointerdown.stop.prevent="startColumnResize($event, column - 1)"
+              />
             </th>
           </tr>
         </thead>
@@ -93,6 +124,17 @@ interface CellPoint {
 
 const MAX_ROWS = 200
 const MAX_COLUMNS = 50
+const DEFAULT_COLUMN_WIDTH = 140
+const MIN_COLUMN_WIDTH = 72
+const MAX_COLUMN_WIDTH = 600
+const ROW_NUMBER_WIDTH = 48
+
+interface ColumnResizeState {
+  column: number
+  startX: number
+  startWidth: number
+  changed: boolean
+}
 
 const props = withDefaults(
   defineProps<{
@@ -108,16 +150,25 @@ const emit = defineEmits<{
 
 const ui = useUIStore()
 const cells = ref(cloneCells(props.modelValue.cells))
+const columnWidths = ref(
+  normalizeColumnWidths(props.modelValue.column_widths, props.modelValue.cells[0]?.length ?? 0)
+)
+const wrapText = ref(props.modelValue.wrap_text ?? true)
 const gridElement = ref<HTMLElement | null>(null)
 const anchor = ref<CellPoint>({ row: 0, column: 0 })
 const focus = ref<CellPoint>({ row: 0, column: 0 })
 const editing = ref<CellPoint | null>(null)
+const resizingColumn = ref<number | null>(null)
 const editValue = ref('')
 let editOriginal = ''
 let dragging = false
+let columnResizeState: ColumnResizeState | null = null
 
 const rowCount = computed(() => cells.value.length)
 const columnCount = computed(() => cells.value[0]?.length ?? 0)
+const tableWidth = computed(
+  () => ROW_NUMBER_WIDTH + columnWidths.value.reduce((total, width) => total + width, 0)
+)
 const selection = computed(() => ({
   top: Math.min(anchor.value.row, focus.value.row),
   bottom: Math.max(anchor.value.row, focus.value.row),
@@ -126,13 +177,26 @@ const selection = computed(() => ({
 }))
 
 onMounted(() => window.addEventListener('mouseup', stopDragging))
-onBeforeUnmount(() => window.removeEventListener('mouseup', stopDragging))
+onBeforeUnmount(() => {
+  window.removeEventListener('mouseup', stopDragging)
+  stopColumnResize(false)
+})
 
 watch(
-  () => props.modelValue.cells,
+  () => props.modelValue,
   value => {
-    if (JSON.stringify(value) === JSON.stringify(cells.value)) return
-    cells.value = cloneCells(value)
+    const nextCells = cloneCells(value.cells)
+    const nextWidths = normalizeColumnWidths(value.column_widths, nextCells[0]?.length ?? 0)
+    const nextWrapText = value.wrap_text ?? true
+    if (
+      JSON.stringify(nextCells) === JSON.stringify(cells.value) &&
+      arraysEqual(nextWidths, columnWidths.value) &&
+      nextWrapText === wrapText.value
+    ) return
+    stopColumnResize(false)
+    cells.value = nextCells
+    columnWidths.value = nextWidths
+    wrapText.value = nextWrapText
     editing.value = null
     clampSelection()
   },
@@ -143,8 +207,66 @@ function cloneCells(value: string[][]): string[][] {
   return value.map(row => [...row])
 }
 
+function normalizeColumnWidths(value: number[] | undefined, columns: number): number[] {
+  return Array.from({ length: columns }, (_, column) => {
+    const width = value?.[column]
+    return typeof width === 'number' && Number.isFinite(width)
+      ? clamp(Math.round(width), MIN_COLUMN_WIDTH, MAX_COLUMN_WIDTH)
+      : DEFAULT_COLUMN_WIDTH
+  })
+}
+
+function arraysEqual(left: number[], right: number[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index])
+}
+
 function emitValue() {
-  emit('update:modelValue', { cells: cloneCells(cells.value) })
+  emit('update:modelValue', {
+    cells: cloneCells(cells.value),
+    column_widths: [...columnWidths.value],
+    wrap_text: wrapText.value
+  })
+}
+
+function startColumnResize(event: PointerEvent, column: number) {
+  if (props.disabled) return
+  commitEditing()
+  stopColumnResize(false)
+  columnResizeState = {
+    column,
+    startX: event.clientX,
+    startWidth: columnWidths.value[column],
+    changed: false
+  }
+  resizingColumn.value = column
+  window.addEventListener('pointermove', resizeColumn)
+  window.addEventListener('pointerup', finishColumnResize)
+  window.addEventListener('pointercancel', finishColumnResize)
+}
+
+function resizeColumn(event: PointerEvent) {
+  if (!columnResizeState) return
+  const width = clamp(
+    Math.round(columnResizeState.startWidth + event.clientX - columnResizeState.startX),
+    MIN_COLUMN_WIDTH,
+    MAX_COLUMN_WIDTH
+  )
+  columnWidths.value[columnResizeState.column] = width
+  columnResizeState.changed = width !== columnResizeState.startWidth
+}
+
+function finishColumnResize() {
+  stopColumnResize(true)
+}
+
+function stopColumnResize(save: boolean) {
+  const changed = columnResizeState?.changed ?? false
+  columnResizeState = null
+  resizingColumn.value = null
+  window.removeEventListener('pointermove', resizeColumn)
+  window.removeEventListener('pointerup', finishColumnResize)
+  window.removeEventListener('pointercancel', finishColumnResize)
+  if (save && changed) emitValue()
 }
 
 function beginSelection(event: MouseEvent, row: number, column: number) {
@@ -367,6 +489,7 @@ function pasteSelection(event: ClipboardEvent) {
   if (columnCount.value < requiredColumns) {
     const extra = requiredColumns - columnCount.value
     cells.value.forEach(row => row.push(...Array(extra).fill('')))
+    columnWidths.value.push(...Array(extra).fill(DEFAULT_COLUMN_WIDTH))
   }
   incoming.forEach((row, rowOffset) => {
     row.forEach((cell, columnOffset) => {
@@ -404,6 +527,7 @@ function addColumn() {
   }
   const index = focus.value.column + 1
   cells.value.forEach(row => row.splice(index, 0, ''))
+  columnWidths.value.splice(index, 0, DEFAULT_COLUMN_WIDTH)
   anchor.value = { row: focus.value.row, column: index }
   focus.value = { ...anchor.value }
   emitValue()
@@ -433,6 +557,7 @@ function removeColumn() {
   const index = focus.value.column
   if (cells.value.some(row => row[index] !== '') && !window.confirm(`${columnLabel(index)} 列包含内容，确定删除吗？`)) return
   cells.value.forEach(row => row.splice(index, 1))
+  columnWidths.value.splice(index, 1)
   clampSelection()
   emitValue()
 }
@@ -481,6 +606,31 @@ function clamp(value: number, minimum: number, maximum: number): number {
   padding: 0.375rem 0.75rem;
 }
 
+.memo-sheet-wrap-toggle {
+  display: inline-flex;
+  min-height: 2rem;
+  align-items: center;
+  gap: 0.375rem;
+  margin-left: 0.375rem;
+  border-left: 1px solid rgb(209 213 219);
+  padding-left: 0.75rem;
+  color: rgb(75 85 99);
+  cursor: pointer;
+  font-size: 0.8125rem;
+  user-select: none;
+}
+
+.memo-sheet-wrap-toggle input {
+  width: 1rem;
+  height: 1rem;
+  accent-color: rgb(13 148 136);
+}
+
+.memo-sheet-wrap-toggle:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .memo-sheet-grid {
   min-height: 24rem;
   flex: 1;
@@ -490,8 +640,6 @@ function clamp(value: number, minimum: number, maximum: number): number {
 }
 
 table {
-  width: max-content;
-  min-width: 100%;
   border-collapse: separate;
   border-spacing: 0;
   table-layout: fixed;
@@ -499,22 +647,63 @@ table {
 
 th,
 td {
+  box-sizing: border-box;
   height: 2.25rem;
   border-right: 1px solid rgb(229 231 235);
   border-bottom: 1px solid rgb(229 231 235);
+}
+
+.memo-sheet-row-number-column {
+  width: 3rem;
 }
 
 .memo-sheet-column-header {
   position: sticky;
   top: 0;
   z-index: 3;
-  width: 8.75rem;
-  min-width: 8.75rem;
   background: rgb(243 244 246);
   color: rgb(75 85 99);
   font-size: 0.75rem;
   font-weight: 600;
   text-align: center;
+}
+
+.memo-sheet-column-resizer {
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  right: -0.25rem;
+  width: 0.5rem;
+  height: 100%;
+  border: 0;
+  background: transparent;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.memo-sheet-column-resizer::after {
+  position: absolute;
+  top: 0;
+  right: 0.1875rem;
+  width: 1px;
+  height: 100%;
+  background: transparent;
+  content: '';
+}
+
+.memo-sheet-column-resizer:hover::after,
+.memo-sheet-column-resizing .memo-sheet-column-resizer::after {
+  background: rgb(13 148 136);
+}
+
+.memo-sheet-column-resizer:disabled {
+  cursor: default;
+}
+
+.memo-sheet-grid-resizing,
+.memo-sheet-grid-resizing * {
+  cursor: col-resize !important;
+  user-select: none;
 }
 
 .memo-sheet-row-header,
@@ -538,9 +727,6 @@ td {
 
 td {
   position: relative;
-  width: 8.75rem;
-  min-width: 8.75rem;
-  max-width: 8.75rem;
   cursor: cell;
   background: white;
   color: rgb(31 41 55);
@@ -553,6 +739,21 @@ td span {
   padding: 0 0.5rem;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.memo-sheet-grid-wrapping td {
+  height: auto;
+  vertical-align: top;
+}
+
+.memo-sheet-grid-wrapping td span {
+  min-height: 2.25rem;
+  padding: 0.4375rem 0.5rem;
+  line-height: 1.25rem;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .memo-sheet-cell-selected {
@@ -595,6 +796,11 @@ td input {
 :global(.dark .memo-sheet-toolbar) {
   border-color: rgb(51 65 85);
   background: rgb(30 41 59);
+}
+
+:global(.dark .memo-sheet-wrap-toggle) {
+  border-color: rgb(71 85 105);
+  color: rgb(203 213 225);
 }
 
 :global(.dark .memo-sheet-editor th),

@@ -577,6 +577,8 @@ export interface DocumentMemoContent {
 
 export interface SheetMemoContent {
   cells: string[][]
+  column_widths?: number[]
+  wrap_text?: boolean
 }
 
 export interface Memo extends MemoSummary {
