@@ -163,7 +163,10 @@ const configNav = [
   { to: '/connection', label: '连接设置', icon: 'link' as const }
 ]
 
-const toolsNav = [{ to: '/tools/image2', label: 'image2路由', icon: 'beaker' as const }]
+const toolsNav = [
+  { to: '/tools/image2', label: 'image2路由', icon: 'beaker' as const },
+  { to: '/tools/memos', label: '备忘录', icon: 'clipboard' as const }
+]
 
 const channelManagementNav = [
   { to: '/upstream-channels/summary', label: '渠道汇总', icon: 'chartBar' as const },

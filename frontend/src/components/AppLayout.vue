@@ -39,14 +39,6 @@
         </div>
 
         <div
-          v-else-if="guardian.status && !guardian.monitoringEnabled"
-          class="flex items-center gap-2 rounded-xl border border-primary-200 bg-primary-50 px-4 py-3 text-sm text-primary-800 dark:border-primary-800 dark:bg-primary-900/20 dark:text-primary-200"
-        >
-          <Icon name="infoCircle" size="sm" />
-          sub2api 运维监控未开启，健康分当前只使用主动探测样本；开启后可接入真实流量的错误率与延迟。
-        </div>
-
-        <div
           v-if="guardian.error"
           class="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300"
         >
