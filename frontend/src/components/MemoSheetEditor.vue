@@ -65,7 +65,7 @@
                 type="text"
                 aria-label="单元格内容"
                 @input="syncEditingValue"
-                @keydown="handleEditorKeydown"
+                @keydown.stop="handleEditorKeydown"
                 @blur="commitEditing"
                 @mousedown.stop
                 @copy.stop
