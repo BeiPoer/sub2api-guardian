@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"sub2api-guardian/backend/internal/store"
 )
@@ -62,6 +64,20 @@ func (s *Server) getMemo(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, memo)
 }
 
+func (s *Server) listMemoArchives(w http.ResponseWriter, r *http.Request) {
+	id, err := memoPathID(r)
+	if err != nil {
+		writeErrorMessage(w, http.StatusBadRequest, "备忘录 ID 无效")
+		return
+	}
+	items, err := s.store.MemoArchives(id)
+	if err != nil {
+		writeMemoError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
 func (s *Server) updateMemo(w http.ResponseWriter, r *http.Request) {
 	id, err := memoPathID(r)
 	if err != nil {
@@ -99,6 +115,32 @@ func (s *Server) deleteMemo(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+func (s *Server) restoreMemoArchive(w http.ResponseWriter, r *http.Request) {
+	memoID, err := memoPathID(r)
+	if err != nil {
+		writeErrorMessage(w, http.StatusBadRequest, "备忘录 ID 无效")
+		return
+	}
+	archiveID, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("archiveId")), 10, 64)
+	if err != nil || archiveID < 1 {
+		writeErrorMessage(w, http.StatusBadRequest, "恢复点 ID 无效")
+		return
+	}
+	var payload memoDeleteInput
+	if err := decodeBody(r, &payload); err != nil {
+		writeErrorMessage(w, http.StatusBadRequest, "请求内容不是有效的 JSON")
+		return
+	}
+	memo, err := s.store.RestoreMemoArchive(
+		memoID, archiveID, payload.ExpectedRevision, payload.Force,
+	)
+	if err != nil {
+		writeMemoError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, memo)
+}
+
 func memoPathID(r *http.Request) (int64, error) {
 	id, err := pathID(r)
 	if err != nil || id < 1 {
@@ -109,7 +151,7 @@ func memoPathID(r *http.Request) (int64, error) {
 
 func writeMemoError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, store.ErrMemoNotFound):
+	case errors.Is(err, store.ErrMemoNotFound), errors.Is(err, store.ErrMemoArchiveNotFound):
 		writeErrorMessage(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, store.ErrMemoConflict):
 		writeJSON(w, http.StatusConflict, map[string]any{

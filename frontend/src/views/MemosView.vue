@@ -115,6 +115,16 @@
             <div class="flex flex-shrink-0 items-center gap-1.5">
               <button
                 type="button"
+                class="btn btn-ghost btn-icon"
+                :disabled="saving || restoringArchive"
+                aria-label="最近恢复点"
+                title="最近恢复点"
+                @click="openHistory"
+              >
+                <Icon name="clock" size="sm" />
+              </button>
+              <button
+                type="button"
                 class="btn btn-primary btn-sm"
                 :disabled="!dirty || saving"
                 @click="saveMemo"
@@ -175,6 +185,91 @@
       </template>
     </Modal>
 
+    <Modal :open="historyModalOpen" title="最近恢复点" @close="closeHistory">
+      <div v-if="loadingArchives" class="flex min-h-64 items-center justify-center">
+        <span class="spinner text-primary-500" />
+      </div>
+      <div v-else-if="historyError" class="flex min-h-64 flex-col items-center justify-center gap-3 text-center">
+        <Icon name="exclamationCircle" size="lg" class="text-red-500" />
+        <p class="text-sm text-gray-600 dark:text-dark-300">{{ historyError }}</p>
+        <button type="button" class="btn btn-secondary btn-sm" @click="loadArchives">重新加载</button>
+      </div>
+      <div v-else-if="archives.length" class="memo-archive-layout">
+        <div class="memo-archive-list" role="list" aria-label="恢复点列表">
+          <button
+            v-for="archive in archives"
+            :key="archive.id"
+            type="button"
+            class="memo-archive-item"
+            :class="selectedArchiveID === archive.id && 'memo-archive-item-active'"
+            :aria-pressed="selectedArchiveID === archive.id"
+            @click="selectedArchiveID = archive.id"
+          >
+            <span class="block text-sm font-medium text-gray-900 dark:text-white">
+              {{ formatTime(archive.created_at) }}
+            </span>
+            <span class="mt-1 block truncate text-xs text-gray-500 dark:text-dark-400">
+              版本 {{ archive.source_revision }} · {{ archive.title }}
+            </span>
+          </button>
+        </div>
+
+        <section v-if="selectedArchive" class="memo-archive-preview" aria-label="恢复点预览">
+          <header class="memo-archive-preview-header">
+            <strong class="truncate text-sm text-gray-900 dark:text-white">{{ selectedArchive.title }}</strong>
+            <span class="text-xs text-gray-500 dark:text-dark-400">版本 {{ selectedArchive.source_revision }}</span>
+          </header>
+          <pre v-if="selectedMemo?.type === 'document'" class="memo-archive-document">{{ archiveDocumentText || '空白文档' }}</pre>
+          <div
+            v-else-if="archiveSheetContent"
+            class="memo-archive-sheet"
+            :class="archiveSheetContent.wrap_text !== false && 'memo-archive-sheet-wrapping'"
+          >
+            <table :style="{ width: `${archiveSheetTableWidth}px` }">
+              <colgroup>
+                <col class="memo-archive-row-number-column" />
+                <col
+                  v-for="column in archiveSheetColumnCount"
+                  :key="column"
+                  :style="{ width: `${archiveSheetColumnWidths[column - 1]}px` }"
+                />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th aria-hidden="true" />
+                  <th v-for="column in archiveSheetColumnCount" :key="column">
+                    {{ archiveColumnLabel(column - 1) }}
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="(row, rowIndex) in archiveSheetContent.cells" :key="rowIndex">
+                  <th>{{ rowIndex + 1 }}</th>
+                  <td v-for="(cell, columnIndex) in row" :key="columnIndex" :title="cell">{{ cell }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+      <div v-else class="flex min-h-64 flex-col items-center justify-center text-center">
+        <Icon name="clock" size="xl" class="text-gray-300 dark:text-dark-600" />
+        <p class="mt-3 text-sm font-medium text-gray-700 dark:text-dark-200">暂无恢复点</p>
+      </div>
+      <template #footer>
+        <button type="button" class="btn btn-secondary" :disabled="restoringArchive" @click="closeHistory">关闭</button>
+        <button
+          type="button"
+          class="btn btn-primary"
+          :disabled="!selectedArchive || loadingArchives || restoringArchive"
+          @click="requestRestoreArchive"
+        >
+          <Icon name="refresh" size="sm" />
+          {{ restoringArchive ? '恢复中…' : '恢复此版本' }}
+        </button>
+      </template>
+    </Modal>
+
     <Modal :open="dirtyModalOpen" title="有未保存的修改" @close="cancelPendingAction">
       <p class="text-sm leading-6 text-gray-600 dark:text-dark-300">
         当前备忘录还有未保存内容。保存后继续、放弃这些修改，或留在当前页面。
@@ -203,10 +298,11 @@ import MemoSheetEditor from '@/components/MemoSheetEditor.vue'
 import Modal from '@/components/Modal.vue'
 import SegmentedControl from '@/components/SegmentedControl.vue'
 import { ApiError, api } from '@/lib/api'
-import { formatRelative } from '@/lib/format'
+import { formatRelative, formatTime } from '@/lib/format'
 import type {
   DocumentMemoContent,
   Memo,
+  MemoArchive,
   MemoSummary,
   MemoType,
   SheetMemoContent
@@ -233,10 +329,17 @@ const listError = ref('')
 const detailError = ref('')
 const createModalOpen = ref(false)
 const dirtyModalOpen = ref(false)
+const historyModalOpen = ref(false)
 const mobileEditorOpen = ref(false)
+const loadingArchives = ref(false)
+const restoringArchive = ref(false)
+const archives = ref<MemoArchive[]>([])
+const selectedArchiveID = ref<number | null>(null)
+const historyError = ref('')
 const detailTargetID = ref(0)
 let pendingAction: PendingAction | null = null
 let detailRequest = 0
+let archiveRequest = 0
 let listLoaded = false
 
 const createForm = reactive<{ title: string; type: MemoType }>({
@@ -267,6 +370,27 @@ const sheetContent = computed<SheetMemoContent>({
     draftContent.value = value
   }
 })
+const selectedArchive = computed(() =>
+  archives.value.find(archive => archive.id === selectedArchiveID.value) ?? null
+)
+const archiveDocumentText = computed(() => {
+  if (!selectedArchive.value || selectedMemo.value?.type !== 'document') return ''
+  return (selectedArchive.value.content as DocumentMemoContent).ops.map(operation => operation.insert).join('')
+})
+const archiveSheetContent = computed(() => {
+  if (!selectedArchive.value || selectedMemo.value?.type !== 'sheet') return null
+  return selectedArchive.value.content as SheetMemoContent
+})
+const archiveSheetColumnCount = computed(() => archiveSheetContent.value?.cells[0]?.length ?? 0)
+const archiveSheetColumnWidths = computed(() =>
+  Array.from({ length: archiveSheetColumnCount.value }, (_, column) => {
+    const width = archiveSheetContent.value?.column_widths?.[column]
+    return typeof width === 'number' ? Math.max(72, Math.min(600, width)) : 140
+  })
+)
+const archiveSheetTableWidth = computed(() =>
+  40 + archiveSheetColumnWidths.value.reduce((total, width) => total + width, 0)
+)
 
 onMounted(() => {
   window.addEventListener('beforeunload', handleBeforeUnload)
@@ -388,6 +512,77 @@ async function createMemo() {
   } finally {
     creating.value = false
   }
+}
+
+function openHistory() {
+  if (!selectedMemo.value) return
+  historyModalOpen.value = true
+  void loadArchives()
+}
+
+async function loadArchives() {
+  const memo = selectedMemo.value
+  if (!memo) return
+  const request = ++archiveRequest
+  loadingArchives.value = true
+  historyError.value = ''
+  try {
+    const response = await api.memoArchives(memo.id)
+    if (request !== archiveRequest || selectedMemo.value?.id !== memo.id) return
+    archives.value = response.items ?? []
+    selectedArchiveID.value = archives.value[0]?.id ?? null
+  } catch (error) {
+    if (request !== archiveRequest) return
+    historyError.value = (error as Error).message
+  } finally {
+    if (request === archiveRequest) loadingArchives.value = false
+  }
+}
+
+function closeHistory() {
+  if (restoringArchive.value) return
+  archiveRequest += 1
+  historyModalOpen.value = false
+  archives.value = []
+  selectedArchiveID.value = null
+  historyError.value = ''
+  loadingArchives.value = false
+}
+
+function requestRestoreArchive() {
+  const archive = selectedArchive.value
+  if (!archive) return
+  runAfterDirty(() => confirmAndRestoreArchive(archive.id))
+}
+
+async function confirmAndRestoreArchive(archiveID: number) {
+  if (!window.confirm('确定恢复此版本吗？当前服务器版本会先自动保存为恢复点。')) return
+  await restoreArchive(archiveID, false)
+}
+
+async function restoreArchive(archiveID: number, force: boolean) {
+  const memo = selectedMemo.value
+  if (!memo || restoringArchive.value) return
+  restoringArchive.value = true
+  let retryWithForce = false
+  try {
+    const restored = await api.restoreMemoArchive(memo.id, archiveID, memo.revision, force)
+    applySavedMemo(restored)
+    archiveRequest += 1
+    historyModalOpen.value = false
+    archives.value = []
+    selectedArchiveID.value = null
+    ui.notify('success', '备忘录已恢复')
+  } catch (error) {
+    if (!force && isMemoConflict(error)) {
+      retryWithForce = window.confirm('其他页面已有更新。继续恢复会覆盖服务器最新版，确定恢复吗？')
+    } else {
+      ui.notify('error', (error as Error).message)
+    }
+  } finally {
+    restoringArchive.value = false
+  }
+  if (retryWithForce) await restoreArchive(archiveID, true)
 }
 
 async function saveMemo(): Promise<boolean> {
@@ -545,6 +740,14 @@ function discardDraft() {
 }
 
 function applyMemo(memo: Memo) {
+  if (selectedMemo.value?.id !== memo.id) {
+    archiveRequest += 1
+    historyModalOpen.value = false
+    archives.value = []
+    selectedArchiveID.value = null
+    historyError.value = ''
+    loadingArchives.value = false
+  }
   selectedMemo.value = { ...memo, content: cloneContent(memo.content) }
   draftTitle.value = memo.title
   draftContent.value = cloneContent(memo.content)
@@ -559,12 +762,16 @@ function applySavedMemo(memo: Memo) {
 
 function clearSelection() {
   detailRequest += 1
+  archiveRequest += 1
   selectedMemo.value = null
   draftTitle.value = ''
   draftContent.value = { ops: [{ insert: '\n' }] }
   baselineSignature.value = ''
   detailError.value = ''
   loadingDetail.value = false
+  historyModalOpen.value = false
+  archives.value = []
+  selectedArchiveID.value = null
 }
 
 function upsertSummary(memo: MemoSummary) {
@@ -594,6 +801,14 @@ function parseMemoID(value: unknown): number | null {
   if (typeof raw !== 'string' || !/^\d+$/.test(raw)) return null
   const id = Number(raw)
   return Number.isSafeInteger(id) && id > 0 ? id : null
+}
+
+function archiveColumnLabel(index: number): string {
+  let label = ''
+  for (let value = index + 1; value > 0; value = Math.floor((value - 1) / 26)) {
+    label = String.fromCharCode(65 + ((value - 1) % 26)) + label
+  }
+  return label
 }
 
 function replaceRouteID(id: number) {
@@ -776,6 +991,160 @@ function handleBeforeUnload(event: BeforeUnloadEvent) {
   box-shadow: inset 0 -1px rgb(20 184 166);
 }
 
+.memo-archive-layout {
+  display: grid;
+  min-height: 20rem;
+  overflow: hidden;
+  border: 1px solid rgb(229 231 235);
+  border-radius: 0.375rem;
+  background: white;
+}
+
+.memo-archive-list {
+  display: flex;
+  overflow-x: auto;
+  border-bottom: 1px solid rgb(229 231 235);
+  background: rgb(249 250 251);
+}
+
+.memo-archive-item {
+  min-width: 10rem;
+  border-right: 1px solid rgb(229 231 235);
+  padding: 0.75rem;
+  text-align: left;
+}
+
+.memo-archive-item:hover {
+  background: rgb(243 244 246);
+}
+
+.memo-archive-item-active {
+  background: rgb(240 253 250);
+  box-shadow: inset 3px 0 rgb(13 148 136);
+}
+
+.memo-archive-preview {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.memo-archive-preview-header {
+  display: flex;
+  min-height: 3rem;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border-bottom: 1px solid rgb(229 231 235);
+  padding: 0.625rem 0.75rem;
+}
+
+.memo-archive-document {
+  min-height: 17rem;
+  max-height: 26rem;
+  overflow: auto;
+  margin: 0;
+  padding: 1rem;
+  color: rgb(31 41 55);
+  font-family: inherit;
+  font-size: 0.875rem;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.memo-archive-sheet {
+  min-height: 17rem;
+  max-height: 26rem;
+  overflow: auto;
+  background: white;
+}
+
+.memo-archive-sheet table {
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: fixed;
+}
+
+.memo-archive-sheet th,
+.memo-archive-sheet td {
+  box-sizing: border-box;
+  height: 2rem;
+  border-right: 1px solid rgb(229 231 235);
+  border-bottom: 1px solid rgb(229 231 235);
+  font-size: 0.75rem;
+}
+
+.memo-archive-sheet thead th {
+  position: sticky;
+  z-index: 2;
+  top: 0;
+  background: rgb(243 244 246);
+  color: rgb(75 85 99);
+  text-align: center;
+}
+
+.memo-archive-sheet tbody th,
+.memo-archive-sheet thead th:first-child {
+  position: sticky;
+  z-index: 1;
+  left: 0;
+  width: 2.5rem;
+  background: rgb(243 244 246);
+  color: rgb(107 114 128);
+  font-weight: 500;
+  text-align: center;
+}
+
+.memo-archive-sheet thead th:first-child {
+  z-index: 3;
+}
+
+.memo-archive-row-number-column {
+  width: 2.5rem;
+}
+
+.memo-archive-sheet td {
+  overflow: hidden;
+  padding: 0 0.375rem;
+  color: rgb(31 41 55);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.memo-archive-sheet-wrapping td {
+  height: auto;
+  padding: 0.375rem;
+  line-height: 1.125rem;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  vertical-align: top;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+@media (min-width: 640px) {
+  .memo-archive-layout {
+    grid-template-columns: 13rem minmax(0, 1fr);
+  }
+
+  .memo-archive-list {
+    flex-direction: column;
+    overflow-x: hidden;
+    overflow-y: auto;
+    border-right: 1px solid rgb(229 231 235);
+    border-bottom: 0;
+  }
+
+  .memo-archive-item {
+    min-width: 0;
+    border-right: 0;
+    border-bottom: 1px solid rgb(229 231 235);
+  }
+}
+
 @media (min-width: 1024px) {
   .memo-workspace {
     grid-template-columns: 19rem minmax(0, 1fr);
@@ -824,5 +1193,43 @@ function handleBeforeUnload(event: BeforeUnloadEvent) {
 
 :global(.dark .memo-editor-header) {
   border-color: rgb(51 65 85);
+}
+
+:global(.dark .memo-archive-layout),
+:global(.dark .memo-archive-preview),
+:global(.dark .memo-archive-sheet) {
+  border-color: rgb(51 65 85);
+  background: rgb(15 23 42);
+}
+
+:global(.dark .memo-archive-list),
+:global(.dark .memo-archive-item),
+:global(.dark .memo-archive-preview-header) {
+  border-color: rgb(51 65 85);
+  background: rgb(30 41 59);
+}
+
+:global(.dark .memo-archive-item:hover) {
+  background: rgb(51 65 85);
+}
+
+:global(.dark .memo-archive-item-active) {
+  background: rgb(19 78 74 / 0.35);
+}
+
+:global(.dark .memo-archive-document),
+:global(.dark .memo-archive-sheet td) {
+  color: rgb(226 232 240);
+}
+
+:global(.dark .memo-archive-sheet th),
+:global(.dark .memo-archive-sheet td) {
+  border-color: rgb(51 65 85);
+}
+
+:global(.dark .memo-archive-sheet thead th),
+:global(.dark .memo-archive-sheet tbody th) {
+  background: rgb(30 41 59);
+  color: rgb(148 163 184);
 }
 </style>

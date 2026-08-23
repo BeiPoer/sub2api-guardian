@@ -8,6 +8,7 @@ import type {
   Image2Settings,
   Image2Upstream,
   Memo,
+  MemoArchive,
   MemoSummary,
   MemoType,
   Overview,
@@ -238,6 +239,13 @@ export const api = {
     request<{ ok: boolean }>(`/api/memos/${id}`, {
       method: 'DELETE',
       body: JSON.stringify({ expected_revision: expectedRevision, force })
+    }),
+  memoArchives: (id: number) =>
+    request<{ items: MemoArchive[] }>(`/api/memos/${id}/archives`),
+  restoreMemoArchive: (id: number, archiveID: number, expectedRevision: number, force = false) =>
+    post<Memo>(`/api/memos/${id}/archives/${archiveID}/restore`, {
+      expected_revision: expectedRevision,
+      force
     }),
 
   upstreamChannels: () =>

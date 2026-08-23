@@ -584,3 +584,12 @@ export interface SheetMemoContent {
 export interface Memo extends MemoSummary {
   content: DocumentMemoContent | SheetMemoContent
 }
+
+export interface MemoArchive {
+  id: number
+  memo_id: number
+  title: string
+  content: DocumentMemoContent | SheetMemoContent
+  source_revision: number
+  created_at: string
+}

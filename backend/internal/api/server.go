@@ -168,6 +168,8 @@ func (s *Server) protectedRoutes() map[string]http.HandlerFunc {
 		"GET /api/memos/{id}":                                     s.getMemo,
 		"PUT /api/memos/{id}":                                     s.updateMemo,
 		"DELETE /api/memos/{id}":                                  s.deleteMemo,
+		"GET /api/memos/{id}/archives":                            s.listMemoArchives,
+		"POST /api/memos/{id}/archives/{archiveId}/restore":       s.restoreMemoArchive,
 		"GET /api/upstream-channels":                              s.upstreamNoStore(s.listUpstreamChannels),
 		"POST /api/upstream-channels":                             s.upstreamNoStore(s.createUpstreamChannel),
 		"POST /api/upstream-channels/sync":                        s.upstreamNoStore(s.syncAllUpstreamChannels),

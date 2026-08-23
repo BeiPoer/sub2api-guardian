@@ -18,7 +18,7 @@ const (
 	metaPolicy              = "policy_global"
 	metaUpstreamMultipliers = "upstream_multipliers"
 
-	currentSchemaVersion = "7"
+	currentSchemaVersion = "8"
 )
 
 var schemaStatements = []string{
@@ -132,6 +132,16 @@ var schemaStatements = []string{
 		updated_at TEXT NOT NULL
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_memos_updated ON memos(updated_at DESC, id DESC)`,
+	`CREATE TABLE IF NOT EXISTS memo_archives (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		memo_id INTEGER NOT NULL REFERENCES memos(id) ON DELETE CASCADE,
+		title TEXT NOT NULL,
+		content_json TEXT NOT NULL,
+		source_revision INTEGER NOT NULL CHECK (source_revision > 0),
+		created_at TEXT NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_memo_archives_memo
+		ON memo_archives(memo_id, id DESC)`,
 	`CREATE TABLE IF NOT EXISTS image2_upstreams (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		name TEXT NOT NULL,

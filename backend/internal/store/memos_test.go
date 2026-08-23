@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestMemoCRUDAndDefaults(t *testing.T) {
@@ -87,6 +88,109 @@ func TestMemoOptimisticLock(t *testing.T) {
 	}
 }
 
+func TestMemoArchivesThrottleRetentionAndRestore(t *testing.T) {
+	st := openTemp(t)
+	memo, err := st.CreateMemo("原始标题", MemoDocument)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contentB := json.RawMessage(`{"ops":[{"insert":"版本 B\n"}]}`)
+	contentC := json.RawMessage(`{"ops":[{"insert":"版本 C\n"}]}`)
+	contentD := json.RawMessage(`{"ops":[{"insert":"版本 D\n"}]}`)
+	contentE := json.RawMessage(`{"ops":[{"insert":"版本 E\n"}]}`)
+	contentF := json.RawMessage(`{"ops":[{"insert":"版本 F\n"}]}`)
+
+	saved, err := st.UpdateMemo(memo.ID, "标题 B", contentB, 1, false)
+	if err != nil || saved.Revision != 2 {
+		t.Fatalf("首次保存失败: %+v err=%v", saved, err)
+	}
+	archives, err := st.MemoArchives(memo.ID)
+	if err != nil || len(archives) != 1 || archives[0].SourceRevision != 1 ||
+		archives[0].Title != memo.Title || string(archives[0].Content) != string(memo.Content) {
+		t.Fatalf("首次保存应存档被覆盖版本: %+v err=%v", archives, err)
+	}
+
+	saved, err = st.UpdateMemo(memo.ID, "标题 C", contentC, 2, false)
+	if err != nil || saved.Revision != 3 {
+		t.Fatalf("一小时内再次保存失败: %+v err=%v", saved, err)
+	}
+	archives, _ = st.MemoArchives(memo.ID)
+	if len(archives) != 1 {
+		t.Fatalf("一小时内不应重复自动存档: %+v", archives)
+	}
+	if _, err := st.UpdateMemo(memo.ID, "冲突", contentD, 2, false); !errors.Is(err, ErrMemoConflict) {
+		t.Fatalf("陈旧保存应冲突，实际 %v", err)
+	}
+	archives, _ = st.MemoArchives(memo.ID)
+	if len(archives) != 1 {
+		t.Fatalf("冲突保存不应写入存档: %+v", archives)
+	}
+
+	saved, err = st.UpdateMemo(memo.ID, "标题 D", contentD, 1, true)
+	if err != nil || saved.Revision != 4 {
+		t.Fatalf("强制保存失败: %+v err=%v", saved, err)
+	}
+	archives, _ = st.MemoArchives(memo.ID)
+	if len(archives) != 2 || archives[0].SourceRevision != 3 {
+		t.Fatalf("强制保存应立即保护当前版本: %+v", archives)
+	}
+
+	old := time.Now().Add(-2 * memoArchiveGap).Format(time.RFC3339Nano)
+	if _, err := st.db.Exec(`UPDATE memo_archives SET created_at = ? WHERE memo_id = ?`, old, memo.ID); err != nil {
+		t.Fatal(err)
+	}
+	saved, err = st.UpdateMemo(memo.ID, "标题 E", contentE, 4, false)
+	if err != nil || saved.Revision != 5 {
+		t.Fatalf("缓冲期后保存失败: %+v err=%v", saved, err)
+	}
+	if _, err := st.db.Exec(`UPDATE memo_archives SET created_at = ? WHERE memo_id = ?`, old, memo.ID); err != nil {
+		t.Fatal(err)
+	}
+	saved, err = st.UpdateMemo(memo.ID, "标题 F", contentF, 5, false)
+	if err != nil || saved.Revision != 6 {
+		t.Fatalf("第四个存档前保存失败: %+v err=%v", saved, err)
+	}
+	archives, _ = st.MemoArchives(memo.ID)
+	if len(archives) != maxMemoArchives || archives[0].SourceRevision != 5 || archives[2].SourceRevision != 3 {
+		t.Fatalf("应只保留最近三个存档: %+v", archives)
+	}
+
+	target := archives[2]
+	restored, err := st.RestoreMemoArchive(memo.ID, target.ID, 6, false)
+	if err != nil || restored.Revision != 7 || restored.Title != "标题 C" || string(restored.Content) != string(contentC) {
+		t.Fatalf("恢复失败: %+v err=%v", restored, err)
+	}
+	afterRestore, _ := st.MemoArchives(memo.ID)
+	if len(afterRestore) != maxMemoArchives || afterRestore[0].SourceRevision != 6 ||
+		afterRestore[0].Title != "标题 F" || string(afterRestore[0].Content) != string(contentF) {
+		t.Fatalf("恢复前应保护当前版本: %+v", afterRestore)
+	}
+	if _, err := st.RestoreMemoArchive(memo.ID, afterRestore[2].ID, 6, false); !errors.Is(err, ErrMemoConflict) {
+		t.Fatalf("陈旧恢复应冲突，实际 %v", err)
+	}
+	unchanged, _ := st.MemoArchives(memo.ID)
+	if len(unchanged) != maxMemoArchives || unchanged[0].ID != afterRestore[0].ID {
+		t.Fatalf("冲突恢复不应改变存档: %+v", unchanged)
+	}
+
+	forced, err := st.RestoreMemoArchive(memo.ID, afterRestore[2].ID, 1, true)
+	if err != nil || forced.Revision != 8 {
+		t.Fatalf("强制恢复失败: %+v err=%v", forced, err)
+	}
+	other, _ := st.CreateMemo("其他", MemoDocument)
+	if _, err := st.RestoreMemoArchive(other.ID, afterRestore[0].ID, 1, false); !errors.Is(err, ErrMemoArchiveNotFound) {
+		t.Fatalf("不能恢复其他备忘录的存档，实际 %v", err)
+	}
+
+	if err := st.DeleteMemo(memo.ID, forced.Revision, false); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM memo_archives WHERE memo_id = ?`, memo.ID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("删除备忘录后存档未级联清理: count=%d err=%v", count, err)
+	}
+}
+
 func TestMemoValidation(t *testing.T) {
 	st := openTemp(t)
 	if _, err := st.CreateMemo(" ", MemoDocument); err == nil {
@@ -158,6 +262,10 @@ func TestMemoPersistsAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("创建失败: %v", err)
 	}
+	memo, err = st.UpdateMemo(memo.ID, "持久化更新", json.RawMessage(`{"ops":[{"insert":"重开后仍保留\n"}]}`), memo.Revision, false)
+	if err != nil {
+		t.Fatalf("保存失败: %v", err)
+	}
 	if err := st.Close(); err != nil {
 		t.Fatalf("关闭失败: %v", err)
 	}
@@ -171,8 +279,12 @@ func TestMemoPersistsAcrossReopen(t *testing.T) {
 	if err != nil || loaded.Title != memo.Title {
 		t.Fatalf("重开后数据丢失: %+v err=%v", loaded, err)
 	}
+	archives, err := again.MemoArchives(memo.ID)
+	if err != nil || len(archives) != 1 || archives[0].SourceRevision != 1 {
+		t.Fatalf("重开后恢复点丢失: %+v err=%v", archives, err)
+	}
 	version, err := again.getMeta(metaSchemaVersion)
-	if err != nil || version != "7" {
+	if err != nil || version != "8" {
 		t.Fatalf("schema 版本 = %q err=%v", version, err)
 	}
 }

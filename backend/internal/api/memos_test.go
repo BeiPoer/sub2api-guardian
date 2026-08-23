@@ -58,6 +58,31 @@ func TestMemoAPIWorkflowAndConflicts(t *testing.T) {
 		t.Fatalf("强制更新失败: %d %s", forced.Code, forced.Body.String())
 	}
 
+	archivesResponse := doJSON(t, handler, http.MethodGet, "/api/memos/"+itoa(created.ID)+"/archives", nil)
+	var archives struct {
+		Items []store.MemoArchive `json:"items"`
+	}
+	if archivesResponse.Code != http.StatusOK || json.Unmarshal(archivesResponse.Body.Bytes(), &archives) != nil ||
+		len(archives.Items) != 2 || archives.Items[1].SourceRevision != 1 {
+		t.Fatalf("恢复点列表错误: %d %s", archivesResponse.Code, archivesResponse.Body.String())
+	}
+	archiveID := archives.Items[1].ID
+	staleRestore := doJSON(t, handler, http.MethodPost,
+		"/api/memos/"+itoa(created.ID)+"/archives/"+itoa(archiveID)+"/restore", map[string]any{
+			"expected_revision": 2,
+		})
+	if staleRestore.Code != http.StatusConflict || !strings.Contains(staleRestore.Body.String(), `"code":"MEMO_CONFLICT"`) {
+		t.Fatalf("陈旧恢复未冲突: %d %s", staleRestore.Code, staleRestore.Body.String())
+	}
+	restored := doJSON(t, handler, http.MethodPost,
+		"/api/memos/"+itoa(created.ID)+"/archives/"+itoa(archiveID)+"/restore", map[string]any{
+			"expected_revision": 2, "force": true,
+		})
+	if restored.Code != http.StatusOK || !strings.Contains(restored.Body.String(), `"revision":4`) ||
+		!strings.Contains(restored.Body.String(), `"content":{"ops":[{"insert":"\n"}]}`) {
+		t.Fatalf("强制恢复失败: %d %s", restored.Code, restored.Body.String())
+	}
+
 	deleteConflict := doJSON(t, handler, http.MethodDelete, "/api/memos/"+itoa(created.ID), map[string]any{
 		"expected_revision": 2,
 	})
