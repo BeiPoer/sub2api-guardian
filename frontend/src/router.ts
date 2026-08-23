@@ -37,6 +37,11 @@ const router = createRouter({
       name: 'image2',
       component: () => import('@/views/Image2View.vue')
     },
+    {
+      path: '/tools/memos',
+      name: 'memos',
+      component: () => import('@/views/MemosView.vue')
+    },
     { path: '/account', name: 'account', component: () => import('@/views/AccountView.vue') },
     { path: '/:pathMatch(.*)*', redirect: '/' }
   ]

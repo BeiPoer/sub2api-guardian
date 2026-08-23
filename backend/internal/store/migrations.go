@@ -18,7 +18,7 @@ const (
 	metaPolicy              = "policy_global"
 	metaUpstreamMultipliers = "upstream_multipliers"
 
-	currentSchemaVersion = "6"
+	currentSchemaVersion = "7"
 )
 
 var schemaStatements = []string{
@@ -122,6 +122,16 @@ var schemaStatements = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at)`,
+	`CREATE TABLE IF NOT EXISTS memos (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		title TEXT NOT NULL,
+		type TEXT NOT NULL CHECK (type IN ('document', 'sheet')),
+		content_json TEXT NOT NULL,
+		revision INTEGER NOT NULL DEFAULT 1,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_memos_updated ON memos(updated_at DESC, id DESC)`,
 	`CREATE TABLE IF NOT EXISTS image2_upstreams (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		name TEXT NOT NULL,

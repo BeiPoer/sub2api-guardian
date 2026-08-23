@@ -7,6 +7,9 @@ import type {
   Image2Config,
   Image2Settings,
   Image2Upstream,
+  Memo,
+  MemoSummary,
+  MemoType,
   Overview,
   Policy,
   UpstreamAlert,
@@ -42,6 +45,17 @@ export class UnauthorizedError extends Error {
   constructor(message = '请先登录') {
     super(message)
     this.name = 'UnauthorizedError'
+  }
+}
+
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string
+  ) {
+    super(message)
+    this.name = 'ApiError'
   }
 }
 
@@ -85,8 +99,9 @@ async function request<T>(path: string, init?: RequestInit, timeoutMs = DEFAULT_
     throw new UnauthorizedError((payload as { error?: string }).error)
   }
   if (!response.ok) {
-    const message = (payload as { error?: string }).error || response.statusText
-    throw new Error(message || `请求 ${path} 失败`)
+    const error = payload as { error?: string; code?: string }
+    const message = error.error || response.statusText
+    throw new ApiError(message || `请求 ${path} 失败`, response.status, error.code)
   }
   if (!isJson) {
     throw new Error(`接口 ${path} 未返回 JSON，请确认 Guardian 后端已启动`)
@@ -206,6 +221,24 @@ export const api = {
     put<Image2Upstream>(`/api/image2/upstreams/${id}`, payload),
   deleteImage2Upstream: (id: number) =>
     request<{ ok: boolean }>(`/api/image2/upstreams/${id}`, { method: 'DELETE' }),
+
+  memos: () => request<{ items: MemoSummary[] }>('/api/memos'),
+  memo: (id: number) => request<Memo>(`/api/memos/${id}`),
+  createMemo: (payload: { title: string; type: MemoType }) => post<Memo>('/api/memos', payload),
+  updateMemo: (
+    id: number,
+    payload: {
+      title: string
+      content: Memo['content']
+      expected_revision: number
+      force?: boolean
+    }
+  ) => put<Memo>(`/api/memos/${id}`, payload),
+  deleteMemo: (id: number, expectedRevision: number, force = false) =>
+    request<{ ok: boolean }>(`/api/memos/${id}`, {
+      method: 'DELETE',
+      body: JSON.stringify({ expected_revision: expectedRevision, force })
+    }),
 
   upstreamChannels: () =>
     request<{ items: UpstreamChannel[]; total: number; active: number; ignored: number }>(

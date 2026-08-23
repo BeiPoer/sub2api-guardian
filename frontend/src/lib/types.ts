@@ -556,3 +556,29 @@ export interface Action {
   groups?: GroupRef[]
   deleted: boolean
 }
+
+export type MemoType = 'document' | 'sheet'
+
+export interface MemoSummary {
+  id: number
+  title: string
+  type: MemoType
+  revision: number
+  created_at: string
+  updated_at: string
+}
+
+export interface DocumentMemoContent {
+  ops: Array<{
+    insert: string
+    attributes?: Record<string, boolean | number | string>
+  }>
+}
+
+export interface SheetMemoContent {
+  cells: string[][]
+}
+
+export interface Memo extends MemoSummary {
+  content: DocumentMemoContent | SheetMemoContent
+}
