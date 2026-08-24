@@ -62,14 +62,23 @@ type TokenModelsResult struct {
 	Models    []string `json:"models"`
 }
 
+type UpstreamGroupRatioChange struct {
+	Key       string  `json:"key"`
+	Label     string  `json:"label"`
+	Before    float64 `json:"before"`
+	After     float64 `json:"after"`
+	ChangedAt string  `json:"changed_at"`
+}
+
 type Overview struct {
-	Channel        store.UpstreamChannel           `json:"channel"`
-	Profile        any                             `json:"profile"`
-	Groups         any                             `json:"groups"`
-	Tokens         any                             `json:"tokens"`
-	Subscriptions  any                             `json:"subscriptions"`
-	LatestSnapshot *store.UpstreamBalanceSnapshot  `json:"latest_snapshot"`
-	History        []store.UpstreamBalanceSnapshot `json:"history"`
+	Channel                 store.UpstreamChannel           `json:"channel"`
+	Profile                 any                             `json:"profile"`
+	Groups                  any                             `json:"groups"`
+	Tokens                  any                             `json:"tokens"`
+	Subscriptions           any                             `json:"subscriptions"`
+	LatestSnapshot          *store.UpstreamBalanceSnapshot  `json:"latest_snapshot"`
+	History                 []store.UpstreamBalanceSnapshot `json:"history"`
+	RecentGroupRatioChanges []UpstreamGroupRatioChange      `json:"recent_group_ratio_changes"`
 }
 
 type Page[T any] struct {

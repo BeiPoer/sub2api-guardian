@@ -3,6 +3,7 @@ package channelmanager
 import (
 	"context"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -185,7 +186,66 @@ func (m *Manager) Overview(channelID int64) (Overview, error) {
 	if err != nil {
 		return Overview{}, err
 	}
-	return Overview{Channel: channel, Profile: profile, Groups: groups, Tokens: tokens, Subscriptions: subscriptions, LatestSnapshot: latest, History: history}, nil
+	ratioChanges, err := m.recentGroupRatioChanges(channelID, time.Now())
+	if err != nil {
+		return Overview{}, err
+	}
+	return Overview{
+		Channel: channel, Profile: profile, Groups: groups, Tokens: tokens, Subscriptions: subscriptions,
+		LatestSnapshot: latest, History: history, RecentGroupRatioChanges: ratioChanges,
+	}, nil
+}
+
+func (m *Manager) recentGroupRatioChanges(channelID int64, now time.Time) ([]UpstreamGroupRatioChange, error) {
+	tasks, err := m.store.UpstreamAutomationTasks(channelID)
+	if err != nil {
+		return nil, err
+	}
+	enabled := false
+	for _, task := range tasks {
+		if task.Enabled && task.Type == store.UpstreamTaskGroupRatioChange {
+			enabled = true
+			break
+		}
+	}
+	if !enabled {
+		return []UpstreamGroupRatioChange{}, nil
+	}
+
+	alerts, err := m.store.UpstreamAlertEventsSince(channelID, string(store.UpstreamTaskGroupRatioChange), now.Add(-24*time.Hour))
+	if err != nil {
+		return nil, err
+	}
+	changes := make([]UpstreamGroupRatioChange, 0)
+	seen := make(map[string]bool)
+	for _, alert := range alerts {
+		snapshot, ok := asObject(alert.Snapshot)
+		if !ok {
+			continue
+		}
+		for _, raw := range normalizeCollection(snapshot["changed"]) {
+			item, ok := asObject(raw)
+			if !ok {
+				continue
+			}
+			key := strings.TrimSpace(stringValue(first(item, "key", "label")))
+			before, beforeOK := finiteNumber(item["before"])
+			after, afterOK := finiteNumber(item["after"])
+			lookupKey := strings.ToLower(key)
+			if key == "" || !beforeOK || !afterOK || before == after || seen[lookupKey] {
+				continue
+			}
+			label := strings.TrimSpace(stringValue(item["label"]))
+			if label == "" {
+				label = key
+			}
+			seen[lookupKey] = true
+			changes = append(changes, UpstreamGroupRatioChange{
+				Key: key, Label: label, Before: before, After: after, ChangedAt: alert.CreatedAt,
+			})
+		}
+	}
+	return changes, nil
 }
 
 func (m *Manager) TokenModels(ctx context.Context, channelID, tokenID int64) (TokenModelsResult, error) {

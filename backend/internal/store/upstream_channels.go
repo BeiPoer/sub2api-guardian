@@ -774,18 +774,31 @@ func (s *Store) AddUpstreamAlertEvent(event UpstreamAlertEvent) error {
 	return err
 }
 
+const upstreamAlertSelect = `SELECT a.id, a.channel_id, c.name, a.task_id, a.type, a.message,
+	a.snapshot_json, a.email_sent, a.email_error, a.wecom_sent, a.wecom_error, a.created_at
+	FROM upstream_alert_events a JOIN upstream_channels c ON c.id = a.channel_id`
+
 func (s *Store) UpstreamAlertEvents(channelID int64, limit int) ([]UpstreamAlertEvent, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 200
 	}
 	args := []any{limit}
-	query := `SELECT a.id, a.channel_id, c.name, a.task_id, a.type, a.message, a.snapshot_json, a.email_sent, a.email_error, a.wecom_sent, a.wecom_error, a.created_at
-		FROM upstream_alert_events a JOIN upstream_channels c ON c.id = a.channel_id`
+	query := upstreamAlertSelect
 	if channelID > 0 {
 		query += ` WHERE a.channel_id = ?`
 		args = []any{channelID, limit}
 	}
 	query += ` ORDER BY a.created_at DESC, a.id DESC LIMIT ?`
+	return s.queryUpstreamAlertEvents(query, args...)
+}
+
+func (s *Store) UpstreamAlertEventsSince(channelID int64, eventType string, since time.Time) ([]UpstreamAlertEvent, error) {
+	query := upstreamAlertSelect + ` WHERE a.channel_id = ? AND a.type = ?
+		AND julianday(a.created_at) >= julianday(?) ORDER BY julianday(a.created_at) DESC, a.id DESC`
+	return s.queryUpstreamAlertEvents(query, channelID, eventType, since.Format(time.RFC3339Nano))
+}
+
+func (s *Store) queryUpstreamAlertEvents(query string, args ...any) ([]UpstreamAlertEvent, error) {
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, err

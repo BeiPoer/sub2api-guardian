@@ -85,7 +85,10 @@
                   <div v-if="summaryTokenRows(channel).length" class="mt-1 divide-y divide-gray-100 dark:divide-dark-700">
                     <div v-for="(token, index) in summaryTokenRows(channel).slice(0, 4)" :key="rowKey(token, index)" class="flex min-h-7 items-center justify-between gap-3 py-0.5 text-sm">
                       <span class="min-w-0 truncate text-gray-700 dark:text-dark-200">{{ displayValue(token, ['name', 'title', 'id', 'ID'], `令牌 ${index + 1}`) }}</span>
-                      <span class="flex-shrink-0 font-medium text-gray-900 dark:text-white">{{ tokenRatioLabel(channel, token) }}</span>
+                      <span class="inline-flex flex-shrink-0 items-center gap-0.5 font-medium text-gray-900 dark:text-white">
+                        {{ tokenRatioLabel(channel, token) }}
+                        <RatioChangeIndicator :change="tokenRatioChange(channel, token)" />
+                      </span>
                     </div>
                   </div>
                   <p v-else class="mt-2 text-sm text-gray-500 dark:text-dark-400">{{ summaryErrors[channel.id] || (summaryLoading ? '正在加载…' : '暂无令牌缓存') }}</p>
@@ -356,7 +359,12 @@
                     </select>
                     <span v-else>{{ tokenGroupLabel(token) }}</span>
                   </td>
-                  <td>{{ tokenRatioLabel(selectedChannel, token) }}</td>
+                  <td>
+                    <span class="inline-flex items-center gap-0.5">
+                      {{ tokenRatioLabel(selectedChannel, token) }}
+                      <RatioChangeIndicator :change="tokenRatioChange(selectedChannel, token)" />
+                    </span>
+                  </td>
                   <td><button type="button" class="btn btn-ghost btn-icon" title="查看模型" :disabled="!tokenID(token)" @click="showTokenModels(token)"><Icon name="search" size="sm" /></button></td>
                   <td v-for="column in trailingTokenColumns" :key="column">{{ tokenValue(token, column, index) }}</td>
                 </tr>
@@ -524,6 +532,7 @@ import Icon from '@/components/Icon.vue'
 import JsonTable from '@/components/JsonTable.vue'
 import MiniPager from '@/components/MiniPager.vue'
 import Modal from '@/components/Modal.vue'
+import RatioChangeIndicator from '@/components/RatioChangeIndicator.vue'
 import RechargeMethodIcon from '@/components/RechargeMethodIcon.vue'
 import SwitchRow from '@/components/SwitchRow.vue'
 import Toggle from '@/components/Toggle.vue'
@@ -1272,14 +1281,26 @@ async function changeTokenGroup(token: Row, event: Event) {
   }
 }
 function tokenRatioLabel(channel: UpstreamChannel, token: Row) {
-  const overviewData = summaryOverviews.value[channel.id] ?? (selectedChannel.value?.id === channel.id ? overview.value : undefined)
-  const tokenIDs = rowIdentifiers(token, ['group_id', 'groupId', 'groupID', 'group_name', 'groupName', 'group'])
-  const group = toRows(overviewData?.groups).find(item => tokenIDs.some(id => rowIdentifiers(item, ['id', 'group_id', 'name', 'key', 'code', 'group_name', 'display_name']).includes(id)))
+  const group = tokenGroup(channel, token)
   const embedded = isRow(token.group) ? token.group : undefined
   const value = firstNumeric(group, ['user_rate_multiplier', 'userRateMultiplier', 'custom_rate_multiplier', 'customRateMultiplier'])
     ?? firstNumeric(embedded, ['user_rate_multiplier', 'rate_multiplier', 'ratio', 'rate', 'multiplier', 'value'])
     ?? firstNumeric(group, ['rate_multiplier', 'ratio', 'rate', 'multiplier', 'value'])
   return value === null ? '—' : `${formatNumber(value)}x`
+}
+function tokenRatioChange(channel: UpstreamChannel, token: Row) {
+  const overviewData = summaryOverviews.value[channel.id] ?? (selectedChannel.value?.id === channel.id ? overview.value : undefined)
+  const identifiers = [...new Set([
+    ...rowIdentifiers(tokenGroup(channel, token), ['id', 'group_id', 'name', 'key', 'code', 'group_name', 'display_name']),
+    ...rowIdentifiers(token, ['group_id', 'groupId', 'groupID', 'group_name', 'groupName', 'group'])
+  ])]
+  return overviewData?.recent_group_ratio_changes?.find(change =>
+    identifiers.includes(change.key.trim().toLowerCase()) || identifiers.includes(change.label.trim().toLowerCase()))
+}
+function tokenGroup(channel: UpstreamChannel, token: Row) {
+  const overviewData = summaryOverviews.value[channel.id] ?? (selectedChannel.value?.id === channel.id ? overview.value : undefined)
+  const tokenIDs = rowIdentifiers(token, ['group_id', 'groupId', 'groupID', 'group_name', 'groupName', 'group'])
+  return toRows(overviewData?.groups).find(item => tokenIDs.some(id => rowIdentifiers(item, ['id', 'group_id', 'name', 'key', 'code', 'group_name', 'display_name']).includes(id)))
 }
 function rowIdentifiers(row: Row | undefined, keys: string[]) {
   if (!row) return []

@@ -67,6 +67,14 @@ export interface UpstreamBalanceSnapshot {
   captured_at: string
 }
 
+export interface UpstreamGroupRatioChange {
+  key: string
+  label: string
+  before: number
+  after: number
+  changed_at: string
+}
+
 export interface UpstreamOverview {
   channel: UpstreamChannel
   profile: unknown
@@ -75,6 +83,7 @@ export interface UpstreamOverview {
   subscriptions: unknown
   latest_snapshot?: UpstreamBalanceSnapshot
   history: UpstreamBalanceSnapshot[]
+  recent_group_ratio_changes: UpstreamGroupRatioChange[]
 }
 
 export interface UpstreamAutomationTask {

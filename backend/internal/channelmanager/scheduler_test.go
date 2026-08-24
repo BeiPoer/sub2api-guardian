@@ -78,3 +78,71 @@ func TestDueTaskRecordsAlertWhenEmailIsUnconfigured(t *testing.T) {
 		t.Fatalf("任务时间未更新: %+v", updated)
 	}
 }
+
+func TestOverviewReturnsLatestRecentRatioChangesOnlyWhileNotificationEnabled(t *testing.T) {
+	manager, st := testManager(t)
+	channel, err := st.CreateUpstreamChannel(store.UpstreamChannelInput{
+		Name: "sub", Type: store.UpstreamChannelSub2API, BaseURL: "https://example.test", Username: "u", Password: "p",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := st.CreateUpstreamAutomationTask(store.UpstreamAutomationTask{
+		ChannelID: channel.ID, Type: store.UpstreamTaskGroupRatioChange, Enabled: true,
+		IntervalMinutes: 5, LookbackMinutes: 60, CooldownMinutes: 30,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	addChange := func(at time.Time, changed ...map[string]any) {
+		t.Helper()
+		items := make([]any, len(changed))
+		for index := range changed {
+			items[index] = changed[index]
+		}
+		if err := st.AddUpstreamAlertEvent(store.UpstreamAlertEvent{
+			ChannelID: channel.ID, TaskID: &task.ID, Type: string(task.Type),
+			Snapshot: map[string]any{"changed": items}, CreatedAt: at.Format(time.RFC3339Nano),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	addChange(now.Add(-25*time.Hour), map[string]any{"key": "old", "before": 1, "after": 2})
+	addChange(now.Add(-2*time.Hour), map[string]any{"key": "pro", "label": "Pro", "before": 1, "after": 2})
+	latestAt := now.Add(-time.Hour)
+	addChange(latestAt,
+		map[string]any{"key": "pro", "label": "Pro", "before": 2, "after": 1.5},
+		map[string]any{"key": "basic", "before": 0.5, "after": 0.75},
+	)
+
+	overview, err := manager.Overview(channel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(overview.RecentGroupRatioChanges) != 2 {
+		t.Fatalf("近 24 小时倍率变化=%+v", overview.RecentGroupRatioChanges)
+	}
+	byKey := make(map[string]UpstreamGroupRatioChange)
+	for _, change := range overview.RecentGroupRatioChanges {
+		byKey[change.Key] = change
+	}
+	if change := byKey["pro"]; change.Before != 2 || change.After != 1.5 || change.ChangedAt != latestAt.Format(time.RFC3339Nano) {
+		t.Fatalf("pro 应返回最近一次变化: %+v", change)
+	}
+	if change := byKey["basic"]; change.Before != 0.5 || change.After != 0.75 {
+		t.Fatalf("basic 倍率变化异常: %+v", change)
+	}
+	if _, exists := byKey["old"]; exists {
+		t.Fatal("超过 24 小时的变化不应返回")
+	}
+
+	task.Enabled = false
+	if _, err := st.UpdateUpstreamAutomationTask(task); err != nil {
+		t.Fatal(err)
+	}
+	overview, err = manager.Overview(channel.ID)
+	if err != nil || len(overview.RecentGroupRatioChanges) != 0 {
+		t.Fatalf("通知关闭后不应返回倍率变化: %+v err=%v", overview.RecentGroupRatioChanges, err)
+	}
+}
