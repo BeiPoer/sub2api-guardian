@@ -472,6 +472,7 @@ export interface Policy {
   weights: {
     enabled: boolean
     budget: number
+    min_priority: number
     gate_floor: number
     price_exp: number
     speed_exp: number

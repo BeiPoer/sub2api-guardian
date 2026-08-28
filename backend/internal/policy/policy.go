@@ -113,10 +113,11 @@ type Recovery struct {
 	HoldSeconds          int     `json:"hold_seconds"`
 }
 
-// Weights 控制负载因子调权。
+// Weights 控制负载因子与优先级调权。
 type Weights struct {
 	Enabled            bool    `json:"enabled"`
 	Budget             int     `json:"budget"`               // 每个分组的权重预算点数
+	MinPriority        int     `json:"min_priority"`         // 自动调整时优先级的最小值
 	GateFloor          float64 `json:"gate_floor"`           // 健康分低于该值权重归零
 	PriceExp           float64 `json:"price_exp"`            // 价格优先的指数强度
 	SpeedExp           float64 `json:"speed_exp"`            // 速度优先的指数强度
@@ -361,6 +362,7 @@ func Default() Policy {
 		Weights: Weights{
 			Enabled:            true,
 			Budget:             400,
+			MinPriority:        1,
 			GateFloor:          40,
 			PriceExp:           1,
 			SpeedExp:           1,
@@ -505,6 +507,7 @@ func Normalize(p *Policy) {
 
 	w := &p.Weights
 	positiveInt(&w.Budget, d.Weights.Budget)
+	positiveInt(&w.MinPriority, d.Weights.MinPriority)
 	clampScore(&w.GateFloor, d.Weights.GateFloor)
 	positiveFloat(&w.PriceExp, d.Weights.PriceExp)
 	positiveFloat(&w.SpeedExp, d.Weights.SpeedExp)

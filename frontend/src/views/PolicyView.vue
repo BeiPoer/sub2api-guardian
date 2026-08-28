@@ -44,6 +44,13 @@
             <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
               <Field v-model="form.weights.budget" label="每组权重预算" type="number" :min="1" />
               <Field
+                v-model="form.weights.min_priority"
+                label="自动优先级下限"
+                type="number"
+                :min="1"
+                hint="自动调权不会把 priority 调整到此值以下；手动修改不受影响"
+              />
+              <Field
                 v-model="form.weights.gate_floor"
                 label="权重健康闸门"
                 type="number"

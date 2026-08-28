@@ -224,8 +224,9 @@ func assignPriority(ch *channel, base, rank int, p policy.Policy) {
 	case domain.HealthSurvivor:
 		priority += p.Degrade.PriorityStep
 	}
-	if priority < 1 {
-		priority = 1
+	minPriority := maxInt(1, p.Weights.MinPriority)
+	if priority < minPriority {
+		priority = minPriority
 	}
 	ch.desired.priority = priority
 }

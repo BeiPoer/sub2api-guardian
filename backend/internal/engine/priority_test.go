@@ -87,6 +87,20 @@ func TestPriceStrategyReordersPriority(t *testing.T) {
 	}
 }
 
+func TestPriorityRespectsConfiguredMinimum(t *testing.T) {
+	p := policy.Default()
+	p.Weights.MinPriority = 5
+	policy.Normalize(&p)
+
+	channel := weightChannel(1, 1, 2000, 1.0)
+	r := weightRound(p, channel)
+	applyWeights(r)
+
+	if channel.desired.priority != 5 {
+		t.Fatalf("配置优先级下限为 5 时，期望值 = %d，期望 5", channel.desired.priority)
+	}
+}
+
 func TestPriceStrategyUsesLatestUpstreamMultiplierSnapshot(t *testing.T) {
 	p := policy.Default()
 	p.Strategy = policy.StrategyPrice
