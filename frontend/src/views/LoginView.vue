@@ -16,10 +16,25 @@
           </div>
         </div>
 
-        <form class="card p-6" @submit.prevent="submit">
+        <form id="login-form" method="post" autocomplete="on" class="card p-6" @submit.prevent="submit">
           <div class="space-y-4">
-            <Field v-model="username" label="用户名" placeholder="管理员用户名" />
-            <Field v-model="password" label="密码" type="password" placeholder="登录密码" />
+            <Field
+              v-model="username"
+              id="login-username"
+              name="username"
+              autocomplete="username"
+              label="用户名"
+              placeholder="管理员用户名"
+            />
+            <Field
+              v-model="password"
+              id="login-password"
+              name="password"
+              autocomplete="current-password"
+              label="密码"
+              type="password"
+              placeholder="登录密码"
+            />
 
             <p
               v-if="message"

@@ -1,12 +1,15 @@
 <template>
-  <label class="block">
+  <label class="block" :for="id">
     <span class="input-label flex items-center gap-1.5">
       {{ label }}
       <span v-if="suffix" class="text-xs font-normal text-gray-400 dark:text-dark-500">{{ suffix }}</span>
     </span>
     <input
       class="input"
+      :id="id"
+      :name="name"
       :type="type"
+      :autocomplete="autocomplete"
       :value="modelValue"
       :inputmode="inputmode"
       :min="min"
@@ -25,7 +28,10 @@ const props = withDefaults(
   defineProps<{
     label: string
     modelValue: string | number
+    id?: string
+    name?: string
     type?: 'text' | 'number' | 'password'
+    autocomplete?: string
     inputmode?: 'none' | 'text' | 'decimal' | 'numeric' | 'tel' | 'search' | 'email' | 'url'
     hint?: string
     suffix?: string
