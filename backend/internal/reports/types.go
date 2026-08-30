@@ -33,7 +33,7 @@ func (e *Error) Error() string { return e.Message }
 
 func invalid(message string) error { return &Error{Status: http.StatusBadRequest, Message: message} }
 
-type ChannelUsageWeComConfig struct {
+type NotificationWeComConfig struct {
 	Enabled   bool   `json:"enabled"`
 	CorpID    string `json:"corp_id"`
 	AgentID   int64  `json:"agent_id"`
@@ -42,21 +42,24 @@ type ChannelUsageWeComConfig struct {
 	HasSecret bool   `json:"has_secret"`
 }
 
+type NotificationConfig struct {
+	WeCom NotificationWeComConfig `json:"wecom"`
+}
+
 // ChannelUsageConfig 是对外返回的配置与运行状态。
 type ChannelUsageConfig struct {
-	Enabled               bool                    `json:"enabled"`
-	IntervalMinutes       int                     `json:"interval_minutes"`
-	StartHour             int                     `json:"start_hour"`
-	EndHour               int                     `json:"end_hour"`
-	Timezone              string                  `json:"timezone"`
-	LookbackHours         int                     `json:"lookback_hours"`
-	FirstTokenThresholdMS int64                   `json:"first_token_threshold_ms"`
-	TriggerCount          int                     `json:"trigger_count"`
-	WeCom                 ChannelUsageWeComConfig `json:"wecom"`
-	LastRunAt             string                  `json:"last_run_at"`
-	LastStatus            string                  `json:"last_status"`
-	LastError             string                  `json:"last_error"`
-	NextRunAt             string                  `json:"next_run_at"`
+	Enabled               bool   `json:"enabled"`
+	IntervalMinutes       int    `json:"interval_minutes"`
+	StartHour             int    `json:"start_hour"`
+	EndHour               int    `json:"end_hour"`
+	Timezone              string `json:"timezone"`
+	LookbackHours         int    `json:"lookback_hours"`
+	FirstTokenThresholdMS int64  `json:"first_token_threshold_ms"`
+	TriggerCount          int    `json:"trigger_count"`
+	LastRunAt             string `json:"last_run_at"`
+	LastStatus            string `json:"last_status"`
+	LastError             string `json:"last_error"`
+	NextRunAt             string `json:"next_run_at"`
 }
 
 type WeComInput struct {
@@ -68,15 +71,18 @@ type WeComInput struct {
 }
 
 type SaveInput struct {
-	Enabled               bool       `json:"enabled"`
-	IntervalMinutes       int        `json:"interval_minutes"`
-	StartHour             int        `json:"start_hour"`
-	EndHour               int        `json:"end_hour"`
-	Timezone              string     `json:"timezone"`
-	LookbackHours         int        `json:"lookback_hours"`
-	FirstTokenThresholdMS int64      `json:"first_token_threshold_ms"`
-	TriggerCount          int        `json:"trigger_count"`
-	WeCom                 WeComInput `json:"wecom"`
+	Enabled               bool   `json:"enabled"`
+	IntervalMinutes       int    `json:"interval_minutes"`
+	StartHour             int    `json:"start_hour"`
+	EndHour               int    `json:"end_hour"`
+	Timezone              string `json:"timezone"`
+	LookbackHours         int    `json:"lookback_hours"`
+	FirstTokenThresholdMS int64  `json:"first_token_threshold_ms"`
+	TriggerCount          int    `json:"trigger_count"`
+}
+
+type NotificationSaveInput struct {
+	WeCom WeComInput `json:"wecom"`
 }
 
 type ConnectionSummary struct {
@@ -113,8 +119,11 @@ type storedWeComConfig struct {
 }
 
 type storedConfig struct {
-	LookbackHours         int               `json:"lookback_hours"`
-	FirstTokenThresholdMS int64             `json:"first_token_threshold_ms"`
-	TriggerCount          int               `json:"trigger_count"`
-	WeCom                 storedWeComConfig `json:"wecom"`
+	LookbackHours         int   `json:"lookback_hours"`
+	FirstTokenThresholdMS int64 `json:"first_token_threshold_ms"`
+	TriggerCount          int   `json:"trigger_count"`
+}
+
+type legacyStoredConfig struct {
+	WeCom *storedWeComConfig `json:"wecom"`
 }

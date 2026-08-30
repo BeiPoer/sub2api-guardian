@@ -150,13 +150,17 @@ export interface UpstreamWeComSettings {
   has_secret: boolean
 }
 
-export interface ChannelUsageWeComConfig {
+export interface ReportNotificationWeComConfig {
   enabled: boolean
   corp_id: string
   agent_id: number
   secret: string
   target: string
   has_secret: boolean
+}
+
+export interface ReportNotificationConfig {
+  wecom: ReportNotificationWeComConfig
 }
 
 export interface ChannelUsageReportConfig {
@@ -168,7 +172,6 @@ export interface ChannelUsageReportConfig {
   lookback_hours: number
   first_token_threshold_ms: number
   trigger_count: number
-  wecom: ChannelUsageWeComConfig
   last_run_at: string
   last_status: 'never' | 'ok' | 'alert' | 'error' | string
   last_error: string
@@ -214,6 +217,9 @@ export interface ChannelUsageReportSaveInput {
   lookback_hours: number
   first_token_threshold_ms: number
   trigger_count: number
+}
+
+export interface ReportNotificationSaveInput {
   wecom: {
     enabled: boolean
     corp_id: string

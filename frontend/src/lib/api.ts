@@ -23,7 +23,9 @@ import type {
   UpstreamTokenModels,
   ChannelUsageReportRun,
   ChannelUsageReportSaveInput,
-  ChannelUsageReportView
+  ChannelUsageReportView,
+  ReportNotificationConfig,
+  ReportNotificationSaveInput
 } from './types'
 
 export interface EventPage {
@@ -330,6 +332,13 @@ export const api = {
       target: target || ''
     }),
 
+  reportNotificationSettings: () =>
+    request<ReportNotificationConfig>('/api/reports/notifications'),
+  saveReportNotificationSettings: (payload: ReportNotificationSaveInput) =>
+    put<ReportNotificationConfig>('/api/reports/notifications', payload),
+  testReportNotificationWeCom: () =>
+    post<{ ok: boolean; message_id: string }>('/api/reports/notifications/wecom/test', undefined, LONG_TIMEOUT_MS),
+
   channelUsageReport: () =>
     request<ChannelUsageReportView>('/api/reports/channel-usage'),
   saveChannelUsageReport: (payload: ChannelUsageReportSaveInput) =>
@@ -343,7 +352,5 @@ export const api = {
       pages: number
     }>(`/api/reports/channel-usage/runs?page=${page}&page_size=${pageSize}`),
   runChannelUsageReport: () =>
-    post<{ run: ChannelUsageReportRun }>('/api/reports/channel-usage/run', undefined, LONG_TIMEOUT_MS),
-  testChannelUsageReportWeCom: () =>
-    post<{ ok: boolean; message_id: string }>('/api/reports/channel-usage/wecom/test', undefined, LONG_TIMEOUT_MS)
+    post<{ run: ChannelUsageReportRun }>('/api/reports/channel-usage/run', undefined, LONG_TIMEOUT_MS)
 }

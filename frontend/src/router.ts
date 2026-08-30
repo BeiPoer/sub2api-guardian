@@ -29,6 +29,11 @@ const router = createRouter({
     { path: '/events', name: 'events', component: () => import('@/views/EventsView.vue') },
     { path: '/reports', redirect: '/reports/channel-usage' },
     {
+      path: '/reports/notifications',
+      name: 'report-notifications',
+      component: () => import('@/views/ReportNotificationsView.vue')
+    },
+    {
       path: '/reports/channel-usage',
       name: 'channel-usage-report',
       component: () => import('@/views/ChannelUsageReportView.vue')

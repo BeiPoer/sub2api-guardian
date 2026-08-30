@@ -182,6 +182,7 @@ const configNav = [
 ]
 
 const scheduledReportsNav = [
+  { to: '/reports/notifications', label: '通知配置', icon: 'bell' as const },
   { to: '/reports/channel-usage', label: '渠道使用报告', icon: 'calendar' as const }
 ]
 

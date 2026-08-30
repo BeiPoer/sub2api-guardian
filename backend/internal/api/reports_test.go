@@ -15,28 +15,35 @@ func TestChannelUsageReportAPISecretsAndRunHistory(t *testing.T) {
 	handler, _ := setupAPI(t, &fakeUpstream{groupCount: 1})
 
 	rec := doJSON(t, handler, http.MethodGet, "/api/reports/channel-usage", nil)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"enabled":false`) || !strings.Contains(rec.Body.String(), `"secret":""`) {
-		t.Fatalf("默认报告响应异常或 Secret 字段缺失: %d %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"enabled":false`) || strings.Contains(rec.Body.String(), `"wecom"`) {
+		t.Fatalf("默认报告响应异常或仍包含企微配置: %d %s", rec.Code, rec.Body.String())
+	}
+
+	notificationPayload := map[string]any{
+		"wecom": map[string]any{
+			"enabled": true, "corp_id": "ww-corp", "agent_id": 1,
+			"secret": "report-secret", "target": "@all",
+		},
+	}
+	rec = doJSON(t, handler, http.MethodPut, "/api/reports/notifications", notificationPayload)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"secret":"report-secret"`) || !strings.Contains(rec.Body.String(), `"has_secret":true`) {
+		t.Fatalf("保存通知配置响应异常或 Secret 未返回: %d %s", rec.Code, rec.Body.String())
+	}
+
+	notificationPayload["wecom"].(map[string]any)["secret"] = ""
+	rec = doJSON(t, handler, http.MethodPut, "/api/reports/notifications", notificationPayload)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"secret":"report-secret"`) || !strings.Contains(rec.Body.String(), `"has_secret":true`) {
+		t.Fatalf("空 Secret 保存后未保留明文值: %d %s", rec.Code, rec.Body.String())
 	}
 
 	payload := map[string]any{
 		"enabled": true, "interval_minutes": 60, "start_hour": 9, "end_hour": 22,
 		"timezone": "Asia/Shanghai", "lookback_hours": 1,
 		"first_token_threshold_ms": 30000, "trigger_count": 20,
-		"wecom": map[string]any{
-			"enabled": true, "corp_id": "ww-corp", "agent_id": 1,
-			"secret": "report-secret", "target": "@all",
-		},
 	}
 	rec = doJSON(t, handler, http.MethodPut, "/api/reports/channel-usage", payload)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"secret":"report-secret"`) || !strings.Contains(rec.Body.String(), `"has_secret":true`) {
-		t.Fatalf("保存报告响应异常或 Secret 未返回: %d %s", rec.Code, rec.Body.String())
-	}
-
-	payload["wecom"].(map[string]any)["secret"] = ""
-	rec = doJSON(t, handler, http.MethodPut, "/api/reports/channel-usage", payload)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"secret":"report-secret"`) || !strings.Contains(rec.Body.String(), `"has_secret":true`) {
-		t.Fatalf("空 Secret 保存后未保留明文值: %d %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), `"wecom"`) {
+		t.Fatalf("保存报告响应异常或仍包含企微配置: %d %s", rec.Code, rec.Body.String())
 	}
 
 	rec = doJSON(t, handler, http.MethodGet, "/api/reports/channel-usage/runs?page=1&page_size=20", nil)
@@ -68,7 +75,6 @@ func TestChannelUsageReportAPIRejectsInvalidConfig(t *testing.T) {
 		"enabled": false, "interval_minutes": 0, "start_hour": 9, "end_hour": 22,
 		"timezone": "Asia/Shanghai", "lookback_hours": 1,
 		"first_token_threshold_ms": 30000, "trigger_count": 20,
-		"wecom": map[string]any{"enabled": false, "corp_id": "", "agent_id": 0, "secret": "", "target": ""},
 	})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("非法运行间隔应返回 400: %d %s", rec.Code, rec.Body.String())

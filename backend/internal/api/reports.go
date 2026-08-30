@@ -11,6 +11,40 @@ import (
 	"sub2api-guardian/backend/internal/wecom"
 )
 
+func (s *Server) getReportNotifications(w http.ResponseWriter, _ *http.Request) {
+	config, err := s.scheduledReports.NotificationSettings()
+	if err != nil {
+		writeReportError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, config)
+}
+
+func (s *Server) saveReportNotifications(w http.ResponseWriter, r *http.Request) {
+	var payload reports.NotificationSaveInput
+	if err := decodeBody(r, &payload); err != nil {
+		writeReportError(w, err)
+		return
+	}
+	config, err := s.scheduledReports.SaveNotificationSettings(payload)
+	if err != nil {
+		writeReportError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, config)
+}
+
+func (s *Server) testReportNotificationsWeCom(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
+	defer cancel()
+	messageID, err := s.scheduledReports.TestNotification(ctx)
+	if err != nil {
+		writeReportError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message_id": messageID})
+}
+
 func (s *Server) getChannelUsageReport(w http.ResponseWriter, _ *http.Request) {
 	view, err := s.scheduledReports.View()
 	if err != nil {
@@ -58,17 +92,6 @@ func (s *Server) runChannelUsageReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"run": run})
-}
-
-func (s *Server) testChannelUsageReportWeCom(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
-	defer cancel()
-	messageID, err := s.scheduledReports.TestWeCom(ctx)
-	if err != nil {
-		writeReportError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message_id": messageID})
 }
 
 func writeReportError(w http.ResponseWriter, err error) {

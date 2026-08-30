@@ -84,11 +84,17 @@
 
       <form class="space-y-6" @submit.prevent="save">
         <section class="card">
-          <div class="card-header">
-            <h2 class="text-base font-semibold text-gray-900 dark:text-white">调度与统计</h2>
-            <p class="mt-0.5 text-sm text-gray-500 dark:text-dark-400">
-              定时检查每分钟判断一次；开始和结束小时均包含，立即执行会忽略时间窗口但仍遵守报告互斥锁。
-            </p>
+          <div class="card-header flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 class="text-base font-semibold text-gray-900 dark:text-white">调度与统计</h2>
+              <p class="mt-0.5 text-sm text-gray-500 dark:text-dark-400">
+                定时检查每分钟判断一次；开始和结束小时均包含，立即执行会忽略时间窗口但仍遵守报告互斥锁。企微通知在通知配置中统一管理。
+              </p>
+            </div>
+            <RouterLink to="/reports/notifications" class="btn btn-secondary btn-sm">
+              <Icon name="bell" size="sm" />
+              通知配置
+            </RouterLink>
           </div>
           <div class="space-y-5 p-6">
             <SwitchRow
@@ -130,50 +136,6 @@
           </div>
         </section>
 
-        <section class="card">
-          <div class="card-header flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h2 class="text-base font-semibold text-gray-900 dark:text-white">企微通知</h2>
-              <p class="mt-0.5 text-sm text-gray-500 dark:text-dark-400">
-                使用独立于“上游渠道告警”的企业微信应用配置，仅在告警或查询失败时发送普通文本消息。
-              </p>
-            </div>
-            <Badge :tone="form.wecom.enabled ? (form.wecom.secret ? 'success' : 'warning') : 'gray'" dot>
-              {{ form.wecom.enabled ? (form.wecom.secret ? '已启用' : '待完善') : '未启用' }}
-            </Badge>
-          </div>
-          <div class="space-y-5 p-6">
-            <SwitchRow
-              v-model="form.wecom.enabled"
-              label="启用企微通知"
-              description="告警超过触发条数时发送；正常运行不会发送静默消息。"
-            />
-            <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <Field v-model="form.wecom.corp_id" label="CorpID" placeholder="ww..." />
-              <Field v-model="form.wecom.agent_id" label="AgentID" type="number" :min="1" />
-              <Field
-                v-model="form.wecom.secret"
-                label="Secret"
-                type="text"
-                placeholder="请输入应用 Secret"
-                hint="Secret 按明文显示；留空提交不会覆盖已保存值。"
-              />
-              <Field
-                v-model="form.wecom.target"
-                label="接收人"
-                placeholder="@all 或 zhangsan|lisi"
-                hint="支持 @all；多个成员 ID 使用 | 分隔。"
-              />
-            </div>
-            <div class="flex flex-wrap items-center gap-2">
-              <button type="button" class="btn btn-secondary btn-sm" :disabled="busy" @click="testWeCom">
-                <Icon name="chat" size="sm" />
-                {{ testing ? '发送中…' : '测试企微' }}
-              </button>
-              <span class="text-xs text-gray-500 dark:text-dark-400">测试使用已保存的企微配置。</span>
-            </div>
-          </div>
-        </section>
       </form>
 
       <section class="card">
@@ -321,14 +283,12 @@ import type {
 
 type ReportForm = Omit<ChannelUsageReportSaveInput, 'first_token_threshold_ms'> & {
   first_token_threshold_seconds: number
-  wecom: ChannelUsageReportSaveInput['wecom'] & { has_secret: boolean }
 }
 
 const ui = useUIStore()
 const loading = ref(true)
 const saving = ref(false)
 const running = ref(false)
-const testing = ref(false)
 const refreshing = ref(false)
 const error = ref('')
 const view = ref<ChannelUsageReportView | null>(null)
@@ -346,8 +306,7 @@ const form = ref<ReportForm>({
   timezone: 'Asia/Shanghai',
   lookback_hours: 1,
   first_token_threshold_seconds: 30,
-  trigger_count: 20,
-      wecom: { enabled: false, corp_id: '', agent_id: 0, secret: '', target: '', has_secret: false }
+  trigger_count: 20
 })
 
 const config = computed(() => view.value?.config ?? {
@@ -359,12 +318,11 @@ const config = computed(() => view.value?.config ?? {
   lookback_hours: form.value.lookback_hours,
   first_token_threshold_ms: Math.round(form.value.first_token_threshold_seconds * 1000),
   trigger_count: form.value.trigger_count,
-  wecom: form.value.wecom,
   last_run_at: '', last_status: 'never', last_error: '', next_run_at: ''
 })
 const connection = computed(() => view.value?.connection ?? { configured: false, base_url: '' })
 const latestRun = computed(() => view.value?.latest_run ?? runs.value[0] ?? null)
-const busy = computed(() => saving.value || running.value || testing.value || refreshing.value)
+const busy = computed(() => saving.value || running.value || refreshing.value)
 const nextRunLabel = computed(() => config.value.next_run_at ? formatTime(config.value.next_run_at) : '待启用')
 
 onMounted(() => void load())
@@ -393,15 +351,7 @@ function applyView(report: ChannelUsageReportView) {
     timezone: report.config.timezone,
     lookback_hours: report.config.lookback_hours,
     first_token_threshold_seconds: report.config.first_token_threshold_ms / 1000,
-    trigger_count: report.config.trigger_count,
-    wecom: {
-      enabled: report.config.wecom.enabled,
-      corp_id: report.config.wecom.corp_id,
-      agent_id: report.config.wecom.agent_id,
-      secret: report.config.wecom.secret,
-      target: report.config.wecom.target,
-      has_secret: report.config.wecom.has_secret
-    }
+    trigger_count: report.config.trigger_count
   }
 }
 
@@ -437,14 +387,7 @@ async function save() {
       timezone: form.value.timezone,
       lookback_hours: Number(form.value.lookback_hours),
       first_token_threshold_ms: Math.max(1, Math.round(Number(form.value.first_token_threshold_seconds) * 1000)),
-      trigger_count: Number(form.value.trigger_count),
-      wecom: {
-        enabled: form.value.wecom.enabled,
-        corp_id: form.value.wecom.corp_id,
-        agent_id: Number(form.value.wecom.agent_id),
-        secret: form.value.wecom.secret,
-        target: form.value.wecom.target
-      }
+      trigger_count: Number(form.value.trigger_count)
     }
     const report = await api.saveChannelUsageReport(payload)
     view.value = report
@@ -471,20 +414,6 @@ async function runNow() {
     ui.notify('error', error.value)
   } finally {
     running.value = false
-  }
-}
-
-async function testWeCom() {
-  testing.value = true
-  error.value = ''
-  try {
-    const result = await api.testChannelUsageReportWeCom()
-    ui.notify('success', result.message_id ? `企微测试消息已发送（${result.message_id}）` : '企微测试消息已发送')
-  } catch (err) {
-    error.value = (err as Error).message
-    ui.notify('error', error.value)
-  } finally {
-    testing.value = false
   }
 }
 

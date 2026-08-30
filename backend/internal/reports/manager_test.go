@@ -30,6 +30,30 @@ func TestManagerDefaultsDoNotWriteUntilSave(t *testing.T) {
 	}
 }
 
+func TestManagerMigratesLegacyWeComSettingsToSharedConfig(t *testing.T) {
+	st := openReportStore(t)
+	_, err := st.SaveScheduledReportConfig(store.ScheduledReport{
+		Type: store.ScheduledReportChannelUsage, Enabled: false, IntervalMinutes: 60,
+		StartHour: 9, EndHour: 22, Timezone: "Asia/Shanghai",
+		ConfigJSON: `{"lookback_hours":1,"first_token_threshold_ms":30000,"trigger_count":20,"wecom":{"enabled":true,"corp_id":"ww-corp","agent_id":1,"secret":"legacy-secret","target":"@all"}}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := New(st, upstream.New("", "", time.Second))
+	config, err := manager.NotificationSettings()
+	if err != nil || config.WeCom.Secret != "legacy-secret" || !config.WeCom.Enabled {
+		t.Fatalf("旧报告企微配置迁移失败: %+v %v", config, err)
+	}
+	if _, exists, err := st.ScheduledReportNotificationSettings(); err != nil || !exists {
+		t.Fatalf("共享企微配置未写入: exists=%v err=%v", exists, err)
+	}
+	report, exists, err := st.ScheduledReport(store.ScheduledReportChannelUsage)
+	if err != nil || !exists || strings.Contains(report.ConfigJSON, "wecom") {
+		t.Fatalf("旧报告配置未清理企微字段: %+v exists=%v err=%v", report, exists, err)
+	}
+}
+
 func TestManagerPreservesBlankSecretAndRunsSummary(t *testing.T) {
 	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("x-api-key") != "admin-key" {
@@ -46,14 +70,16 @@ func TestManagerPreservesBlankSecretAndRunsSummary(t *testing.T) {
 	defer upstreamServer.Close()
 	st := openReportStore(t)
 	manager := New(st, upstream.New(upstreamServer.URL, "admin-key", 5*time.Second))
-	input := validSaveInput(20)
-	input.WeCom = WeComInput{Enabled: true, CorpID: "ww-corp", AgentID: 1, Secret: "wecom-secret", Target: "@all"}
-	if _, err := manager.Save(input); err != nil {
+	notification := validNotificationInput()
+	if _, err := manager.SaveNotificationSettings(notification); err != nil {
 		t.Fatal(err)
 	}
-	input.WeCom.Secret = ""
-	if view, err := manager.Save(input); err != nil || !view.Config.WeCom.HasSecret || view.Config.WeCom.Secret != "wecom-secret" {
-		t.Fatalf("空 Secret 保存失败或明文值异常: %+v %v", view, err)
+	notification.WeCom.Secret = ""
+	if config, err := manager.SaveNotificationSettings(notification); err != nil || !config.WeCom.HasSecret || config.WeCom.Secret != "wecom-secret" {
+		t.Fatalf("空 Secret 保存失败或明文值异常: %+v %v", config, err)
+	}
+	if _, err := manager.Save(validSaveInput(20)); err != nil {
+		t.Fatal(err)
 	}
 
 	run, err := manager.RunNow(context.Background())
@@ -68,8 +94,12 @@ func TestManagerPreservesBlankSecretAndRunsSummary(t *testing.T) {
 		t.Fatalf("聚合结果异常: %#v", run.Summary)
 	}
 	report, exists, err := st.ScheduledReport(store.ScheduledReportChannelUsage)
-	if err != nil || !exists || !strings.Contains(report.ConfigJSON, "wecom-secret") {
-		t.Fatalf("Secret 未保留在服务端配置: %+v exists=%v err=%v", report, exists, err)
+	if err != nil || !exists || strings.Contains(report.ConfigJSON, "wecom-secret") {
+		t.Fatalf("报告配置不应继续存储企微 Secret: %+v exists=%v err=%v", report, exists, err)
+	}
+	shared, exists, err := st.ScheduledReportNotificationSettings()
+	if err != nil || !exists || shared.WeCom.Secret != "wecom-secret" {
+		t.Fatalf("共享企微 Secret 未保留: %+v exists=%v err=%v", shared, exists, err)
 	}
 }
 
@@ -115,9 +145,10 @@ func TestManagerAlertSendsTextWithoutCredentials(t *testing.T) {
 	st := openReportStore(t)
 	manager := New(st, upstream.New(upstreamServer.URL, "admin-key", 5*time.Second))
 	manager.wecom.SetBaseURL(wecomServer.URL)
-	input := validSaveInput(1)
-	input.WeCom = WeComInput{Enabled: true, CorpID: "ww-corp", AgentID: 1, Secret: "wecom-secret", Target: "@all"}
-	if _, err := manager.Save(input); err != nil {
+	if _, err := manager.SaveNotificationSettings(validNotificationInput()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Save(validSaveInput(1)); err != nil {
 		t.Fatal(err)
 	}
 	run, err := manager.RunNow(context.Background())
@@ -149,9 +180,10 @@ func TestManagerRecordsQueryFailureAndSendsOneFailureNotice(t *testing.T) {
 	st := openReportStore(t)
 	manager := New(st, upstream.New(upstreamServer.URL, "admin-key", 5*time.Second))
 	manager.wecom.SetBaseURL(wecomServer.URL)
-	input := validSaveInput(20)
-	input.WeCom = WeComInput{Enabled: true, CorpID: "ww-corp", AgentID: 1, Secret: "wecom-secret", Target: "@all"}
-	if _, err := manager.Save(input); err != nil {
+	if _, err := manager.SaveNotificationSettings(validNotificationInput()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Save(validSaveInput(20)); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
@@ -170,6 +202,12 @@ func validSaveInput(trigger int) SaveInput {
 		Enabled: false, IntervalMinutes: 60, StartHour: 0, EndHour: 23,
 		Timezone: "UTC", LookbackHours: 1, FirstTokenThresholdMS: 30000,
 		TriggerCount: trigger,
+	}
+}
+
+func validNotificationInput() NotificationSaveInput {
+	return NotificationSaveInput{
+		WeCom: WeComInput{Enabled: true, CorpID: "ww-corp", AgentID: 1, Secret: "wecom-secret", Target: "@all"},
 	}
 }
 

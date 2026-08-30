@@ -98,35 +98,17 @@ func (m *Manager) Save(input SaveInput) (View, error) {
 	if err := validateSaveInput(input); err != nil {
 		return View{}, err
 	}
+	if _, err := m.notificationSettings(); err != nil {
+		return View{}, err
+	}
 	report, exists, err := m.store.ScheduledReport(store.ScheduledReportChannelUsage)
 	if err != nil {
 		return View{}, err
-	}
-	current := defaultStoredConfig()
-	if exists {
-		current, err = decodeStoredConfig(report.ConfigJSON)
-		if err != nil {
-			return View{}, err
-		}
-	}
-	secret := strings.TrimSpace(input.WeCom.Secret)
-	if secret == "" {
-		secret = current.WeCom.Secret
 	}
 	config := storedConfig{
 		LookbackHours:         input.LookbackHours,
 		FirstTokenThresholdMS: input.FirstTokenThresholdMS,
 		TriggerCount:          input.TriggerCount,
-		WeCom: storedWeComConfig{
-			Enabled: input.WeCom.Enabled,
-			CorpID:  strings.TrimSpace(input.WeCom.CorpID),
-			AgentID: input.WeCom.AgentID,
-			Secret:  secret,
-			Target:  strings.TrimSpace(input.WeCom.Target),
-		},
-	}
-	if err := wecom.Validate(config.wecomSettings(), config.WeCom.Enabled); err != nil {
-		return View{}, invalid(err.Error())
 	}
 	raw, err := json.Marshal(config)
 	if err != nil {
@@ -147,6 +129,42 @@ func (m *Manager) Save(input SaveInput) (View, error) {
 		return View{}, err
 	}
 	return m.viewFor(saved, config)
+}
+
+func (m *Manager) NotificationSettings() (NotificationConfig, error) {
+	settings, err := m.notificationSettings()
+	if err != nil {
+		return NotificationConfig{}, err
+	}
+	return notificationConfig(settings), nil
+}
+
+func (m *Manager) SaveNotificationSettings(input NotificationSaveInput) (NotificationConfig, error) {
+	current, err := m.notificationSettings()
+	if err != nil {
+		return NotificationConfig{}, err
+	}
+	secret := strings.TrimSpace(input.WeCom.Secret)
+	if secret == "" {
+		secret = current.WeCom.Secret
+	}
+	settings := store.ScheduledReportNotificationSettings{
+		WeCom: store.ScheduledReportWeComSettings{
+			Enabled: input.WeCom.Enabled,
+			CorpID:  strings.TrimSpace(input.WeCom.CorpID),
+			AgentID: input.WeCom.AgentID,
+			Secret:  secret,
+			Target:  strings.TrimSpace(input.WeCom.Target),
+		},
+	}
+	if err := validateNotificationSettings(settings, settings.WeCom.Enabled); err != nil {
+		return NotificationConfig{}, err
+	}
+	saved, err := m.store.SaveScheduledReportNotificationSettings(settings)
+	if err != nil {
+		return NotificationConfig{}, err
+	}
+	return notificationConfig(saved), nil
 }
 
 func (m *Manager) Runs(page, pageSize int) ([]store.ScheduledReportRun, int64, int, int, int, error) {
@@ -196,24 +214,16 @@ func (m *Manager) RunNow(ctx context.Context) (store.ScheduledReportRun, error) 
 	return m.execute(ctx, report, config)
 }
 
-func (m *Manager) TestWeCom(ctx context.Context) (string, error) {
-	report, exists, err := m.store.ScheduledReport(store.ScheduledReportChannelUsage)
+func (m *Manager) TestNotification(ctx context.Context) (string, error) {
+	settings, err := m.notificationSettings()
 	if err != nil {
 		return "", err
 	}
-	if !exists {
-		return "", &Error{Status: http.StatusPreconditionFailed, Message: "请先保存渠道使用报告配置"}
-	}
-	config, err := decodeStoredConfig(report.ConfigJSON)
-	if err != nil {
+	if err := validateNotificationSettings(settings, true); err != nil {
 		return "", err
 	}
-	settings := config.wecomSettings()
-	if err := wecom.Validate(settings, true); err != nil {
-		return "", invalid(err.Error())
-	}
-	location, _ := time.LoadLocation(report.Timezone)
-	messageID, err := m.wecom.Send(ctx, settings, wecom.Text, buildTestText(time.Now(), location))
+	wecomSettings := toWeComSettings(settings.WeCom)
+	messageID, err := m.wecom.Send(ctx, wecomSettings, wecom.Text, buildTestText(time.Now(), time.Local))
 	if err != nil {
 		return "", err
 	}
@@ -266,6 +276,7 @@ func (m *Manager) execute(ctx context.Context, report store.ScheduledReport, con
 		WindowEnd:          formatUTC(windowEnd),
 		NotificationStatus: "not_needed",
 	}
+	notificationSettings, notificationErr := m.notificationSettings()
 
 	queryCtx, cancel := context.WithTimeout(ctx, usageRequestTimeout*time.Second)
 	records, queryErr := m.client.ListUsage(queryCtx, windowStart, windowEnd, report.Timezone)
@@ -274,7 +285,7 @@ func (m *Manager) execute(ctx context.Context, report store.ScheduledReport, con
 		run.Status = "error"
 		run.Error = safeError(queryErr)
 		run.Message = "查询 usage 失败"
-		m.sendFailure(config, location, startedAt, queryErr, &run)
+		m.sendFailure(notificationSettings, notificationErr, location, startedAt, queryErr, &run)
 		return m.finish(report, run, startedAt)
 	}
 
@@ -285,7 +296,11 @@ func (m *Manager) execute(ctx context.Context, report store.ScheduledReport, con
 	if evaluation.Alert {
 		run.Status = "alert"
 		run.Message = "高延迟数量超过触发条数"
-		if settings, ok := completeWeComSettings(config); ok {
+		if notificationErr != nil {
+			run.NotificationStatus = "failed"
+			run.NotificationError = safeError(notificationErr)
+			run.Message = "告警生成成功，但通知配置读取失败"
+		} else if settings, ok := completeWeComSettings(notificationSettings); ok {
 			_, sendErr := m.wecom.Send(ctx, settings, wecom.Text, buildAlertText(evaluation, startedAt, windowStart, windowEnd, location, config.FirstTokenThresholdMS, config.TriggerCount))
 			if sendErr != nil {
 				run.NotificationStatus = "failed"
@@ -304,8 +319,13 @@ func (m *Manager) execute(ctx context.Context, report store.ScheduledReport, con
 	return m.finish(report, run, startedAt)
 }
 
-func (m *Manager) sendFailure(config storedConfig, location *time.Location, startedAt time.Time, queryErr error, run *store.ScheduledReportRun) {
-	settings, ok := completeWeComSettings(config)
+func (m *Manager) sendFailure(notificationSettings store.ScheduledReportNotificationSettings, notificationErr error, location *time.Location, startedAt time.Time, queryErr error, run *store.ScheduledReportRun) {
+	if notificationErr != nil {
+		run.NotificationStatus = "failed"
+		run.NotificationError = safeError(notificationErr)
+		return
+	}
+	settings, ok := completeWeComSettings(notificationSettings)
 	if !ok {
 		run.NotificationStatus = "disabled"
 		return
@@ -363,12 +383,7 @@ func (m *Manager) viewFor(report store.ScheduledReport, config storedConfig) (Vi
 			StartHour: report.StartHour, EndHour: report.EndHour, Timezone: report.Timezone,
 			LookbackHours: config.LookbackHours, FirstTokenThresholdMS: config.FirstTokenThresholdMS,
 			TriggerCount: config.TriggerCount,
-			WeCom: ChannelUsageWeComConfig{
-				Enabled: config.WeCom.Enabled, CorpID: config.WeCom.CorpID,
-				AgentID: config.WeCom.AgentID, Secret: config.WeCom.Secret, Target: config.WeCom.Target,
-				HasSecret: strings.TrimSpace(config.WeCom.Secret) != "",
-			},
-			LastRunAt: report.LastRunAt, LastStatus: report.LastStatus,
+			LastRunAt:    report.LastRunAt, LastStatus: report.LastStatus,
 			LastError: report.LastError, NextRunAt: report.NextRunAt,
 		},
 		Connection: ConnectionSummary{Configured: m.client.Ready() == nil, BaseURL: m.client.BaseURL()},
@@ -398,8 +413,11 @@ func validateSaveInput(input SaveInput) error {
 	if _, err := time.LoadLocation(strings.TrimSpace(input.Timezone)); err != nil {
 		return invalid("时区无效")
 	}
-	settings := wecom.Settings{CorpID: input.WeCom.CorpID, AgentID: input.WeCom.AgentID, Secret: input.WeCom.Secret, Target: input.WeCom.Target}
-	if err := wecom.Validate(settings, false); err != nil {
+	return nil
+}
+
+func validateNotificationSettings(settings store.ScheduledReportNotificationSettings, requireComplete bool) error {
+	if err := wecom.Validate(toWeComSettings(settings.WeCom), requireComplete); err != nil {
 		return invalid(err.Error())
 	}
 	return nil
@@ -439,15 +457,88 @@ func decodeStoredConfig(raw string) (storedConfig, error) {
 	return config, nil
 }
 
-func (config storedConfig) wecomSettings() wecom.Settings {
-	return wecom.Settings{CorpID: config.WeCom.CorpID, AgentID: config.WeCom.AgentID, Secret: config.WeCom.Secret, Target: config.WeCom.Target}
+func (m *Manager) notificationSettings() (store.ScheduledReportNotificationSettings, error) {
+	settings, exists, err := m.store.ScheduledReportNotificationSettings()
+	if err != nil {
+		return store.ScheduledReportNotificationSettings{}, err
+	}
+	if exists {
+		return settings, nil
+	}
+	report, exists, err := m.store.ScheduledReport(store.ScheduledReportChannelUsage)
+	if err != nil || !exists {
+		return settings, err
+	}
+	legacy, ok, err := legacyNotificationSettings(report.ConfigJSON)
+	if err != nil || !ok {
+		return settings, err
+	}
+	saved, err := m.store.SaveScheduledReportNotificationSettings(legacy)
+	if err != nil {
+		return store.ScheduledReportNotificationSettings{}, err
+	}
+	if cleaned, changed, err := removeLegacyNotificationSettings(report.ConfigJSON); err == nil && changed {
+		report.ConfigJSON = cleaned
+		// 共享配置已经落库；清理失败不应阻断通知配置读取，下一次仍可从共享配置继续运行。
+		_, _ = m.store.SaveScheduledReportConfig(report)
+	}
+	return saved, nil
 }
 
-func completeWeComSettings(config storedConfig) (wecom.Settings, bool) {
-	if !config.WeCom.Enabled || wecom.Validate(config.wecomSettings(), true) != nil {
+func legacyNotificationSettings(raw string) (store.ScheduledReportNotificationSettings, bool, error) {
+	if strings.TrimSpace(raw) == "" {
+		return store.DefaultScheduledReportNotificationSettings(), false, nil
+	}
+	var legacy legacyStoredConfig
+	if err := json.Unmarshal([]byte(raw), &legacy); err != nil {
+		return store.ScheduledReportNotificationSettings{}, false, fmt.Errorf("渠道使用报告配置损坏")
+	}
+	if legacy.WeCom == nil {
+		return store.DefaultScheduledReportNotificationSettings(), false, nil
+	}
+	return store.ScheduledReportNotificationSettings{
+		WeCom: store.ScheduledReportWeComSettings{
+			Enabled: legacy.WeCom.Enabled, CorpID: legacy.WeCom.CorpID,
+			AgentID: legacy.WeCom.AgentID, Secret: legacy.WeCom.Secret, Target: legacy.WeCom.Target,
+		},
+	}, true, nil
+}
+
+func removeLegacyNotificationSettings(raw string) (string, bool, error) {
+	values := make(map[string]json.RawMessage)
+	if err := json.Unmarshal([]byte(raw), &values); err != nil {
+		return "", false, err
+	}
+	if _, exists := values["wecom"]; !exists {
+		return raw, false, nil
+	}
+	delete(values, "wecom")
+	cleaned, err := json.Marshal(values)
+	if err != nil {
+		return "", false, err
+	}
+	return string(cleaned), true, nil
+}
+
+func notificationConfig(settings store.ScheduledReportNotificationSettings) NotificationConfig {
+	return NotificationConfig{
+		WeCom: NotificationWeComConfig{
+			Enabled: settings.WeCom.Enabled, CorpID: settings.WeCom.CorpID,
+			AgentID: settings.WeCom.AgentID, Secret: settings.WeCom.Secret, Target: settings.WeCom.Target,
+			HasSecret: strings.TrimSpace(settings.WeCom.Secret) != "",
+		},
+	}
+}
+
+func toWeComSettings(settings store.ScheduledReportWeComSettings) wecom.Settings {
+	return wecom.Settings{CorpID: settings.CorpID, AgentID: settings.AgentID, Secret: settings.Secret, Target: settings.Target}
+}
+
+func completeWeComSettings(settings store.ScheduledReportNotificationSettings) (wecom.Settings, bool) {
+	if !settings.WeCom.Enabled || wecom.Validate(toWeComSettings(settings.WeCom), true) != nil {
 		return wecom.Settings{}, false
 	}
-	return config.wecomSettings(), true
+	return toWeComSettings(settings.WeCom), true
 }
 
 func withinWindow(now time.Time, startHour, endHour int) bool {

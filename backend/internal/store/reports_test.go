@@ -15,6 +15,26 @@ func TestScheduledReportDefaultsAreNotPersisted(t *testing.T) {
 	}
 }
 
+func TestScheduledReportNotificationSettingsPersistence(t *testing.T) {
+	st := openTemp(t)
+	settings, exists, err := st.ScheduledReportNotificationSettings()
+	if err != nil || exists || settings.WeCom.Secret != "" {
+		t.Fatalf("新库不应自动写入通知配置: %+v exists=%v err=%v", settings, exists, err)
+	}
+	saved, err := st.SaveScheduledReportNotificationSettings(ScheduledReportNotificationSettings{
+		WeCom: ScheduledReportWeComSettings{
+			Enabled: true, CorpID: " ww-corp ", AgentID: 1, Secret: " app-secret ", Target: " @all ",
+		},
+	})
+	if err != nil || !saved.WeCom.HasSecret || saved.WeCom.Secret != "app-secret" || saved.WeCom.CorpID != "ww-corp" || saved.WeCom.Target != "@all" {
+		t.Fatalf("通知配置保存或规范化失败: %+v err=%v", saved, err)
+	}
+	loaded, exists, err := st.ScheduledReportNotificationSettings()
+	if err != nil || !exists || !loaded.WeCom.Enabled || loaded.WeCom.Secret != "app-secret" || !loaded.WeCom.HasSecret {
+		t.Fatalf("通知配置读取失败: %+v exists=%v err=%v", loaded, exists, err)
+	}
+}
+
 func TestScheduledReportConfigAndSecretRetention(t *testing.T) {
 	st := openTemp(t)
 	first := ScheduledReport{
