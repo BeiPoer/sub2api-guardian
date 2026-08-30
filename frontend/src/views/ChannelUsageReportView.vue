@@ -15,7 +15,7 @@
             </Badge>
           </div>
           <p class="mt-1 max-w-3xl text-sm leading-relaxed text-gray-500 dark:text-dark-400">
-            每次执行读取主 Sub2API 的全部 usage records，按分组和账号汇总；只有全站首 T 高延迟数超过触发条数才发送 Markdown 告警。
+            每次执行读取主 Sub2API 的全部 usage records，按分组和账号汇总；只有全站首 T 高延迟数超过触发条数才发送普通文本告警。
           </p>
         </div>
         <div class="flex flex-wrap items-center gap-2">
@@ -135,7 +135,7 @@
             <div>
               <h2 class="text-base font-semibold text-gray-900 dark:text-white">企微通知</h2>
               <p class="mt-0.5 text-sm text-gray-500 dark:text-dark-400">
-                使用独立于“上游渠道告警”的企业微信应用配置，仅在告警或查询失败时发送 Markdown 消息。
+                使用独立于“上游渠道告警”的企业微信应用配置，仅在告警或查询失败时发送普通文本消息。
               </p>
             </div>
             <Badge :tone="form.wecom.enabled ? (form.wecom.secret ? 'success' : 'warning') : 'gray'" dot>

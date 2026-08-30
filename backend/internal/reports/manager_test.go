@@ -73,7 +73,7 @@ func TestManagerPreservesBlankSecretAndRunsSummary(t *testing.T) {
 	}
 }
 
-func TestManagerAlertSendsMarkdownWithoutCredentials(t *testing.T) {
+func TestManagerAlertSendsTextWithoutCredentials(t *testing.T) {
 	var sendCalls atomic.Int64
 	wecomServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -83,15 +83,15 @@ func TestManagerAlertSendsMarkdownWithoutCredentials(t *testing.T) {
 			sendCalls.Add(1)
 			var payload map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-				t.Errorf("企微 Markdown 请求体解析失败: %v", err)
+				t.Errorf("企微普通文本请求体解析失败: %v", err)
 			} else {
-				if payload["msgtype"] != "markdown" || payload["touser"] != "@all" {
+				if payload["msgtype"] != "text" || payload["touser"] != "@all" {
 					t.Errorf("企微消息类型/接收人异常: %+v", payload)
 				}
-				markdown, _ := payload["markdown"].(map[string]any)
-				content, _ := markdown["content"].(string)
-				if !strings.Contains(content, "首 T 高延迟告警") || strings.Contains(content, "admin-key") || strings.Contains(content, "wecom-secret") {
-					t.Errorf("Markdown 内容异常或泄露凭据: %s", content)
+				textPayload, _ := payload["text"].(map[string]any)
+				content, _ := textPayload["content"].(string)
+				if !strings.Contains(content, "首 T 高延迟告警") || !strings.Contains(content, "高延迟明细") || strings.Contains(content, "admin-key") || strings.Contains(content, "wecom-secret") || strings.Contains(content, "##") || strings.Contains(content, "|") {
+					t.Errorf("普通文本内容异常或泄露凭据: %s", content)
 				}
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"errcode": 0, "errmsg": "ok", "msgid": 9})

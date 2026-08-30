@@ -213,7 +213,7 @@ func (m *Manager) TestWeCom(ctx context.Context) (string, error) {
 		return "", invalid(err.Error())
 	}
 	location, _ := time.LoadLocation(report.Timezone)
-	messageID, err := m.wecom.Send(ctx, settings, wecom.Markdown, buildTestMarkdown(time.Now(), location))
+	messageID, err := m.wecom.Send(ctx, settings, wecom.Text, buildTestText(time.Now(), location))
 	if err != nil {
 		return "", err
 	}
@@ -286,7 +286,7 @@ func (m *Manager) execute(ctx context.Context, report store.ScheduledReport, con
 		run.Status = "alert"
 		run.Message = "高延迟数量超过触发条数"
 		if settings, ok := completeWeComSettings(config); ok {
-			_, sendErr := m.wecom.Send(ctx, settings, wecom.Markdown, buildAlertMarkdown(evaluation, startedAt, windowStart, windowEnd, location, config.FirstTokenThresholdMS, config.TriggerCount))
+			_, sendErr := m.wecom.Send(ctx, settings, wecom.Text, buildAlertText(evaluation, startedAt, windowStart, windowEnd, location, config.FirstTokenThresholdMS, config.TriggerCount))
 			if sendErr != nil {
 				run.NotificationStatus = "failed"
 				run.NotificationError = safeError(sendErr)
@@ -310,7 +310,7 @@ func (m *Manager) sendFailure(config storedConfig, location *time.Location, star
 		run.NotificationStatus = "disabled"
 		return
 	}
-	if _, err := m.wecom.Send(context.Background(), settings, wecom.Markdown, buildFailureMarkdown(startedAt, location, queryErr)); err != nil {
+	if _, err := m.wecom.Send(context.Background(), settings, wecom.Text, buildFailureText(startedAt, location, queryErr)); err != nil {
 		run.NotificationStatus = "failed"
 		run.NotificationError = safeError(err)
 		return
