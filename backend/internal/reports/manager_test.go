@@ -30,6 +30,21 @@ func TestManagerDefaultsDoNotWriteUntilSave(t *testing.T) {
 	}
 }
 
+func TestManagerDailyDefaultsAndRun(t *testing.T) {
+	st := openReportStore(t)
+	manager := New(st, upstream.New("", "", time.Second))
+	view, err := manager.DailyView()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Config.Enabled || view.Config.RunHour != 23 || view.Config.Timezone != "Asia/Shanghai" {
+		t.Fatalf("每日报告默认配置异常: %+v", view.Config)
+	}
+	if _, exists, err := st.ScheduledReport(store.ScheduledReportDaily); err != nil || exists {
+		t.Fatalf("读取默认每日报告不应写库: exists=%v err=%v", exists, err)
+	}
+}
+
 func TestManagerMigratesLegacyWeComSettingsToSharedConfig(t *testing.T) {
 	st := openReportStore(t)
 	_, err := st.SaveScheduledReportConfig(store.ScheduledReport{
@@ -194,6 +209,75 @@ func TestManagerRecordsQueryFailureAndSendsOneFailureNotice(t *testing.T) {
 	}
 	if run.Error == "" || strings.Contains(run.Error, "wecom-secret") {
 		t.Fatalf("失败记录错误信息异常或泄露 Secret: %q", run.Error)
+	}
+}
+
+func TestManagerDailyRunSendsPlainTextSummary(t *testing.T) {
+	var sendCalls atomic.Int64
+	var messageContent string
+	wecomServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/cgi-bin/gettoken":
+			_ = json.NewEncoder(w).Encode(map[string]any{"errcode": 0, "errmsg": "ok", "access_token": "daily-token", "expires_in": 7200})
+		case "/cgi-bin/message/send":
+			sendCalls.Add(1)
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Errorf("每日报告企微请求体解析失败: %v", err)
+			} else {
+				if payload["msgtype"] != "text" || payload["touser"] != "@all" {
+					t.Errorf("每日报告企微消息类型/接收人异常: %+v", payload)
+				}
+				textPayload, _ := payload["text"].(map[string]any)
+				messageContent, _ = textPayload["content"].(string)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"errcode": 0, "errmsg": "ok", "msgid": 10})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer wecomServer.Close()
+
+	now := time.Now().UTC()
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/admin/usage/stats":
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"total_actual_cost": 12.5, "total_tokens": 3456}})
+		case "/api/v1/admin/users":
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{
+				"items": []any{map[string]any{"created_at": now.Format(time.RFC3339Nano)}}, "page": 1, "page_size": 1000, "pages": 1,
+			}})
+		case "/api/v1/admin/payment/orders":
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{
+				"items": []any{map[string]any{"status": "COMPLETED", "order_type": "balance", "pay_amount": 8.5, "currency": "CNY", "paid_at": now.Format(time.RFC3339Nano), "created_at": now.Format(time.RFC3339Nano)}}, "page": 1, "page_size": 1000, "pages": 1,
+			}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstreamServer.Close()
+
+	st := openReportStore(t)
+	manager := New(st, upstream.New(upstreamServer.URL, "admin-key", 5*time.Second))
+	manager.wecom.SetBaseURL(wecomServer.URL)
+	if _, err := manager.SaveNotificationSettings(validNotificationInput()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.SaveDaily(DailySaveInput{Enabled: false, RunHour: 23, Timezone: "UTC"}); err != nil {
+		t.Fatal(err)
+	}
+	run, err := manager.RunDailyNow(context.Background())
+	if err != nil || run.Status != "ok" || run.NotificationStatus != "sent" || sendCalls.Load() != 1 {
+		t.Fatalf("每日报告运行结果异常: run=%+v err=%v sends=%d", run, err, sendCalls.Load())
+	}
+	if !strings.Contains(messageContent, "每日报告") || !strings.Contains(messageContent, "今日消耗额度：12.50") ||
+		!strings.Contains(messageContent, "今日总 Token：3456") || !strings.Contains(messageContent, "今日注册人数：1 人") ||
+		!strings.Contains(messageContent, "CNY：8.50") || strings.Contains(messageContent, "admin-key") || strings.Contains(messageContent, "wecom-secret") || strings.Contains(messageContent, "|") {
+		t.Fatalf("每日报告普通文本内容异常或泄露凭据: %s", messageContent)
+	}
+	summary, ok := run.Summary.(DailyReportSummary)
+	if !ok || summary.TotalActualCost != 12.5 || summary.TotalTokens != 3456 || summary.NewUsers != 1 || summary.RechargeAmounts["CNY"] != 8.5 {
+		t.Fatalf("每日报告汇总结果异常: %#v", run.Summary)
 	}
 }
 

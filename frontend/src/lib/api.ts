@@ -24,6 +24,9 @@ import type {
   ChannelUsageReportRun,
   ChannelUsageReportSaveInput,
   ChannelUsageReportView,
+  DailyReportRun,
+  DailyReportSaveInput,
+  DailyReportView,
   ReportNotificationConfig,
   ReportNotificationSaveInput
 } from './types'
@@ -352,5 +355,20 @@ export const api = {
       pages: number
     }>(`/api/reports/channel-usage/runs?page=${page}&page_size=${pageSize}`),
   runChannelUsageReport: () =>
-    post<{ run: ChannelUsageReportRun }>('/api/reports/channel-usage/run', undefined, LONG_TIMEOUT_MS)
+    post<{ run: ChannelUsageReportRun }>('/api/reports/channel-usage/run', undefined, LONG_TIMEOUT_MS),
+
+  dailyReport: () =>
+    request<DailyReportView>('/api/reports/daily'),
+  saveDailyReport: (payload: DailyReportSaveInput) =>
+    put<DailyReportView>('/api/reports/daily', payload),
+  dailyReportRuns: (page = 1, pageSize = 20) =>
+    request<{
+      items: DailyReportRun[]
+      total: number
+      page: number
+      page_size: number
+      pages: number
+    }>(`/api/reports/daily/runs?page=${page}&page_size=${pageSize}`),
+  runDailyReport: () =>
+    post<{ run: DailyReportRun }>('/api/reports/daily/run', undefined, LONG_TIMEOUT_MS)
 }

@@ -2,6 +2,7 @@ package reports
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -41,12 +42,38 @@ func buildAlertText(evaluation Evaluation, startedAt, windowStart, windowEnd tim
 	return limitText(builder.String())
 }
 
-func buildFailureText(startedAt time.Time, location *time.Location, err error) string {
+func buildFailureText(title string, startedAt time.Time, location *time.Location, err error) string {
 	message := "报告查询失败"
 	if err != nil {
 		message = truncateText(err.Error(), 600)
 	}
-	return limitText(fmt.Sprintf("渠道使用报告执行失败\n执行时间：%s\n错误：%s\n", formatReportTime(startedAt, location), textCell(message)))
+	return limitText(fmt.Sprintf("%s执行失败\n执行时间：%s\n错误：%s\n", title, formatReportTime(startedAt, location), textCell(message)))
+}
+
+func buildDailyText(summary DailyReportSummary, startedAt, windowStart time.Time, location *time.Location) string {
+	var builder strings.Builder
+	builder.WriteString("每日报告\n")
+	fmt.Fprintf(&builder, "执行时间：%s\n", formatReportTime(startedAt, location))
+	fmt.Fprintf(&builder, "统计日期：%s\n", textCell(summary.Date))
+	fmt.Fprintf(&builder, "统计窗口：%s 至 %s\n", formatReportTime(windowStart, location), formatReportTime(startedAt, location))
+	fmt.Fprintf(&builder, "今日消耗额度：%.2f\n", summary.TotalActualCost)
+	fmt.Fprintf(&builder, "今日总 Token：%d\n", summary.TotalTokens)
+	fmt.Fprintf(&builder, "今日注册人数：%d 人\n", summary.NewUsers)
+	builder.WriteString("今日充值量：")
+	if len(summary.RechargeAmounts) == 0 {
+		builder.WriteString("0\n")
+	} else {
+		currencies := make([]string, 0, len(summary.RechargeAmounts))
+		for currency := range summary.RechargeAmounts {
+			currencies = append(currencies, currency)
+		}
+		sort.Strings(currencies)
+		builder.WriteString("\n")
+		for _, currency := range currencies {
+			fmt.Fprintf(&builder, "  %s：%.2f\n", textCell(currency), summary.RechargeAmounts[currency])
+		}
+	}
+	return limitText(builder.String())
 }
 
 func buildTestText(now time.Time, location *time.Location) string {
@@ -79,7 +106,7 @@ func limitText(value string) string {
 	if len([]byte(value)) <= maxWeComTextBytes {
 		return value
 	}
-	suffix := "\n消息内容已截断，完整聚合结果请查看运行记录。"
+	suffix := "\n消息内容已截断，完整结果请查看运行记录。"
 	runes := []rune(value)
 	for len([]byte(string(runes)))+len([]byte(suffix)) > maxWeComTextBytes && len(runes) > 0 {
 		runes = runes[:len(runes)-1]

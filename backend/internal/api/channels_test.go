@@ -76,6 +76,22 @@ func (f *fakeUpstream) handler() http.Handler {
 		})
 	})
 
+	mux.HandleFunc("/api/v1/admin/usage/stats", func(w http.ResponseWriter, r *http.Request) {
+		writeEnvelope(w, map[string]any{"total_actual_cost": 0, "total_tokens": 0})
+	})
+
+	mux.HandleFunc("/api/v1/admin/users", func(w http.ResponseWriter, r *http.Request) {
+		writeEnvelope(w, map[string]any{
+			"items": []any{}, "total": 0, "page": 1, "page_size": 1000, "pages": 1,
+		})
+	})
+
+	mux.HandleFunc("/api/v1/admin/payment/orders", func(w http.ResponseWriter, r *http.Request) {
+		writeEnvelope(w, map[string]any{
+			"items": []any{}, "total": 0, "page": 1, "page_size": 1000, "pages": 1,
+		})
+	})
+
 	mux.HandleFunc("/api/v1/admin/accounts/data", func(w http.ResponseWriter, r *http.Request) {
 		accountType := f.accountType
 		if accountType == "" {

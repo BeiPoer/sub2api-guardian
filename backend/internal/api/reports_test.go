@@ -93,3 +93,39 @@ func TestChannelUsageReportRunWithoutMainConnectionReturnsPrecondition(t *testin
 		t.Fatalf("错误响应不应暴露凭据: %s", rec.Body.String())
 	}
 }
+
+func TestDailyReportAPIDefaultSaveRunAndHistory(t *testing.T) {
+	handler, _ := setupAPI(t, &fakeUpstream{groupCount: 1})
+
+	rec := doJSON(t, handler, http.MethodGet, "/api/reports/daily", nil)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"run_hour":23`) || !strings.Contains(rec.Body.String(), `"enabled":false`) {
+		t.Fatalf("每日报告默认配置异常: %d %s", rec.Code, rec.Body.String())
+	}
+
+	rec = doJSON(t, handler, http.MethodPut, "/api/reports/daily", map[string]any{
+		"enabled": true, "run_hour": 22, "timezone": "Asia/Shanghai",
+	})
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"run_hour":22`) || !strings.Contains(rec.Body.String(), `"enabled":true`) {
+		t.Fatalf("每日报告配置保存异常: %d %s", rec.Code, rec.Body.String())
+	}
+
+	rec = doJSON(t, handler, http.MethodPost, "/api/reports/daily/run", nil)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"status":"ok"`) || !strings.Contains(rec.Body.String(), `"new_users":0`) {
+		t.Fatalf("每日报告立即执行异常: %d %s", rec.Code, rec.Body.String())
+	}
+
+	rec = doJSON(t, handler, http.MethodGet, "/api/reports/daily/runs?page=1&page_size=20", nil)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"total":1`) {
+		t.Fatalf("每日报告运行历史异常: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDailyReportAPIRejectsInvalidRunHour(t *testing.T) {
+	handler, _ := setupAPI(t, &fakeUpstream{groupCount: 1})
+	rec := doJSON(t, handler, http.MethodPut, "/api/reports/daily", map[string]any{
+		"enabled": false, "run_hour": 24, "timezone": "Asia/Shanghai",
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("非法每日执行小时应返回 400: %d %s", rec.Code, rec.Body.String())
+	}
+}

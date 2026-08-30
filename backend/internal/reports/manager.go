@@ -94,6 +94,17 @@ func (m *Manager) View() (View, error) {
 	return m.viewFor(report, config)
 }
 
+func (m *Manager) DailyView() (DailyView, error) {
+	report, exists, err := m.store.ScheduledReport(store.ScheduledReportDaily)
+	if err != nil {
+		return DailyView{}, err
+	}
+	if !exists {
+		report = defaultDailyReport()
+	}
+	return m.dailyViewFor(report)
+}
+
 func (m *Manager) Save(input SaveInput) (View, error) {
 	if err := validateSaveInput(input); err != nil {
 		return View{}, err
@@ -129,6 +140,34 @@ func (m *Manager) Save(input SaveInput) (View, error) {
 		return View{}, err
 	}
 	return m.viewFor(saved, config)
+}
+
+func (m *Manager) SaveDaily(input DailySaveInput) (DailyView, error) {
+	if err := validateDailySaveInput(input); err != nil {
+		return DailyView{}, err
+	}
+	if _, err := m.notificationSettings(); err != nil {
+		return DailyView{}, err
+	}
+	report, exists, err := m.store.ScheduledReport(store.ScheduledReportDaily)
+	if err != nil {
+		return DailyView{}, err
+	}
+	if !exists {
+		report = defaultDailyReport()
+	}
+	report.Type = store.ScheduledReportDaily
+	report.Enabled = input.Enabled
+	report.IntervalMinutes = 24 * 60
+	report.StartHour = input.RunHour
+	report.EndHour = input.RunHour
+	report.Timezone = strings.TrimSpace(input.Timezone)
+	report.ConfigJSON = `{}`
+	saved, err := m.store.SaveScheduledReportConfig(report)
+	if err != nil {
+		return DailyView{}, err
+	}
+	return m.dailyViewFor(saved)
 }
 
 func (m *Manager) NotificationSettings() (NotificationConfig, error) {
@@ -168,7 +207,15 @@ func (m *Manager) SaveNotificationSettings(input NotificationSaveInput) (Notific
 }
 
 func (m *Manager) Runs(page, pageSize int) ([]store.ScheduledReportRun, int64, int, int, int, error) {
-	report, exists, err := m.store.ScheduledReport(store.ScheduledReportChannelUsage)
+	return m.runsFor(store.ScheduledReportChannelUsage, page, pageSize)
+}
+
+func (m *Manager) DailyRuns(page, pageSize int) ([]store.ScheduledReportRun, int64, int, int, int, error) {
+	return m.runsFor(store.ScheduledReportDaily, page, pageSize)
+}
+
+func (m *Manager) runsFor(reportType store.ScheduledReportType, page, pageSize int) ([]store.ScheduledReportRun, int64, int, int, int, error) {
+	report, exists, err := m.store.ScheduledReport(reportType)
 	if err != nil {
 		return nil, 0, 0, 0, 0, err
 	}
@@ -214,6 +261,27 @@ func (m *Manager) RunNow(ctx context.Context) (store.ScheduledReportRun, error) 
 	return m.execute(ctx, report, config)
 }
 
+func (m *Manager) RunDailyNow(ctx context.Context) (store.ScheduledReportRun, error) {
+	if !m.runMu.TryLock() {
+		return store.ScheduledReportRun{}, ErrAlreadyRunning
+	}
+	defer m.runMu.Unlock()
+
+	report, exists, err := m.store.ScheduledReport(store.ScheduledReportDaily)
+	if err != nil {
+		return store.ScheduledReportRun{}, err
+	}
+	if !exists {
+		report = defaultDailyReport()
+		saved, saveErr := m.store.SaveScheduledReportConfig(report)
+		if saveErr != nil {
+			return store.ScheduledReportRun{}, saveErr
+		}
+		report = saved
+	}
+	return m.executeDaily(ctx, report)
+}
+
 func (m *Manager) TestNotification(ctx context.Context) (string, error) {
 	settings, err := m.notificationSettings()
 	if err != nil {
@@ -231,6 +299,11 @@ func (m *Manager) TestNotification(ctx context.Context) (string, error) {
 }
 
 func (m *Manager) runDue(ctx context.Context) {
+	m.runChannelUsageDue(ctx)
+	m.runDailyDue(ctx)
+}
+
+func (m *Manager) runChannelUsageDue(ctx context.Context) {
 	report, exists, err := m.store.ScheduledReport(store.ScheduledReportChannelUsage)
 	if err != nil || !exists || !report.Enabled {
 		return
@@ -261,6 +334,33 @@ func (m *Manager) runDue(ctx context.Context) {
 	_, _ = m.execute(ctx, report, config)
 }
 
+func (m *Manager) runDailyDue(ctx context.Context) {
+	report, exists, err := m.store.ScheduledReport(store.ScheduledReportDaily)
+	if err != nil || !exists || !report.Enabled {
+		return
+	}
+	location, err := time.LoadLocation(report.Timezone)
+	if err != nil {
+		return
+	}
+	now := time.Now()
+	localNow := now.In(location)
+	if !withinWindow(localNow, report.StartHour, report.EndHour) {
+		return
+	}
+	if report.LastRunAt != "" {
+		last, parseErr := time.Parse(time.RFC3339Nano, report.LastRunAt)
+		if parseErr == nil && now.Sub(last) < 24*time.Hour {
+			return
+		}
+	}
+	if !m.runMu.TryLock() {
+		return
+	}
+	defer m.runMu.Unlock()
+	_, _ = m.executeDaily(ctx, report)
+}
+
 func (m *Manager) execute(ctx context.Context, report store.ScheduledReport, config storedConfig) (store.ScheduledReportRun, error) {
 	startedAt := time.Now().UTC()
 	location, err := time.LoadLocation(report.Timezone)
@@ -285,7 +385,7 @@ func (m *Manager) execute(ctx context.Context, report store.ScheduledReport, con
 		run.Status = "error"
 		run.Error = safeError(queryErr)
 		run.Message = "查询 usage 失败"
-		m.sendFailure(notificationSettings, notificationErr, location, startedAt, queryErr, &run)
+		m.sendFailure("渠道使用报告", notificationSettings, notificationErr, location, startedAt, queryErr, &run)
 		return m.finish(report, run, startedAt)
 	}
 
@@ -319,7 +419,65 @@ func (m *Manager) execute(ctx context.Context, report store.ScheduledReport, con
 	return m.finish(report, run, startedAt)
 }
 
-func (m *Manager) sendFailure(notificationSettings store.ScheduledReportNotificationSettings, notificationErr error, location *time.Location, startedAt time.Time, queryErr error, run *store.ScheduledReportRun) {
+func (m *Manager) executeDaily(ctx context.Context, report store.ScheduledReport) (store.ScheduledReportRun, error) {
+	startedAt := time.Now().UTC()
+	location, err := time.LoadLocation(report.Timezone)
+	if err != nil {
+		return store.ScheduledReportRun{}, err
+	}
+	localNow := startedAt.In(location)
+	windowStart := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, location)
+	run := store.ScheduledReportRun{
+		ReportID:           report.ID,
+		StartedAt:          formatUTC(startedAt),
+		WindowStart:        formatUTC(windowStart),
+		WindowEnd:          formatUTC(startedAt),
+		NotificationStatus: "not_needed",
+	}
+	notificationSettings, notificationErr := m.notificationSettings()
+
+	queryCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	stats, queryErr := m.client.GetDailyReportStats(queryCtx, windowStart, startedAt, report.Timezone)
+	cancel()
+	if queryErr != nil {
+		run.Status = "error"
+		run.Error = safeError(queryErr)
+		run.Message = "查询每日统计失败"
+		m.sendFailure("每日报告", notificationSettings, notificationErr, location, startedAt, queryErr, &run)
+		return m.finish(report, run, startedAt)
+	}
+
+	summary := DailyReportSummary{
+		Date:            localNow.Format("2006-01-02"),
+		Timezone:        report.Timezone,
+		TotalActualCost: stats.TotalActualCost,
+		TotalTokens:     stats.TotalTokens,
+		NewUsers:        stats.NewUsers,
+		RechargeAmounts: stats.RechargeAmounts,
+	}
+	run.Status = "ok"
+	run.Message = "每日统计完成"
+	run.Summary = summary
+	if notificationErr != nil {
+		run.NotificationStatus = "failed"
+		run.NotificationError = safeError(notificationErr)
+		run.Message = "每日统计完成，但通知配置读取失败"
+	} else if settings, ok := completeWeComSettings(notificationSettings); ok {
+		_, sendErr := m.wecom.Send(ctx, settings, wecom.Text, buildDailyText(summary, startedAt, windowStart, location))
+		if sendErr != nil {
+			run.NotificationStatus = "failed"
+			run.NotificationError = safeError(sendErr)
+			run.Message = "每日统计完成，但企微投递失败"
+		} else {
+			run.NotificationStatus = "sent"
+		}
+	} else {
+		run.NotificationStatus = "disabled"
+	}
+	return m.finish(report, run, startedAt)
+}
+
+func (m *Manager) sendFailure(title string, notificationSettings store.ScheduledReportNotificationSettings, notificationErr error, location *time.Location, startedAt time.Time, queryErr error, run *store.ScheduledReportRun) {
 	if notificationErr != nil {
 		run.NotificationStatus = "failed"
 		run.NotificationError = safeError(notificationErr)
@@ -330,7 +488,7 @@ func (m *Manager) sendFailure(notificationSettings store.ScheduledReportNotifica
 		run.NotificationStatus = "disabled"
 		return
 	}
-	if _, err := m.wecom.Send(context.Background(), settings, wecom.Text, buildFailureText(startedAt, location, queryErr)); err != nil {
+	if _, err := m.wecom.Send(context.Background(), settings, wecom.Text, buildFailureText(title, startedAt, location, queryErr)); err != nil {
 		run.NotificationStatus = "failed"
 		run.NotificationError = safeError(err)
 		return
@@ -391,6 +549,39 @@ func (m *Manager) viewFor(report store.ScheduledReport, config storedConfig) (Vi
 	}, nil
 }
 
+func (m *Manager) dailyViewFor(report store.ScheduledReport) (DailyView, error) {
+	if !report.Enabled {
+		report.NextRunAt = ""
+	} else if report.LastRunAt != "" {
+		if lastRunAt, err := time.Parse(time.RFC3339Nano, report.LastRunAt); err == nil {
+			report.NextRunAt = nextScheduledAt(report, lastRunAt)
+		} else {
+			report.NextRunAt = firstEligibleRunAt(time.Now(), report.StartHour, report.EndHour, report.Timezone)
+		}
+	} else {
+		report.NextRunAt = firstEligibleRunAt(time.Now(), report.StartHour, report.EndHour, report.Timezone)
+	}
+	latest := (*store.ScheduledReportRun)(nil)
+	if report.ID > 0 {
+		items, _, _, _, err := m.store.ScheduledReportRuns(report.ID, 1, 1)
+		if err != nil {
+			return DailyView{}, err
+		}
+		if len(items) > 0 {
+			latest = &items[0]
+		}
+	}
+	return DailyView{
+		Config: DailyReportConfig{
+			Enabled: report.Enabled, RunHour: report.StartHour, Timezone: report.Timezone,
+			LastRunAt: report.LastRunAt, LastStatus: report.LastStatus,
+			LastError: report.LastError, NextRunAt: report.NextRunAt,
+		},
+		Connection: ConnectionSummary{Configured: m.client.Ready() == nil, BaseURL: m.client.BaseURL()},
+		LatestRun:  latest,
+	}, nil
+}
+
 func validateSaveInput(input SaveInput) error {
 	if input.IntervalMinutes < 1 || input.IntervalMinutes > maxIntervalMinutes {
 		return invalid("运行间隔必须是 1–1440 分钟")
@@ -406,6 +597,19 @@ func validateSaveInput(input SaveInput) error {
 	}
 	if input.StartHour < 0 || input.StartHour > 23 || input.EndHour < 0 || input.EndHour > 23 || input.StartHour > input.EndHour {
 		return invalid("开始小时和结束小时必须在 0–23，且开始不晚于结束")
+	}
+	if strings.TrimSpace(input.Timezone) == "" {
+		return invalid("时区不能为空")
+	}
+	if _, err := time.LoadLocation(strings.TrimSpace(input.Timezone)); err != nil {
+		return invalid("时区无效")
+	}
+	return nil
+}
+
+func validateDailySaveInput(input DailySaveInput) error {
+	if input.RunHour < 0 || input.RunHour > 23 {
+		return invalid("每日执行小时必须在 0–23")
 	}
 	if strings.TrimSpace(input.Timezone) == "" {
 		return invalid("时区不能为空")
@@ -434,6 +638,15 @@ func defaultScheduledReport() store.ScheduledReport {
 		Enabled: false, IntervalMinutes: defaultIntervalMinutes,
 		StartHour: defaultStartHour, EndHour: defaultEndHour, Timezone: defaultTimezone,
 		ConfigJSON: string(config), LastStatus: "never",
+	}
+}
+
+func defaultDailyReport() store.ScheduledReport {
+	return store.ScheduledReport{
+		Type:    store.ScheduledReportDaily,
+		Enabled: false, IntervalMinutes: 24 * 60,
+		StartHour: 23, EndHour: 23, Timezone: defaultTimezone,
+		ConfigJSON: `{}`, LastStatus: "never",
 	}
 }
 

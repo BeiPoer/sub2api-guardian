@@ -219,6 +219,54 @@ export interface ChannelUsageReportSaveInput {
   trigger_count: number
 }
 
+export interface DailyReportConfig {
+  enabled: boolean
+  run_hour: number
+  timezone: string
+  last_run_at: string
+  last_status: 'never' | 'ok' | 'error' | string
+  last_error: string
+  next_run_at: string
+}
+
+export interface DailyReportSummary {
+  date: string
+  timezone: string
+  total_actual_cost: number
+  total_tokens: number
+  new_users: number
+  recharge_amounts: Record<string, number>
+}
+
+export interface DailyReportRun {
+  id: number
+  report_id: number
+  status: 'ok' | 'error' | string
+  started_at: string
+  finished_at: string
+  window_start: string
+  window_end: string
+  total_records: number
+  high_latency_count: number
+  notification_status: 'not_needed' | 'disabled' | 'sent' | 'failed' | string
+  notification_error: string
+  error: string
+  summary?: DailyReportSummary | null
+  message: string
+}
+
+export interface DailyReportView {
+  config: DailyReportConfig
+  connection: { configured: boolean; base_url: string }
+  latest_run?: DailyReportRun | null
+}
+
+export interface DailyReportSaveInput {
+  enabled: boolean
+  run_hour: number
+  timezone: string
+}
+
 export interface ReportNotificationSaveInput {
   wecom: {
     enabled: boolean

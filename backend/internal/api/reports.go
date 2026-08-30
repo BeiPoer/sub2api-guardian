@@ -94,6 +94,55 @@ func (s *Server) runChannelUsageReport(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"run": run})
 }
 
+func (s *Server) getDailyReport(w http.ResponseWriter, _ *http.Request) {
+	view, err := s.scheduledReports.DailyView()
+	if err != nil {
+		writeReportError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+func (s *Server) saveDailyReport(w http.ResponseWriter, r *http.Request) {
+	var payload reports.DailySaveInput
+	if err := decodeBody(r, &payload); err != nil {
+		writeReportError(w, err)
+		return
+	}
+	view, err := s.scheduledReports.SaveDaily(payload)
+	if err != nil {
+		writeReportError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+func (s *Server) dailyReportRuns(w http.ResponseWriter, r *http.Request) {
+	items, total, page, pageSize, pages, err := s.scheduledReports.DailyRuns(queryInt(r, "page", 1), queryInt(r, "page_size", 20))
+	if err != nil {
+		writeReportError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items": items, "total": total, "page": page, "page_size": pageSize, "pages": pages,
+	})
+}
+
+func (s *Server) runDailyReport(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+	defer cancel()
+	run, err := s.scheduledReports.RunDailyNow(ctx)
+	if err != nil {
+		writeReportError(w, err)
+		return
+	}
+	if run.Status == "error" && run.Error == upstream.ErrNotConfigured.Error() {
+		writeJSON(w, http.StatusPreconditionFailed, map[string]any{"error": run.Error, "run": run})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"run": run})
+}
+
 func writeReportError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	var reportErr *reports.Error

@@ -39,6 +39,11 @@ const router = createRouter({
       component: () => import('@/views/ChannelUsageReportView.vue')
     },
     {
+      path: '/reports/daily',
+      name: 'daily-report',
+      component: () => import('@/views/DailyReportView.vue')
+    },
+    {
       path: '/connection',
       name: 'connection',
       component: () => import('@/views/ConnectionView.vue')

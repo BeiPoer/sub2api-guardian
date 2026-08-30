@@ -183,7 +183,8 @@ const configNav = [
 
 const scheduledReportsNav = [
   { to: '/reports/notifications', label: '通知配置', icon: 'bell' as const },
-  { to: '/reports/channel-usage', label: '渠道使用报告', icon: 'calendar' as const }
+  { to: '/reports/channel-usage', label: '渠道使用报告', icon: 'calendar' as const },
+  { to: '/reports/daily', label: '每日报告', icon: 'chartBar' as const }
 ]
 
 const toolsNav = [

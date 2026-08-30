@@ -21,7 +21,7 @@ const (
 	runHistoryRetentionHours = 7 * 24
 )
 
-var ErrAlreadyRunning = errors.New("渠道使用报告正在执行")
+var ErrAlreadyRunning = errors.New("定时报告正在执行")
 
 // Error 是报告 API 可以安全返回给前端的业务错误。
 type Error struct {
@@ -62,6 +62,17 @@ type ChannelUsageConfig struct {
 	NextRunAt             string `json:"next_run_at"`
 }
 
+// DailyReportConfig 是对外返回的每日报告配置与运行状态。
+type DailyReportConfig struct {
+	Enabled    bool   `json:"enabled"`
+	RunHour    int    `json:"run_hour"`
+	Timezone   string `json:"timezone"`
+	LastRunAt  string `json:"last_run_at"`
+	LastStatus string `json:"last_status"`
+	LastError  string `json:"last_error"`
+	NextRunAt  string `json:"next_run_at"`
+}
+
 type WeComInput struct {
 	Enabled bool   `json:"enabled"`
 	CorpID  string `json:"corp_id"`
@@ -81,6 +92,12 @@ type SaveInput struct {
 	TriggerCount          int    `json:"trigger_count"`
 }
 
+type DailySaveInput struct {
+	Enabled  bool   `json:"enabled"`
+	RunHour  int    `json:"run_hour"`
+	Timezone string `json:"timezone"`
+}
+
 type NotificationSaveInput struct {
 	WeCom WeComInput `json:"wecom"`
 }
@@ -92,6 +109,12 @@ type ConnectionSummary struct {
 
 type View struct {
 	Config     ChannelUsageConfig        `json:"config"`
+	Connection ConnectionSummary         `json:"connection"`
+	LatestRun  *store.ScheduledReportRun `json:"latest_run"`
+}
+
+type DailyView struct {
+	Config     DailyReportConfig         `json:"config"`
 	Connection ConnectionSummary         `json:"connection"`
 	LatestRun  *store.ScheduledReportRun `json:"latest_run"`
 }
@@ -108,6 +131,15 @@ type Evaluation struct {
 	HighLatencyCount int          `json:"high_latency_count"`
 	Alert            bool         `json:"alert"`
 	Rows             []SummaryRow `json:"rows"`
+}
+
+type DailyReportSummary struct {
+	Date            string             `json:"date"`
+	Timezone        string             `json:"timezone"`
+	TotalActualCost float64            `json:"total_actual_cost"`
+	TotalTokens     int64              `json:"total_tokens"`
+	NewUsers        int                `json:"new_users"`
+	RechargeAmounts map[string]float64 `json:"recharge_amounts"`
 }
 
 type storedWeComConfig struct {

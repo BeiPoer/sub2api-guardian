@@ -12,10 +12,13 @@ import (
 // validated in Go so adding a future report does not require an SQLite CHECK migration.
 type ScheduledReportType string
 
-const ScheduledReportChannelUsage ScheduledReportType = "channel_usage"
+const (
+	ScheduledReportChannelUsage ScheduledReportType = "channel_usage"
+	ScheduledReportDaily        ScheduledReportType = "daily"
+)
 
 func (t ScheduledReportType) Valid() bool {
-	return t == ScheduledReportChannelUsage
+	return t == ScheduledReportChannelUsage || t == ScheduledReportDaily
 }
 
 type ScheduledReport struct {
