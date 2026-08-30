@@ -272,11 +272,11 @@
               <Badge :tone="channelTypeTone(selectedChannel.type)">{{ channelTypeLabel(selectedChannel.type) }}</Badge>
             </div>
             <div class="divide-y divide-gray-100 px-6 dark:divide-dark-700">
-              <div v-if="selectedChannel.type !== 'newapi'" class="grid gap-2 py-4 sm:grid-cols-[6rem_1fr_auto] sm:items-center">
+              <div class="grid gap-2 py-4 sm:grid-cols-[6rem_1fr_auto] sm:items-center">
                 <span class="text-sm text-gray-500 dark:text-dark-400">账号</span><code class="min-w-0 break-all text-sm text-gray-900 dark:text-white">{{ selectedChannel.username || '—' }}</code>
                 <button type="button" class="btn btn-ghost btn-icon" title="复制账号" @click="copyText(selectedChannel.username)"><Icon name="copy" size="sm" /></button>
               </div>
-              <div v-if="selectedChannel.type !== 'newapi'" class="grid gap-2 py-4 sm:grid-cols-[6rem_1fr_auto] sm:items-center">
+              <div class="grid gap-2 py-4 sm:grid-cols-[6rem_1fr_auto] sm:items-center">
                 <span class="text-sm text-gray-500 dark:text-dark-400">密码</span><code class="min-w-0 break-all text-sm text-gray-900 dark:text-white">{{ selectedChannel.password || '—' }}</code>
                 <button type="button" class="btn btn-ghost btn-icon" title="复制密码" @click="copyText(selectedChannel.password)"><Icon name="copy" size="sm" /></button>
               </div>
@@ -455,8 +455,8 @@
           <label class="block"><span class="input-label">类型</span><select v-model="channelEditor.type" class="input" :disabled="Boolean(channelEditor.id)"><option value="sub2api">Sub2API</option><option value="newapi">New API</option><option value="other">其它</option></select></label>
         </div>
         <Field v-model="channelEditor.baseURL" label="站点地址" placeholder="https://example.com" />
-        <div v-if="channelEditor.type !== 'newapi'" class="grid grid-cols-1 gap-4 sm:grid-cols-2"><Field v-model="channelEditor.username" label="账号 / 邮箱" /><Field v-model="channelEditor.password" label="密码" type="password" :placeholder="channelEditor.id ? '留空保持不变' : ''" /></div>
-        <div v-else class="grid grid-cols-1 gap-4 sm:grid-cols-2"><Field v-model="channelEditor.newAPIUserID" label="用户 ID" /><Field v-model="channelEditor.newAPIAccessToken" label="系统访问令牌" type="password" :placeholder="channelEditor.id ? '留空保持不变' : ''" /></div>
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2"><Field v-model="channelEditor.username" label="账号 / 邮箱" /><Field v-model="channelEditor.password" label="密码" type="password" :placeholder="channelEditor.id ? '留空保持不变' : ''" /></div>
+        <div v-if="channelEditor.type === 'newapi'" class="grid grid-cols-1 gap-4 sm:grid-cols-2"><Field v-model="channelEditor.newAPIUserID" label="用户 ID" /><Field v-model="channelEditor.newAPIAccessToken" label="系统访问令牌" type="password" :placeholder="channelEditor.id ? '留空保持不变' : ''" /></div>
         <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Field v-model="channelEditor.rechargeRatio" label="充值比例" type="number" :min="0.0001" :step="0.01" suffix="1 : x" hint="默认 1:1，例如 1.2 表示充值 1 元到账 1.2 元。" />
           <Field v-model="channelEditor.rechargeFee" label="充值手续费" placeholder="例如：每笔 2 元，留空表示无" />
@@ -910,12 +910,11 @@ async function saveChannel() {
     recharge_fee: channelEditor.rechargeFee,
     ignored: channelEditor.ignored
   }
+  payload.username = channelEditor.username
+  payload.password = channelEditor.password
   if (channelEditor.type === 'newapi') {
     payload.newapi_access_token = channelEditor.newAPIAccessToken
     payload.newapi_user_id = channelEditor.newAPIUserID
-  } else {
-    payload.username = channelEditor.username
-    payload.password = channelEditor.password
   }
   if (channelEditor.id) payload.sync = channelEditor.sync
   try {
