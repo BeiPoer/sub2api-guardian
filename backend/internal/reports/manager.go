@@ -454,6 +454,7 @@ func (m *Manager) executeDaily(ctx context.Context, report store.ScheduledReport
 		TotalTokens:     stats.TotalTokens,
 		NewUsers:        stats.NewUsers,
 		RechargeAmounts: stats.RechargeAmounts,
+		RechargeUsers:   stats.RechargeUsers,
 	}
 	run.Status = "ok"
 	run.Message = "每日统计完成"

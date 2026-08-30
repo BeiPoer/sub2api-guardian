@@ -140,6 +140,7 @@ type DailyReportSummary struct {
 	TotalTokens     int64              `json:"total_tokens"`
 	NewUsers        int                `json:"new_users"`
 	RechargeAmounts map[string]float64 `json:"recharge_amounts"`
+	RechargeUsers   int                `json:"recharge_users"`
 }
 
 type storedWeComConfig struct {

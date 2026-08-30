@@ -236,6 +236,7 @@ export interface DailyReportSummary {
   total_tokens: number
   new_users: number
   recharge_amounts: Record<string, number>
+  recharge_users: number
 }
 
 export interface DailyReportRun {

@@ -23,6 +23,7 @@ type DailyReportStats struct {
 	TotalTokens     int64              `json:"total_tokens"`
 	NewUsers        int                `json:"new_users"`
 	RechargeAmounts map[string]float64 `json:"recharge_amounts"`
+	RechargeUsers   int                `json:"recharge_users"`
 }
 
 type dailyUsageStats struct {
@@ -37,6 +38,8 @@ type dailyUser struct {
 type dailyPaymentOrder struct {
 	Status    string `json:"status"`
 	OrderType string `json:"order_type"`
+	UserID    any    `json:"user_id"`
+	UserEmail string `json:"user_email"`
 	Amount    any    `json:"amount"`
 	PayAmount any    `json:"pay_amount"`
 	Currency  string `json:"currency"`
@@ -75,7 +78,7 @@ func (c *Client) GetDailyReportStats(ctx context.Context, start, end time.Time, 
 	if err != nil {
 		return DailyReportStats{}, err
 	}
-	rechargeAmounts, err := c.sumDailyRecharge(ctx, start, end, location)
+	rechargeAmounts, rechargeUsers, err := c.sumDailyRecharge(ctx, start, end, location)
 	if err != nil {
 		return DailyReportStats{}, err
 	}
@@ -84,6 +87,7 @@ func (c *Client) GetDailyReportStats(ctx context.Context, start, end time.Time, 
 		TotalTokens:     totalTokens,
 		NewUsers:        newUsers,
 		RechargeAmounts: rechargeAmounts,
+		RechargeUsers:   rechargeUsers,
 	}, nil
 }
 
@@ -122,17 +126,18 @@ func (c *Client) countDailyUsers(ctx context.Context, start, end time.Time, loca
 	return count, nil
 }
 
-func (c *Client) sumDailyRecharge(ctx context.Context, start, end time.Time, location *time.Location) (map[string]float64, error) {
+func (c *Client) sumDailyRecharge(ctx context.Context, start, end time.Time, location *time.Location) (map[string]float64, int, error) {
 	pathBase := "/api/v1/admin/payment/orders?" + url.Values{
 		"order_type": []string{"balance"},
 		"page_size":  []string{strconv.Itoa(dailyReportPageSize)},
 	}.Encode()
 	amounts := make(map[string]float64)
+	users := make(map[string]struct{})
 	for pageNumber := 1; pageNumber <= dailyReportMaxPages; pageNumber++ {
 		var data page[dailyPaymentOrder]
 		path := pathBase + "&page=" + strconv.Itoa(pageNumber)
 		if err := c.requestDaily(ctx, http.MethodGet, path, &data); err != nil {
-			return nil, fmt.Errorf("查询每日充值订单失败: %w", err)
+			return nil, 0, fmt.Errorf("查询每日充值订单失败: %w", err)
 		}
 		stop := false
 		for _, order := range data.Items {
@@ -155,6 +160,9 @@ func (c *Client) sumDailyRecharge(ctx context.Context, start, end time.Time, loc
 			if !ok || amount < 0 || math.IsNaN(amount) || math.IsInf(amount, 0) {
 				continue
 			}
+			if userKey, ok := dailyRechargeUserKey(order); ok {
+				users[userKey] = struct{}{}
+			}
 			currency := strings.ToUpper(strings.TrimSpace(order.Currency))
 			if currency == "" {
 				currency = "CNY"
@@ -169,7 +177,17 @@ func (c *Client) sumDailyRecharge(ctx context.Context, start, end time.Time, loc
 	for currency, amount := range amounts {
 		amounts[currency] = math.Round(amount*100) / 100
 	}
-	return amounts, nil
+	return amounts, len(users), nil
+}
+
+func dailyRechargeUserKey(order dailyPaymentOrder) (string, bool) {
+	if userID, ok := anyInt64(order.UserID); ok && userID > 0 {
+		return "id:" + strconv.FormatInt(userID, 10), true
+	}
+	if email := strings.ToLower(strings.TrimSpace(order.UserEmail)); email != "" {
+		return "email:" + email, true
+	}
+	return "", false
 }
 
 func dailyRechargeStatus(status string) bool {

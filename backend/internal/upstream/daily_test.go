@@ -57,8 +57,9 @@ func TestGetDailyReportStatsUsesDateRangesAndAggregatesSourceData(t *testing.T) 
 				"code": 0,
 				"data": map[string]any{
 					"items": []any{
-						map[string]any{"status": "COMPLETED", "order_type": "balance", "pay_amount": "10", "currency": "CNY", "paid_at": "2026-08-30T04:00:00Z", "created_at": "2026-08-30T04:00:00Z"},
-						map[string]any{"status": "PAID", "order_type": "balance", "pay_amount": 2.5, "currency": "USD", "paid_at": "2026-08-30T05:00:00Z", "created_at": "2026-08-30T05:00:00Z"},
+						map[string]any{"status": "COMPLETED", "order_type": "balance", "user_id": 10, "pay_amount": "10", "currency": "CNY", "paid_at": "2026-08-30T04:00:00Z", "created_at": "2026-08-30T04:00:00Z"},
+						map[string]any{"status": "COMPLETED", "order_type": "balance", "user_id": 10, "pay_amount": 1, "currency": "CNY", "paid_at": "2026-08-30T04:30:00Z", "created_at": "2026-08-30T04:30:00Z"},
+						map[string]any{"status": "PAID", "order_type": "balance", "user_id": 20, "pay_amount": 2.5, "currency": "USD", "paid_at": "2026-08-30T05:00:00Z", "created_at": "2026-08-30T05:00:00Z"},
 						map[string]any{"status": "PENDING", "order_type": "balance", "pay_amount": 99, "currency": "CNY", "paid_at": nil, "created_at": "2026-08-30T06:00:00Z"},
 					},
 					"page": 1, "page_size": 1000, "pages": 1,
@@ -77,7 +78,7 @@ func TestGetDailyReportStatsUsesDateRangesAndAggregatesSourceData(t *testing.T) 
 	if stats.TotalActualCost != 12.34 || stats.TotalTokens != 5678 || stats.NewUsers != 1 {
 		t.Fatalf("每日统计聚合异常: %+v", stats)
 	}
-	if len(stats.RechargeAmounts) != 2 || stats.RechargeAmounts["CNY"] != 10 || stats.RechargeAmounts["USD"] != 2.5 {
+	if len(stats.RechargeAmounts) != 2 || stats.RechargeAmounts["CNY"] != 11 || stats.RechargeAmounts["USD"] != 2.5 || stats.RechargeUsers != 2 {
 		t.Fatalf("充值币种汇总异常: %+v", stats.RechargeAmounts)
 	}
 }
@@ -108,7 +109,7 @@ func TestGetDailyReportStatsStopsUserAndOrderPaginationAfterWindow(t *testing.T)
 			if page == "1" {
 				items := make([]any, dailyReportPageSize)
 				for i := range items {
-					items[i] = map[string]any{"status": "COMPLETED", "pay_amount": 1, "currency": "CNY", "paid_at": "2026-08-30T02:00:00Z", "created_at": "2026-08-30T02:00:00Z"}
+					items[i] = map[string]any{"status": "COMPLETED", "user_id": i + 1, "pay_amount": 1, "currency": "CNY", "paid_at": "2026-08-30T02:00:00Z", "created_at": "2026-08-30T02:00:00Z"}
 				}
 				_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"items": items, "page": 1, "page_size": dailyReportPageSize, "pages": 3}})
 				return
@@ -124,7 +125,7 @@ func TestGetDailyReportStatsStopsUserAndOrderPaginationAfterWindow(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.NewUsers != dailyReportPageSize || stats.RechargeAmounts["CNY"] != dailyReportPageSize {
+	if stats.NewUsers != dailyReportPageSize || stats.RechargeAmounts["CNY"] != dailyReportPageSize || stats.RechargeUsers != dailyReportPageSize {
 		t.Fatalf("分页汇总异常: %+v", stats)
 	}
 	if userPages != 2 || orderPages != 2 {

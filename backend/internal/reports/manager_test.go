@@ -45,6 +45,22 @@ func TestManagerDailyDefaultsAndRun(t *testing.T) {
 	}
 }
 
+func TestFormatTokenCountUsesCompactUnits(t *testing.T) {
+	for _, test := range []struct {
+		value int64
+		want  string
+	}{
+		{999, "999"},
+		{1234, "1.23K"},
+		{1_234_567, "1.23M"},
+		{1_234_567_890, "1.23B"},
+	} {
+		if got := formatTokenCount(test.value); got != test.want {
+			t.Fatalf("formatTokenCount(%d) = %q, want %q", test.value, got, test.want)
+		}
+	}
+}
+
 func TestManagerMigratesLegacyWeComSettingsToSharedConfig(t *testing.T) {
 	st := openReportStore(t)
 	_, err := st.SaveScheduledReportConfig(store.ScheduledReport{
@@ -249,7 +265,7 @@ func TestManagerDailyRunSendsPlainTextSummary(t *testing.T) {
 			}})
 		case "/api/v1/admin/payment/orders":
 			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{
-				"items": []any{map[string]any{"status": "COMPLETED", "order_type": "balance", "pay_amount": 8.5, "currency": "CNY", "paid_at": now.Format(time.RFC3339Nano), "created_at": now.Format(time.RFC3339Nano)}}, "page": 1, "page_size": 1000, "pages": 1,
+				"items": []any{map[string]any{"status": "COMPLETED", "order_type": "balance", "user_id": 42, "pay_amount": 8.5, "currency": "CNY", "paid_at": now.Format(time.RFC3339Nano), "created_at": now.Format(time.RFC3339Nano)}}, "page": 1, "page_size": 1000, "pages": 1,
 			}})
 		default:
 			http.NotFound(w, r)
@@ -271,12 +287,12 @@ func TestManagerDailyRunSendsPlainTextSummary(t *testing.T) {
 		t.Fatalf("每日报告运行结果异常: run=%+v err=%v sends=%d", run, err, sendCalls.Load())
 	}
 	if !strings.Contains(messageContent, "每日报告") || !strings.Contains(messageContent, "今日消耗额度：12.50") ||
-		!strings.Contains(messageContent, "今日总 Token：3456") || !strings.Contains(messageContent, "今日注册人数：1 人") ||
-		!strings.Contains(messageContent, "CNY：8.50") || strings.Contains(messageContent, "admin-key") || strings.Contains(messageContent, "wecom-secret") || strings.Contains(messageContent, "|") {
+		!strings.Contains(messageContent, "今日总 Token：3.46K") || !strings.Contains(messageContent, "今日注册人数：1 人") ||
+		!strings.Contains(messageContent, "CNY：8.50") || !strings.Contains(messageContent, "今日充值人数：1 人") || strings.Contains(messageContent, "admin-key") || strings.Contains(messageContent, "wecom-secret") || strings.Contains(messageContent, "|") {
 		t.Fatalf("每日报告普通文本内容异常或泄露凭据: %s", messageContent)
 	}
 	summary, ok := run.Summary.(DailyReportSummary)
-	if !ok || summary.TotalActualCost != 12.5 || summary.TotalTokens != 3456 || summary.NewUsers != 1 || summary.RechargeAmounts["CNY"] != 8.5 {
+	if !ok || summary.TotalActualCost != 12.5 || summary.TotalTokens != 3456 || summary.NewUsers != 1 || summary.RechargeAmounts["CNY"] != 8.5 || summary.RechargeUsers != 1 {
 		t.Fatalf("每日报告汇总结果异常: %#v", run.Summary)
 	}
 }

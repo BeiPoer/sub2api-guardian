@@ -57,7 +57,7 @@ func buildDailyText(summary DailyReportSummary, startedAt, windowStart time.Time
 	fmt.Fprintf(&builder, "统计日期：%s\n", textCell(summary.Date))
 	fmt.Fprintf(&builder, "统计窗口：%s 至 %s\n", formatReportTime(windowStart, location), formatReportTime(startedAt, location))
 	fmt.Fprintf(&builder, "今日消耗额度：%.2f\n", summary.TotalActualCost)
-	fmt.Fprintf(&builder, "今日总 Token：%d\n", summary.TotalTokens)
+	fmt.Fprintf(&builder, "今日总 Token：%s\n", formatTokenCount(summary.TotalTokens))
 	fmt.Fprintf(&builder, "今日注册人数：%d 人\n", summary.NewUsers)
 	builder.WriteString("今日充值量：")
 	if len(summary.RechargeAmounts) == 0 {
@@ -73,6 +73,7 @@ func buildDailyText(summary DailyReportSummary, startedAt, windowStart time.Time
 			fmt.Fprintf(&builder, "  %s：%.2f\n", textCell(currency), summary.RechargeAmounts[currency])
 		}
 	}
+	fmt.Fprintf(&builder, "今日充值人数：%d 人\n", summary.RechargeUsers)
 	return limitText(builder.String())
 }
 
@@ -92,6 +93,19 @@ func formatThreshold(value int64) string {
 		return fmt.Sprintf("%d 秒", value/1000)
 	}
 	return fmt.Sprintf("%.3g 秒", float64(value)/1000)
+}
+
+func formatTokenCount(value int64) string {
+	switch {
+	case value >= 1_000_000_000:
+		return fmt.Sprintf("%.2fB", float64(value)/1_000_000_000)
+	case value >= 1_000_000:
+		return fmt.Sprintf("%.2fM", float64(value)/1_000_000)
+	case value >= 1_000:
+		return fmt.Sprintf("%.2fK", float64(value)/1_000)
+	default:
+		return fmt.Sprintf("%d", value)
+	}
 }
 
 func textCell(value string) string {

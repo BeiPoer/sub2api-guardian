@@ -62,7 +62,7 @@
         <div class="stat-card">
           <div class="stat-icon stat-icon-purple"><Icon name="chartBar" size="lg" /></div>
           <div class="min-w-0">
-            <p class="stat-value text-base">{{ latestSummary ? formatNumber(latestSummary.total_tokens) : '—' }}</p>
+            <p class="stat-value text-base">{{ latestSummary ? formatTokens(latestSummary.total_tokens) : '—' }}</p>
             <p class="stat-label">今日总 Token</p>
           </div>
         </div>
@@ -78,6 +78,9 @@
           <div class="min-w-0">
             <p class="stat-value text-base">{{ latestSummary ? rechargeText(latestSummary) : '—' }}</p>
             <p class="stat-label">今日充值量</p>
+            <p v-if="latestSummary" class="mt-1 text-xs text-gray-500 dark:text-dark-400">
+              充值人数 {{ formatNumber(latestSummary.recharge_users) }} 人
+            </p>
           </div>
         </div>
       </section>
@@ -140,7 +143,7 @@
           </div>
           <div class="rounded-xl border border-gray-100 bg-gray-50/60 p-4 dark:border-dark-700 dark:bg-dark-900/40">
             <p class="text-xs text-gray-500 dark:text-dark-400">总 Token</p>
-            <p class="mt-1 text-lg font-semibold text-gray-900 dark:text-white">{{ formatNumber(latestSummary.total_tokens) }}</p>
+            <p class="mt-1 text-lg font-semibold text-gray-900 dark:text-white">{{ formatTokens(latestSummary.total_tokens) }}</p>
           </div>
           <div class="rounded-xl border border-gray-100 bg-gray-50/60 p-4 dark:border-dark-700 dark:bg-dark-900/40">
             <p class="text-xs text-gray-500 dark:text-dark-400">注册人数</p>
@@ -154,6 +157,7 @@
               </p>
             </div>
             <p v-else class="mt-1 text-lg font-semibold text-gray-900 dark:text-white">0</p>
+            <p class="mt-2 text-xs text-gray-500 dark:text-dark-400">充值人数 {{ formatNumber(latestSummary.recharge_users) }} 人</p>
           </div>
         </div>
         <div v-else class="p-6 text-sm text-gray-500 dark:text-dark-400">
@@ -183,7 +187,8 @@
                 <th>状态</th>
                 <th>统计日期</th>
                 <th>消耗 / Token</th>
-                <th>注册 / 充值</th>
+                <th>注册人数</th>
+                <th>充值人数 / 充值量</th>
                 <th>企微投递</th>
                 <th class="w-24">操作</th>
               </tr>
@@ -199,10 +204,13 @@
                 <td class="whitespace-nowrap text-xs tabular-nums">
                   <span>{{ run.summary ? formatAmount(run.summary.total_actual_cost) : '—' }}</span>
                   <span class="mx-1 text-gray-300 dark:text-dark-600">/</span>
-                  <span>{{ run.summary ? formatNumber(run.summary.total_tokens) : '—' }}</span>
+                  <span>{{ run.summary ? formatTokens(run.summary.total_tokens) : '—' }}</span>
                 </td>
                 <td class="whitespace-nowrap text-xs tabular-nums">
                   <span>{{ run.summary ? `${formatNumber(run.summary.new_users)} 人` : '—' }}</span>
+                </td>
+                <td class="whitespace-nowrap text-xs tabular-nums">
+                  <span>{{ run.summary ? `${formatNumber(run.summary.recharge_users)} 人` : '—' }}</span>
                   <span class="mx-1 text-gray-300 dark:text-dark-600">/</span>
                   <span>{{ run.summary ? rechargeText(run.summary) : '—' }}</span>
                 </td>
@@ -239,7 +247,7 @@
       <template v-if="selectedRun">
         <div v-if="selectedRun.summary" class="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <div class="rounded-lg bg-gray-50 p-3 dark:bg-dark-900/60"><p class="text-xs text-gray-500 dark:text-dark-400">消耗额度</p><p class="mt-1 text-lg font-semibold text-gray-900 dark:text-white">{{ formatAmount(selectedRun.summary.total_actual_cost) }}</p></div>
-          <div class="rounded-lg bg-gray-50 p-3 dark:bg-dark-900/60"><p class="text-xs text-gray-500 dark:text-dark-400">总 Token</p><p class="mt-1 text-lg font-semibold text-gray-900 dark:text-white">{{ formatNumber(selectedRun.summary.total_tokens) }}</p></div>
+          <div class="rounded-lg bg-gray-50 p-3 dark:bg-dark-900/60"><p class="text-xs text-gray-500 dark:text-dark-400">总 Token</p><p class="mt-1 text-lg font-semibold text-gray-900 dark:text-white">{{ formatTokens(selectedRun.summary.total_tokens) }}</p></div>
           <div class="rounded-lg bg-gray-50 p-3 dark:bg-dark-900/60"><p class="text-xs text-gray-500 dark:text-dark-400">注册人数</p><p class="mt-1 text-lg font-semibold text-gray-900 dark:text-white">{{ formatNumber(selectedRun.summary.new_users) }}</p></div>
           <div class="rounded-lg bg-gray-50 p-3 dark:bg-dark-900/60"><p class="text-xs text-gray-500 dark:text-dark-400">统计日期</p><p class="mt-1 text-sm font-semibold text-gray-900 dark:text-white">{{ selectedRun.summary.date }}</p></div>
         </div>
@@ -251,6 +259,7 @@
             </p>
           </div>
           <p v-else class="mt-2 text-sm text-gray-500 dark:text-dark-400">0</p>
+          <p class="mt-2 text-sm text-gray-500 dark:text-dark-400">充值人数：{{ formatNumber(selectedRun.summary.recharge_users) }} 人</p>
         </div>
         <div v-if="selectedRun.error" class="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-700 dark:bg-red-900/20 dark:text-red-300">{{ selectedRun.error }}</div>
         <div v-if="selectedRun.notification_error" class="mt-4 rounded-lg bg-amber-50 p-3 text-sm text-amber-700 dark:bg-amber-900/20 dark:text-amber-300">企微：{{ selectedRun.notification_error }}</div>
@@ -421,6 +430,15 @@ function formatHour(hour: number) {
 
 function formatNumber(value: number) {
   return Number(value || 0).toLocaleString('zh-CN')
+}
+
+function formatTokens(value: number) {
+  const tokens = Number(value || 0)
+  if (!Number.isFinite(tokens)) return '0'
+  if (tokens >= 1_000_000_000) return `${(tokens / 1_000_000_000).toFixed(2)}B`
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(2)}M`
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(2)}K`
+  return tokens.toLocaleString('zh-CN')
 }
 
 function formatAmount(value: number) {
