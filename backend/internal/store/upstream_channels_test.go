@@ -153,7 +153,7 @@ func TestUpstreamSMTPPasswordPersistsButIsNotJSONVisible(t *testing.T) {
 	}
 }
 
-func TestUpstreamWeComSecretPersistsButIsNotJSONVisible(t *testing.T) {
+func TestUpstreamWeComSecretPersistsAndIsJSONVisible(t *testing.T) {
 	st, err := Open(filepath.Join(t.TempDir(), "guardian.sqlite"))
 	if err != nil {
 		t.Fatal(err)
@@ -170,8 +170,8 @@ func TestUpstreamWeComSecretPersistsButIsNotJSONVisible(t *testing.T) {
 		t.Fatalf("企微配置未持久化: %+v err=%v", loaded, err)
 	}
 	raw, _ := json.Marshal(loaded)
-	if strings.Contains(string(raw), "app-secret") {
-		t.Fatalf("企微 Secret 不应出现在 JSON 中: %s", raw)
+	if !strings.Contains(string(raw), "app-secret") {
+		t.Fatalf("企微 Secret 应出现在 JSON 中: %s", raw)
 	}
 }
 

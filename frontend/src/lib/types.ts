@@ -145,6 +145,7 @@ export interface UpstreamEmailSettings {
 export interface UpstreamWeComSettings {
   corp_id: string
   agent_id: number
+  secret: string
   target: string
   has_secret: boolean
 }
@@ -153,6 +154,7 @@ export interface ChannelUsageWeComConfig {
   enabled: boolean
   corp_id: string
   agent_id: number
+  secret: string
   target: string
   has_secret: boolean
 }

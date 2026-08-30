@@ -37,11 +37,12 @@ type ChannelUsageWeComConfig struct {
 	Enabled   bool   `json:"enabled"`
 	CorpID    string `json:"corp_id"`
 	AgentID   int64  `json:"agent_id"`
+	Secret    string `json:"secret"`
 	Target    string `json:"target"`
 	HasSecret bool   `json:"has_secret"`
 }
 
-// ChannelUsageConfig 是对外返回的配置与运行状态，不含 Secret。
+// ChannelUsageConfig 是对外返回的配置与运行状态。
 type ChannelUsageConfig struct {
 	Enabled               bool                    `json:"enabled"`
 	IntervalMinutes       int                     `json:"interval_minutes"`

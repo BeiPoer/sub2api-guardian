@@ -138,8 +138,8 @@
                 使用独立于“上游渠道告警”的企业微信应用配置，仅在告警或查询失败时发送 Markdown 消息。
               </p>
             </div>
-            <Badge :tone="form.wecom.enabled ? (form.wecom.has_secret ? 'success' : 'warning') : 'gray'" dot>
-              {{ form.wecom.enabled ? (form.wecom.has_secret ? '已启用' : '待完善') : '未启用' }}
+            <Badge :tone="form.wecom.enabled ? (form.wecom.secret ? 'success' : 'warning') : 'gray'" dot>
+              {{ form.wecom.enabled ? (form.wecom.secret ? '已启用' : '待完善') : '未启用' }}
             </Badge>
           </div>
           <div class="space-y-5 p-6">
@@ -154,9 +154,9 @@
               <Field
                 v-model="form.wecom.secret"
                 label="Secret"
-                type="password"
-                :placeholder="form.wecom.has_secret ? '已配置，留空保持不变' : '请输入应用 Secret'"
-                :hint="form.wecom.has_secret ? '留空提交不会覆盖已保存 Secret。' : 'Secret 只写入服务端，不会在接口或页面回显。'"
+                type="text"
+                placeholder="请输入应用 Secret"
+                hint="Secret 按明文显示；留空提交不会覆盖已保存值。"
               />
               <Field
                 v-model="form.wecom.target"
@@ -347,7 +347,7 @@ const form = ref<ReportForm>({
   lookback_hours: 1,
   first_token_threshold_seconds: 30,
   trigger_count: 20,
-  wecom: { enabled: false, corp_id: '', agent_id: 0, secret: '', target: '', has_secret: false }
+      wecom: { enabled: false, corp_id: '', agent_id: 0, secret: '', target: '', has_secret: false }
 })
 
 const config = computed(() => view.value?.config ?? {
@@ -398,7 +398,7 @@ function applyView(report: ChannelUsageReportView) {
       enabled: report.config.wecom.enabled,
       corp_id: report.config.wecom.corp_id,
       agent_id: report.config.wecom.agent_id,
-      secret: '',
+      secret: report.config.wecom.secret,
       target: report.config.wecom.target,
       has_secret: report.config.wecom.has_secret
     }

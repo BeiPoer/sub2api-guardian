@@ -52,8 +52,8 @@ func TestManagerPreservesBlankSecretAndRunsSummary(t *testing.T) {
 		t.Fatal(err)
 	}
 	input.WeCom.Secret = ""
-	if view, err := manager.Save(input); err != nil || !view.Config.WeCom.HasSecret {
-		t.Fatalf("空 Secret 保存失败或标志异常: %+v %v", view, err)
+	if view, err := manager.Save(input); err != nil || !view.Config.WeCom.HasSecret || view.Config.WeCom.Secret != "wecom-secret" {
+		t.Fatalf("空 Secret 保存失败或明文值异常: %+v %v", view, err)
 	}
 
 	run, err := manager.RunNow(context.Background())

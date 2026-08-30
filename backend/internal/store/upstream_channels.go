@@ -937,11 +937,11 @@ func (s *Store) SaveUpstreamEmailSettings(settings UpstreamEmailSettings) (Upstr
 }
 
 // UpstreamWeComSettings 保存直接调用企业微信应用 API 所需的配置。
-// Secret 只供服务端使用，HasSecret 让面板知道是否已经配置而不会泄露密钥。
+// Secret 按当前面板要求随配置响应返回；数据库文件本身仍由 Store 以私有权限保护。
 type UpstreamWeComSettings struct {
 	CorpID    string `json:"corp_id"`
 	AgentID   int64  `json:"agent_id"`
-	Secret    string `json:"-"`
+	Secret    string `json:"secret"`
 	Target    string `json:"target"`
 	HasSecret bool   `json:"has_secret"`
 }

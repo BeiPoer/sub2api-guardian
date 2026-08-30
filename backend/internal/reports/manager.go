@@ -365,7 +365,7 @@ func (m *Manager) viewFor(report store.ScheduledReport, config storedConfig) (Vi
 			TriggerCount: config.TriggerCount,
 			WeCom: ChannelUsageWeComConfig{
 				Enabled: config.WeCom.Enabled, CorpID: config.WeCom.CorpID,
-				AgentID: config.WeCom.AgentID, Target: config.WeCom.Target,
+				AgentID: config.WeCom.AgentID, Secret: config.WeCom.Secret, Target: config.WeCom.Target,
 				HasSecret: strings.TrimSpace(config.WeCom.Secret) != "",
 			},
 			LastRunAt: report.LastRunAt, LastStatus: report.LastStatus,

@@ -118,17 +118,17 @@ func TestUpstreamSMTPPasswordIsMasked(t *testing.T) {
 	}
 }
 
-func TestUpstreamWeComSettingsIsMasked(t *testing.T) {
+func TestUpstreamWeComSettingsReturnsSecret(t *testing.T) {
 	handler, _ := setupAPI(t, &fakeUpstream{groupCount: 1})
 	rec := doJSON(t, handler, http.MethodPut, "/api/upstream-wecom-settings", map[string]any{
 		"corp_id": "ww-corp", "agent_id": 1000002, "secret": "app-secret", "target": "zhangsan",
 	})
-	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "app-secret") || !strings.Contains(rec.Body.String(), `"has_secret":true`) {
-		t.Fatalf("保存企微设置响应异常或 Secret 泄露: %d %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"secret":"app-secret"`) || !strings.Contains(rec.Body.String(), `"has_secret":true`) {
+		t.Fatalf("保存企微设置响应异常或 Secret 未返回: %d %s", rec.Code, rec.Body.String())
 	}
 	rec = doJSON(t, handler, http.MethodGet, "/api/upstream-wecom-settings", nil)
-	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "app-secret") || !strings.Contains(rec.Body.String(), `"has_secret":true`) {
-		t.Fatalf("读取企微设置响应异常或 Secret 泄露: %d %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"secret":"app-secret"`) || !strings.Contains(rec.Body.String(), `"has_secret":true`) {
+		t.Fatalf("读取企微设置响应异常或 Secret 未返回: %d %s", rec.Code, rec.Body.String())
 	}
 }
 

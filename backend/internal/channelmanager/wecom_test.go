@@ -57,8 +57,8 @@ func TestWeComDirectAPIRequestAndTokenCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	encoded, _ := json.Marshal(settings)
-	if strings.Contains(string(encoded), "app-secret") || !settings.HasSecret {
-		t.Fatalf("企微 Secret 泄露或标记缺失: %s / %+v", encoded, settings)
+	if !strings.Contains(string(encoded), "app-secret") || !settings.HasSecret {
+		t.Fatalf("企微 Secret 未明文返回或标记缺失: %s / %+v", encoded, settings)
 	}
 
 	for i := 0; i < 2; i++ {

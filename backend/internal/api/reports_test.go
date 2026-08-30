@@ -15,8 +15,8 @@ func TestChannelUsageReportAPISecretsAndRunHistory(t *testing.T) {
 	handler, _ := setupAPI(t, &fakeUpstream{groupCount: 1})
 
 	rec := doJSON(t, handler, http.MethodGet, "/api/reports/channel-usage", nil)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"enabled":false`) || strings.Contains(rec.Body.String(), `"secret":`) {
-		t.Fatalf("默认报告响应异常或泄露字段: %d %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"enabled":false`) || !strings.Contains(rec.Body.String(), `"secret":""`) {
+		t.Fatalf("默认报告响应异常或 Secret 字段缺失: %d %s", rec.Code, rec.Body.String())
 	}
 
 	payload := map[string]any{
@@ -29,14 +29,14 @@ func TestChannelUsageReportAPISecretsAndRunHistory(t *testing.T) {
 		},
 	}
 	rec = doJSON(t, handler, http.MethodPut, "/api/reports/channel-usage", payload)
-	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "report-secret") || !strings.Contains(rec.Body.String(), `"has_secret":true`) {
-		t.Fatalf("保存报告响应异常或泄露 Secret: %d %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"secret":"report-secret"`) || !strings.Contains(rec.Body.String(), `"has_secret":true`) {
+		t.Fatalf("保存报告响应异常或 Secret 未返回: %d %s", rec.Code, rec.Body.String())
 	}
 
 	payload["wecom"].(map[string]any)["secret"] = ""
 	rec = doJSON(t, handler, http.MethodPut, "/api/reports/channel-usage", payload)
-	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "report-secret") || !strings.Contains(rec.Body.String(), `"has_secret":true`) {
-		t.Fatalf("空 Secret 保存异常: %d %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"secret":"report-secret"`) || !strings.Contains(rec.Body.String(), `"has_secret":true`) {
+		t.Fatalf("空 Secret 保存后未保留明文值: %d %s", rec.Code, rec.Body.String())
 	}
 
 	rec = doJSON(t, handler, http.MethodGet, "/api/reports/channel-usage/runs?page=1&page_size=20", nil)

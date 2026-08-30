@@ -495,7 +495,7 @@
         <Field v-model="wecomEditor.corpID" label="企业 ID（CorpID，ww 开头）" placeholder="wwxxxxxxxxxxxxxxxx" hint="你提供的 ww714e174dee3d85eb 属于这里。" />
         <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Field v-model="wecomEditor.agentID" label="应用 AgentId（纯数字）" type="text" inputmode="numeric" placeholder="例如 1000001" hint="在应用详情中查看；不要填以 ww 开头的 CorpID。" />
-          <Field v-model="wecomEditor.secret" label="应用 Secret" type="password" :placeholder="wecomEditor.hasSecret ? '已配置，留空保持不变' : ''" />
+          <Field v-model="wecomEditor.secret" label="应用 Secret" type="text" placeholder="请输入应用 Secret" hint="Secret 按明文显示；留空提交不会覆盖已保存值。" />
         </div>
         <Field v-model="wecomEditor.target" label="企微接收人" placeholder="zhangsan 或 @all" hint="多个成员 ID 使用 | 分隔；也可以填 @all。" />
         <p class="input-hint">Guardian 直接调用企业微信官方应用接口。</p>
@@ -1037,8 +1037,8 @@ async function openWeComEditor() {
     wecomEditor.corpID = settings.corp_id
     wecomEditor.agentID = settings.agent_id > 0 ? String(settings.agent_id) : ''
     wecomEditor.target = settings.target
-    wecomEditor.secret = ''
-    wecomEditor.hasSecret = settings.has_secret
+    wecomEditor.secret = settings.secret
+    wecomEditor.hasSecret = Boolean(settings.secret)
   } catch (err) {
     ui.notify('error', (err as Error).message)
   }
@@ -1066,9 +1066,10 @@ function parseWeComAgentID(): number {
 async function saveWeCom() {
   busy.value = true
   try {
-    await api.saveUpstreamWeComSettings(wecomPayload())
+    const saved = await api.saveUpstreamWeComSettings(wecomPayload())
+    wecomEditor.secret = saved.secret
+    wecomEditor.hasSecret = Boolean(saved.secret)
     wecomEditor.open = false
-    wecomEditor.secret = ''
     ui.notify('success', '企微通知设置已保存')
   } catch (err) {
     ui.notify('error', (err as Error).message)
@@ -1080,10 +1081,10 @@ async function saveWeCom() {
 async function testWeCom() {
   busy.value = true
   try {
-    await api.saveUpstreamWeComSettings(wecomPayload())
+    const saved = await api.saveUpstreamWeComSettings(wecomPayload())
+    wecomEditor.secret = saved.secret
+    wecomEditor.hasSecret = Boolean(saved.secret)
     await api.testUpstreamWeComSettings(wecomEditor.target)
-    wecomEditor.hasSecret = wecomEditor.hasSecret || Boolean(wecomEditor.secret)
-    wecomEditor.secret = ''
     ui.notify('success', '企微测试消息已发送')
   } catch (err) {
     ui.notify('error', (err as Error).message)
