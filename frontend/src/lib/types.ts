@@ -149,6 +149,78 @@ export interface UpstreamWeComSettings {
   has_secret: boolean
 }
 
+export interface ChannelUsageWeComConfig {
+  enabled: boolean
+  corp_id: string
+  agent_id: number
+  target: string
+  has_secret: boolean
+}
+
+export interface ChannelUsageReportConfig {
+  enabled: boolean
+  interval_minutes: number
+  start_hour: number
+  end_hour: number
+  timezone: string
+  lookback_hours: number
+  first_token_threshold_ms: number
+  trigger_count: number
+  wecom: ChannelUsageWeComConfig
+  last_run_at: string
+  last_status: 'never' | 'ok' | 'alert' | 'error' | string
+  last_error: string
+  next_run_at: string
+}
+
+export interface ChannelUsageSummaryRow {
+  group_name: string
+  account_name: string
+  high_latency_count: number
+  total_records: number
+}
+
+export interface ChannelUsageReportRun {
+  id: number
+  report_id: number
+  status: 'ok' | 'alert' | 'error'
+  started_at: string
+  finished_at: string
+  window_start: string
+  window_end: string
+  total_records: number
+  high_latency_count: number
+  notification_status: 'not_needed' | 'disabled' | 'sent' | 'failed' | string
+  notification_error: string
+  error: string
+  summary?: ChannelUsageSummaryRow[] | null
+  message: string
+}
+
+export interface ChannelUsageReportView {
+  config: ChannelUsageReportConfig
+  connection: { configured: boolean; base_url: string }
+  latest_run?: ChannelUsageReportRun | null
+}
+
+export interface ChannelUsageReportSaveInput {
+  enabled: boolean
+  interval_minutes: number
+  start_hour: number
+  end_hour: number
+  timezone: string
+  lookback_hours: number
+  first_token_threshold_ms: number
+  trigger_count: number
+  wecom: {
+    enabled: boolean
+    corp_id: string
+    agent_id: number
+    secret: string
+    target: string
+  }
+}
+
 export interface UpstreamTokenModels {
   token_id: number
   token_name: string

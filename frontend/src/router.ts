@@ -27,6 +27,12 @@ const router = createRouter({
     },
     { path: '/policy', name: 'policy', component: () => import('@/views/PolicyView.vue') },
     { path: '/events', name: 'events', component: () => import('@/views/EventsView.vue') },
+    { path: '/reports', redirect: '/reports/channel-usage' },
+    {
+      path: '/reports/channel-usage',
+      name: 'channel-usage-report',
+      component: () => import('@/views/ChannelUsageReportView.vue')
+    },
     {
       path: '/connection',
       name: 'connection',

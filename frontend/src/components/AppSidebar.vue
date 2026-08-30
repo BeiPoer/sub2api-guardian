@@ -49,6 +49,24 @@
       </div>
 
       <div class="sidebar-section">
+        <p v-if="!ui.sidebarCollapsed" class="sidebar-section-title">定时报告</p>
+        <div :class="!ui.sidebarCollapsed && 'ml-4 border-l border-gray-200 pl-2 dark:border-dark-700'">
+          <RouterLink
+            v-for="item in scheduledReportsNav"
+            :key="item.to"
+            :to="item.to"
+            class="sidebar-link mb-1"
+            :class="isActive(item.to) && 'sidebar-link-active'"
+            :title="item.label"
+            @click="emit('navigate')"
+          >
+            <Icon :name="item.icon" size="sm" class="flex-shrink-0" />
+            <span v-if="!ui.sidebarCollapsed" class="truncate">{{ item.label }}</span>
+          </RouterLink>
+        </div>
+      </div>
+
+      <div class="sidebar-section">
         <p v-if="!ui.sidebarCollapsed" class="sidebar-section-title">辅助工具</p>
         <RouterLink
           v-for="item in toolsNav"
@@ -161,6 +179,10 @@ const monitorNav = [
 const configNav = [
   { to: '/policy', label: '策略配置', icon: 'cog' as const },
   { to: '/connection', label: '连接设置', icon: 'link' as const }
+]
+
+const scheduledReportsNav = [
+  { to: '/reports/channel-usage', label: '渠道使用报告', icon: 'calendar' as const }
 ]
 
 const toolsNav = [

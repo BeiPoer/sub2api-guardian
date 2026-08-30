@@ -20,6 +20,7 @@ import (
 
 	"sub2api-guardian/backend/internal/channelmanager"
 	"sub2api-guardian/backend/internal/engine"
+	"sub2api-guardian/backend/internal/reports"
 	"sub2api-guardian/backend/internal/store"
 	"sub2api-guardian/backend/internal/upstream"
 )
@@ -34,6 +35,7 @@ type Server struct {
 	hub              *hub
 	assets           http.Handler
 	upstreamChannels *channelmanager.Manager
+	scheduledReports *reports.Manager
 
 	// lastRenew 给会话滑动续期做限流，避免每个请求都写一次库。
 	renewMu   sync.Mutex
@@ -74,6 +76,7 @@ func NewServer(st *store.Store, client *upstream.Client, eng *engine.Engine, ass
 		lastRenew:        make(map[string]time.Time, 64),
 		authRates:        make(map[string]authRateEntry, 64),
 		upstreamChannels: channelmanager.New(st),
+		scheduledReports: reports.New(st, client),
 		image2Dir:        image2Dir,
 		image2Client: &http.Client{
 			Transport:     image2Transport,
@@ -112,11 +115,13 @@ func NewServer(st *store.Store, client *upstream.Client, eng *engine.Engine, ass
 // StartBackgroundJobs 只由主程序显式调用，避免 API 测试构造时启动定时任务。
 func (s *Server) StartBackgroundJobs() {
 	s.upstreamChannels.Start()
+	s.scheduledReports.Start()
 }
 
 // Close 释放 SSE 资源。
 func (s *Server) Close() {
 	s.closeOnce.Do(func() {
+		s.scheduledReports.Stop()
 		s.upstreamChannels.Stop()
 		close(s.image2Stop)
 		<-s.image2Done
@@ -199,6 +204,11 @@ func (s *Server) protectedRoutes() map[string]http.HandlerFunc {
 		"GET /api/upstream-wecom-settings":                        s.upstreamNoStore(s.getUpstreamWeComSettings),
 		"PUT /api/upstream-wecom-settings":                        s.upstreamNoStore(s.saveUpstreamWeComSettings),
 		"POST /api/upstream-wecom-settings/test":                  s.upstreamNoStore(s.testUpstreamWeComSettings),
+		"GET /api/reports/channel-usage":                          s.upstreamNoStore(s.getChannelUsageReport),
+		"PUT /api/reports/channel-usage":                          s.upstreamNoStore(s.saveChannelUsageReport),
+		"GET /api/reports/channel-usage/runs":                     s.upstreamNoStore(s.channelUsageReportRuns),
+		"POST /api/reports/channel-usage/run":                     s.upstreamNoStore(s.runChannelUsageReport),
+		"POST /api/reports/channel-usage/wecom/test":              s.upstreamNoStore(s.testChannelUsageReportWeCom),
 		"GET /api/stream":                                         s.stream,
 		"GET /api/me":                                             s.me,
 		"PUT /api/account":                                        s.updateAccount,

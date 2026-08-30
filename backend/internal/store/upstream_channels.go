@@ -835,10 +835,13 @@ func (s *Store) CleanupUpstreamHistory(before time.Time) error {
 	cutoff := before.Format(time.RFC3339Nano)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, table := range []string{"upstream_balance_snapshots", "upstream_balance_query_logs", "upstream_alert_events"} {
+	for _, table := range []string{"upstream_balance_snapshots", "upstream_balance_query_logs", "upstream_alert_events", "scheduled_report_runs"} {
 		column := "captured_at"
 		if table == "upstream_balance_query_logs" || table == "upstream_alert_events" {
 			column = "created_at"
+		}
+		if table == "scheduled_report_runs" {
+			column = "started_at"
 		}
 		if _, err := s.db.Exec(`DELETE FROM `+table+` WHERE `+column+` < ?`, cutoff); err != nil {
 			return err

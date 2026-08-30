@@ -70,6 +70,12 @@ func (f *fakeUpstream) handler() http.Handler {
 		})
 	})
 
+	mux.HandleFunc("/api/v1/admin/usage", func(w http.ResponseWriter, r *http.Request) {
+		writeEnvelope(w, map[string]any{
+			"items": []any{}, "total": 0, "page": 1, "page_size": 100, "pages": 1,
+		})
+	})
+
 	mux.HandleFunc("/api/v1/admin/accounts/data", func(w http.ResponseWriter, r *http.Request) {
 		accountType := f.accountType
 		if accountType == "" {

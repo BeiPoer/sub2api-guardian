@@ -20,7 +20,10 @@ import type {
   UpstreamEmailSettings,
   UpstreamWeComSettings,
   UpstreamOverview,
-  UpstreamTokenModels
+  UpstreamTokenModels,
+  ChannelUsageReportRun,
+  ChannelUsageReportSaveInput,
+  ChannelUsageReportView
 } from './types'
 
 export interface EventPage {
@@ -325,5 +328,22 @@ export const api = {
   testUpstreamWeComSettings: (target?: string) =>
     post<{ ok: boolean; message_id: string }>('/api/upstream-wecom-settings/test', {
       target: target || ''
-    })
+    }),
+
+  channelUsageReport: () =>
+    request<ChannelUsageReportView>('/api/reports/channel-usage'),
+  saveChannelUsageReport: (payload: ChannelUsageReportSaveInput) =>
+    put<ChannelUsageReportView>('/api/reports/channel-usage', payload),
+  channelUsageReportRuns: (page = 1, pageSize = 20) =>
+    request<{
+      items: ChannelUsageReportRun[]
+      total: number
+      page: number
+      page_size: number
+      pages: number
+    }>(`/api/reports/channel-usage/runs?page=${page}&page_size=${pageSize}`),
+  runChannelUsageReport: () =>
+    post<{ run: ChannelUsageReportRun }>('/api/reports/channel-usage/run', undefined, LONG_TIMEOUT_MS),
+  testChannelUsageReportWeCom: () =>
+    post<{ ok: boolean; message_id: string }>('/api/reports/channel-usage/wecom/test', undefined, LONG_TIMEOUT_MS)
 }

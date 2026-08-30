@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"sub2api-guardian/backend/internal/store"
+	"sub2api-guardian/backend/internal/wecom"
 )
 
 const (
@@ -22,10 +23,8 @@ type Manager struct {
 	store  *store.Store
 	client *http.Client
 
-	wecomMu             sync.Mutex
-	wecomBaseURL        string
-	wecomAccessToken    string
-	wecomTokenExpiresAt time.Time
+	wecomBaseURL string
+	wecomClient  *wecom.Client
 
 	lockMu sync.Mutex
 	locks  map[int64]*sync.Mutex
@@ -42,6 +41,7 @@ func New(st *store.Store) *Manager {
 		store:        st,
 		client:       &http.Client{Timeout: defaultHTTPTimeout},
 		wecomBaseURL: wecomAPIBaseURL,
+		wecomClient:  wecom.New(&http.Client{Timeout: defaultHTTPTimeout}),
 		locks:        make(map[int64]*sync.Mutex),
 		stop:         make(chan struct{}),
 		done:         make(chan struct{}),

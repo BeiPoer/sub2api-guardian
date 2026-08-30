@@ -284,7 +284,7 @@ func TestMemoPersistsAcrossReopen(t *testing.T) {
 		t.Fatalf("重开后恢复点丢失: %+v err=%v", archives, err)
 	}
 	version, err := again.getMeta(metaSchemaVersion)
-	if err != nil || version != "8" {
+	if err != nil || version != "9" {
 		t.Fatalf("schema 版本 = %q err=%v", version, err)
 	}
 }

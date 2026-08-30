@@ -18,7 +18,7 @@ const (
 	metaPolicy              = "policy_global"
 	metaUpstreamMultipliers = "upstream_multipliers"
 
-	currentSchemaVersion = "8"
+	currentSchemaVersion = "9"
 )
 
 var schemaStatements = []string{
@@ -250,6 +250,40 @@ var schemaStatements = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_upstream_alert_events_channel_time
 		ON upstream_alert_events(channel_id, created_at DESC)`,
+	`CREATE TABLE IF NOT EXISTS scheduled_reports (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		type TEXT NOT NULL UNIQUE,
+		enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+		interval_minutes INTEGER NOT NULL,
+		start_hour INTEGER NOT NULL,
+		end_hour INTEGER NOT NULL,
+		timezone TEXT NOT NULL,
+		config_json TEXT NOT NULL,
+		last_run_at TEXT,
+		last_status TEXT NOT NULL DEFAULT 'never',
+		last_error TEXT NOT NULL DEFAULT '',
+		next_run_at TEXT,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	)`,
+	`CREATE TABLE IF NOT EXISTS scheduled_report_runs (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		report_id INTEGER NOT NULL REFERENCES scheduled_reports(id) ON DELETE CASCADE,
+		status TEXT NOT NULL CHECK (status IN ('ok', 'alert', 'error')),
+		started_at TEXT NOT NULL,
+		finished_at TEXT NOT NULL,
+		window_start TEXT NOT NULL,
+		window_end TEXT NOT NULL,
+		total_records INTEGER NOT NULL DEFAULT 0,
+		high_latency_count INTEGER NOT NULL DEFAULT 0,
+		notification_status TEXT NOT NULL DEFAULT 'not_needed',
+		notification_error TEXT NOT NULL DEFAULT '',
+		error TEXT NOT NULL DEFAULT '',
+		summary_json TEXT NOT NULL DEFAULT '[]',
+		message TEXT NOT NULL DEFAULT ''
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_scheduled_report_runs_report_time
+		ON scheduled_report_runs(report_id, started_at DESC, id DESC)`,
 }
 
 // migrate 建表并在必要时从 0.1 版原型库升级。
