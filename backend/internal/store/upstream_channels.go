@@ -410,12 +410,20 @@ func (s *Store) UpstreamBalanceHistory(channelID int64, limit int) ([]UpstreamBa
 		limit = 200
 	}
 	rows, err := s.db.Query(`SELECT id, channel_id, balance, used_balance, unit, raw_json, captured_at
-		FROM upstream_balance_snapshots WHERE channel_id = ? ORDER BY captured_at ASC, id ASC LIMIT ?`, channelID, limit)
+		FROM upstream_balance_snapshots WHERE channel_id = ?
+		ORDER BY captured_at DESC, id DESC LIMIT ?`, channelID, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	return scanUpstreamBalanceSnapshots(rows)
+	items, err := scanUpstreamBalanceSnapshots(rows)
+	if err != nil {
+		return nil, err
+	}
+	for left, right := 0, len(items)-1; left < right; left, right = left+1, right-1 {
+		items[left], items[right] = items[right], items[left]
+	}
+	return items, nil
 }
 
 func (s *Store) UpstreamBalanceSnapshotsSince(channelID int64, since time.Time) ([]UpstreamBalanceSnapshot, error) {

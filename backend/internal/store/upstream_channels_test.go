@@ -107,6 +107,44 @@ func TestUpstreamChannelRechargeSettingsDefaultAndPersistence(t *testing.T) {
 	}
 }
 
+func TestUpstreamBalanceHistoryReturnsLatestSnapshotsInTimeOrder(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "guardian.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	channel, err := st.CreateUpstreamChannel(UpstreamChannelInput{
+		Name: "趋势渠道", Type: UpstreamChannelOther, BaseURL: "https://example.test",
+		Username: "user", Password: "secret",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 201; i++ {
+		if _, err := st.AddUpstreamBalanceSnapshot(UpstreamBalanceSnapshot{
+			ChannelID: channel.ID, Balance: float64(i), Unit: "USD",
+			CapturedAt: base.Add(time.Duration(i) * time.Minute).Format(time.RFC3339Nano),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	history, err := st.UpstreamBalanceHistory(channel.ID, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 200 || history[0].Balance != 1 || history[len(history)-1].Balance != 200 {
+		t.Fatalf("余额历史窗口错误: len=%d first=%v last=%v", len(history), history[0].Balance, history[len(history)-1].Balance)
+	}
+	for i := 1; i < len(history); i++ {
+		if history[i-1].CapturedAt > history[i].CapturedAt {
+			t.Fatalf("余额历史未按时间正序: %s > %s", history[i-1].CapturedAt, history[i].CapturedAt)
+		}
+	}
+}
+
 func TestCleanupUpstreamHistoryDoesNotTouchGuardianEvents(t *testing.T) {
 	st, err := Open(filepath.Join(t.TempDir(), "guardian.sqlite"))
 	if err != nil {
