@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"log"
 	"math"
 	"net/url"
 	"strconv"
@@ -167,10 +168,13 @@ func (e *Engine) linkedCredentials(ctx context.Context) (map[int64]upstream.Acco
 	}
 	e.linkedCredentialMu.Unlock()
 
+	started := time.Now()
 	records, err := e.client.ListAccountCredentials(ctx)
 	if err != nil {
+		log.Printf("倍率联动批量读取账号失败: %v", err)
 		return nil, err
 	}
+	log.Printf("倍率联动批量读取账号完成: %d 个，耗时 %s", len(records), time.Since(started).Round(time.Millisecond))
 	fresh := make(map[int64]upstream.AccountCredentials, len(records))
 	for _, record := range records {
 		fresh[record.AccountID] = record.Credentials
