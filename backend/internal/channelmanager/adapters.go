@@ -620,7 +620,29 @@ func (m *Manager) fetchNewAPITokens(ctx context.Context, channel store.UpstreamC
 			break
 		}
 	}
-	return all, rawPages, nil
+	return normalizeNewAPITokens(all), rawPages, nil
+}
+
+func normalizeNewAPITokens(tokens []any) []any {
+	result := make([]any, 0, len(tokens))
+	for _, item := range tokens {
+		record, ok := asObject(item)
+		if !ok {
+			result = append(result, item)
+			continue
+		}
+		copy := cloneObject(record)
+		for _, field := range []string{"key", "Key", "api_key", "apiKey", "token"} {
+			value := strings.TrimSpace(stringValue(copy[field]))
+			if value == "" || strings.HasPrefix(value, "sk-") {
+				continue
+			}
+			copy[field] = "sk-" + value
+			break
+		}
+		result = append(result, copy)
+	}
+	return result
 }
 
 func (m *Manager) LoginURL(ctx context.Context, channelID int64) (string, error) {

@@ -134,7 +134,7 @@ func TestSyncNewAPIQuotaAndTokenModels(t *testing.T) {
 		case "/api/user/self/groups":
 			data = map[string]any{"default": map[string]any{"ratio": 1}}
 		case "/api/token/":
-			data = map[string]any{"items": []any{map[string]any{"id": 1, "name": "limited"}}, "total": 1}
+			data = map[string]any{"items": []any{map[string]any{"id": 1, "name": "limited", "key": "token-body"}}, "total": 1}
 		case "/api/token/1":
 			data = map[string]any{"id": 1, "name": "limited", "model_limits_enabled": true, "model_limits": "gpt-4o,claude-3-5"}
 		default:
@@ -155,6 +155,14 @@ func TestSyncNewAPIQuotaAndTokenModels(t *testing.T) {
 		t.Fatal(err)
 	}
 	overview, _ := manager.Overview(channel.ID)
+	tokens := normalizeCollection(overview.Tokens)
+	var token map[string]any
+	if len(tokens) == 1 {
+		token, _ = asObject(tokens[0])
+	}
+	if len(tokens) != 1 || token == nil || stringValue(token["key"]) != "sk-token-body" {
+		t.Fatalf("new-api 令牌缓存未补 sk- 前缀: %#v", overview.Tokens)
+	}
 	if overview.LatestSnapshot == nil || overview.LatestSnapshot.Balance != 14 || overview.LatestSnapshot.UsedBalance == nil || math.Abs(*overview.LatestSnapshot.UsedBalance-1.4) > 1e-9 {
 		t.Fatalf("额度换算异常: %+v", overview.LatestSnapshot)
 	}
