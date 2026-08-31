@@ -27,7 +27,8 @@ RUN apk add --no-cache ca-certificates tzdata \
     && chmod 0700 /data
 COPY --from=backend-builder /out/guardian /usr/local/bin/guardian
 
-ENV GUARDIAN_ADDR=0.0.0.0:8787 \
+ENV TZ=Asia/Shanghai \
+    GUARDIAN_ADDR=0.0.0.0:8787 \
     GUARDIAN_DATA_DIR=/data
 EXPOSE 8787
 VOLUME ["/data"]
