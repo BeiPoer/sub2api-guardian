@@ -51,6 +51,7 @@ type fakeSub2API struct {
 	// upstreamMultipliers 模拟新版 Sub2API 原生上游计费探测的当前有效倍率。
 	upstreamMultipliers map[int64]float64
 	credentials         map[int64]map[string]any
+	exportCount         int
 }
 
 // probeResult 是假 sub2api 可以返回的探测结果类型。
@@ -158,6 +159,7 @@ func (f *fakeSub2API) handler(t *testing.T) http.Handler {
 		var accountID int64
 		_, _ = fmt.Sscanf(r.URL.Query().Get("ids"), "%d", &accountID)
 		f.mu.Lock()
+		f.exportCount++
 		credentials := f.credentials[accountID]
 		f.mu.Unlock()
 		if credentials == nil {
@@ -344,6 +346,12 @@ func (f *fakeSub2API) setCredentials(accountID int64, credentials map[string]any
 	f.mu.Lock()
 	f.credentials[accountID] = credentials
 	f.mu.Unlock()
+}
+
+func (f *fakeSub2API) credentialExportCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.exportCount
 }
 
 func (f *fakeSub2API) upstreamMultiplier(accountID int64) float64 {

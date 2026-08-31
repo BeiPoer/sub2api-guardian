@@ -1,6 +1,9 @@
 package engine
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestLinkedMultiplierNameIsIdempotent(t *testing.T) {
 	tests := []struct {
@@ -28,5 +31,38 @@ func TestNormalizeLinkedURLKeepsPathAndIgnoresCase(t *testing.T) {
 	got, ok := normalizeLinkedURL("HTTPS://Example.COM/sub2api///")
 	if !ok || got != "https://example.com/sub2api" {
 		t.Fatalf("规范化 URL = %q, ok=%v", got, ok)
+	}
+}
+
+func TestLinkedCredentialUsesShortProcessCache(t *testing.T) {
+	eng, st, fake := setupEngine(t)
+	conn, err := st.Connection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.setCredentials(101, map[string]any{
+		"api_key":  "cached-key",
+		"base_url": conn.BaseURL,
+	})
+
+	first, err := eng.linkedCredential(context.Background(), 101)
+	if err != nil || first.APIKey != "cached-key" {
+		t.Fatalf("首次读取凭据失败: %+v, %v", first, err)
+	}
+	second, err := eng.linkedCredential(context.Background(), 101)
+	if err != nil || second.APIKey != "cached-key" {
+		t.Fatalf("缓存读取凭据失败: %+v, %v", second, err)
+	}
+	if got := fake.credentialExportCount(); got != 1 {
+		t.Fatalf("短缓存应避免重复导出，实际请求次数=%d", got)
+	}
+
+	// 连接配置刷新后清空缓存，确保新连接不会复用旧凭据。
+	eng.Reconfigure(conn)
+	if _, err := eng.linkedCredential(context.Background(), 101); err != nil {
+		t.Fatalf("清理缓存后读取凭据失败: %v", err)
+	}
+	if got := fake.credentialExportCount(); got != 2 {
+		t.Fatalf("连接配置刷新后应重新导出，实际请求次数=%d", got)
 	}
 }

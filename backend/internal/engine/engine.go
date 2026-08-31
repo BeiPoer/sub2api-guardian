@@ -2,9 +2,11 @@ package engine
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -56,6 +58,12 @@ type Engine struct {
 	multiplierMu       sync.Mutex
 	multiplierAttempts map[int64]time.Time
 	linkedMultiplierMu sync.Mutex
+	// 联动凭据只在进程内短暂缓存，避免每个上游渠道重复导出全部账号；
+	// 不落库、不返回前端，过期后重新读取。
+	linkedCredentialMu    sync.Mutex
+	linkedCredentialCache map[int64]linkedCredentialCacheEntry
+	linkedCredentialConfig [sha256.Size]byte
+	linkedCredentialReady  bool
 
 	notifyMu sync.RWMutex
 	notify   func()
@@ -94,7 +102,8 @@ type Status struct {
 func New(st *store.Store, client *upstream.Client) *Engine {
 	return &Engine{
 		store: st, client: client, stopCh: make(chan struct{}),
-		multiplierAttempts: map[int64]time.Time{},
+		multiplierAttempts:    map[int64]time.Time{},
+		linkedCredentialCache: map[int64]linkedCredentialCacheEntry{},
 	}
 }
 
@@ -326,6 +335,16 @@ func (e *Engine) Status() Status {
 // Reconfigure 用最新连接配置刷新客户端。
 func (e *Engine) Reconfigure(conn domain.Connection) {
 	e.client.Reconfigure(conn.BaseURL, conn.AdminAPIKey, time.Duration(conn.TimeoutSeconds)*time.Second)
+	fingerprint := sha256.Sum256([]byte(
+		conn.BaseURL + "\x00" + conn.AdminAPIKey + "\x00" + strconv.Itoa(conn.TimeoutSeconds),
+	))
+	e.linkedCredentialMu.Lock()
+	if !e.linkedCredentialReady || e.linkedCredentialConfig != fingerprint {
+		e.linkedCredentialCache = make(map[int64]linkedCredentialCacheEntry)
+		e.linkedCredentialConfig = fingerprint
+		e.linkedCredentialReady = true
+	}
+	e.linkedCredentialMu.Unlock()
 }
 
 // RunOnce 执行一轮完整调度。

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"sub2api-guardian/backend/internal/domain"
 	"sub2api-guardian/backend/internal/policy"
@@ -17,8 +18,14 @@ import (
 
 const linkedMultiplierMarker = "【x"
 
+const (
+	// ponytail: keep the admin API fan-out bounded; raise only after observing no throttling.
+	linkedMultiplierConcurrency = 8
+	linkedCredentialCacheTTL   = 10 * time.Minute
+)
+
 // SyncLinkedMultipliers 将渠道管理中令牌对应的分组倍率同步到渠道池。
-// 账号凭据只在本次调用栈中用于匹配，绝不写入 Guardian 数据库或日志。
+// 账号凭据只在当前进程的短期缓存中用于匹配，绝不写入 Guardian 数据库或日志。
 func (e *Engine) SyncLinkedMultipliers(
 	ctx context.Context,
 	channel store.UpstreamChannel,
@@ -75,7 +82,7 @@ func (e *Engine) SyncLinkedMultipliers(
 	}
 	jobs := make(chan domain.Account)
 	results := make(chan credentialResult, len(accountCandidates))
-	workerCount := upstreamMultiplierConcurrency
+	workerCount := linkedMultiplierConcurrency
 	if workerCount > len(accountCandidates) {
 		workerCount = len(accountCandidates)
 	}
@@ -85,7 +92,7 @@ func (e *Engine) SyncLinkedMultipliers(
 		go func() {
 			defer workers.Done()
 			for account := range jobs {
-				credentials, fetchErr := e.client.ExportAccountCredentials(ctx, account.ID)
+				credentials, fetchErr := e.linkedCredential(ctx, account.ID)
 				select {
 				case results <- credentialResult{account: account, credentials: credentials, err: fetchErr}:
 				case <-ctx.Done():
@@ -190,9 +197,44 @@ func (e *Engine) SyncLinkedMultipliers(
 	return nil
 }
 
+// linkedCredential 复用短期进程内凭据快照，避免每个上游渠道都重复读取
+// 全部渠道池账号。凭据不会写入数据库、日志或 API 响应，10 分钟后自动刷新。
+func (e *Engine) linkedCredential(ctx context.Context, accountID int64) (upstream.AccountCredentials, error) {
+	now := time.Now()
+	e.linkedCredentialMu.Lock()
+	entry, ok := e.linkedCredentialCache[accountID]
+	config := e.linkedCredentialConfig
+	e.linkedCredentialMu.Unlock()
+	if ok && now.Sub(entry.fetchedAt) < linkedCredentialCacheTTL {
+		return entry.credentials, nil
+	}
+
+	credentials, err := e.client.ExportAccountCredentials(ctx, accountID)
+	if err != nil {
+		return upstream.AccountCredentials{}, err
+	}
+	e.linkedCredentialMu.Lock()
+	if e.linkedCredentialCache == nil {
+		e.linkedCredentialCache = make(map[int64]linkedCredentialCacheEntry)
+	}
+	if !e.linkedCredentialReady || e.linkedCredentialConfig == config {
+		e.linkedCredentialCache[accountID] = linkedCredentialCacheEntry{
+			credentials: credentials,
+			fetchedAt:  now,
+		}
+	}
+	e.linkedCredentialMu.Unlock()
+	return credentials, nil
+}
+
 type linkedAccount struct {
 	account domain.Account
 	ratio   float64
+}
+
+type linkedCredentialCacheEntry struct {
+	credentials upstream.AccountCredentials
+	fetchedAt   time.Time
 }
 
 func linkedCredentialKey(apiKey string) string {
