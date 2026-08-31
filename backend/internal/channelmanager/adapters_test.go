@@ -64,7 +64,7 @@ func TestSyncSub2APIAndBuildLoginURL(t *testing.T) {
 	})
 	mux.HandleFunc("/api/v1/keys", func(w http.ResponseWriter, r *http.Request) {
 		writeTestJSON(w, map[string]any{"code": 0, "data": map[string]any{
-			"items": []any{map[string]any{"id": 11, "name": "main", "group_id": 3}}, "total": 1,
+			"items": []any{map[string]any{"id": 11, "name": "main", "key": "key-1", "group_id": 3}}, "total": 1,
 		}})
 	})
 	mux.HandleFunc("/api/v1/subscriptions/active", func(w http.ResponseWriter, r *http.Request) {
@@ -77,6 +77,13 @@ func TestSyncSub2APIAndBuildLoginURL(t *testing.T) {
 	defer server.Close()
 
 	manager, st := testManager(t)
+	var linkedBaseURL string
+	var linked map[string]float64
+	manager.SetMultiplierLinker(func(_ context.Context, channel store.UpstreamChannel, ratios map[string]float64) error {
+		linkedBaseURL = channel.BaseURL
+		linked = ratios
+		return nil
+	})
 	channel, err := st.CreateUpstreamChannel(store.UpstreamChannelInput{
 		Name: "sub", Type: store.UpstreamChannelSub2API, BaseURL: server.URL,
 		Username: "user@example.com", Password: "secret",
@@ -93,6 +100,9 @@ func TestSyncSub2APIAndBuildLoginURL(t *testing.T) {
 	}
 	if overview.LatestSnapshot == nil || overview.LatestSnapshot.Balance != 42.5 || len(normalizeCollection(overview.Tokens)) != 1 {
 		t.Fatalf("同步结果异常: %+v", overview)
+	}
+	if linkedBaseURL != channel.BaseURL || linked["key-1"] != 1.5 {
+		t.Fatalf("同步后未提取令牌倍率: url=%q ratios=%#v", linkedBaseURL, linked)
 	}
 	stored, _ := st.UpstreamChannel(channel.ID)
 	if stored.Status != "active" || stored.Sub2APIAccessToken != "access-1" {

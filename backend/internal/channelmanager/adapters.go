@@ -208,7 +208,24 @@ func (m *Manager) syncLocked(ctx context.Context, channelID int64) error {
 			return err
 		}
 	}
-	return m.store.MarkUpstreamChannelSynced(channelID)
+	if err := m.store.MarkUpstreamChannelSynced(channelID); err != nil {
+		return err
+	}
+	if channel.Type == store.UpstreamChannelSub2API {
+		if linker := m.multiplierLinker(); linker != nil {
+			extraction := tokenMultiplierLinkCandidates(result.groups, result.tokens, channel.Type)
+			if extraction.conflicts > 0 {
+				m.store.Log("warn", "upstream_multiplier_link_conflict", nil, nil,
+					fmt.Sprintf("上游渠道 #%d 有 %d 个令牌 Key 对应冲突倍率，已跳过", channel.ID, extraction.conflicts),
+					map[string]any{"conflicts": extraction.conflicts})
+			}
+			if err := linker(ctx, channel, extraction.ratios); err != nil {
+				m.store.Log("warn", "upstream_multiplier_link_failed", nil, nil,
+					fmt.Sprintf("上游渠道 #%d 倍率联动失败，将在下一次同步重试", channel.ID), nil)
+			}
+		}
+	}
+	return nil
 }
 
 func (m *Manager) balanceLocked(ctx context.Context, channelID int64) (*store.UpstreamBalanceSnapshot, error) {
@@ -907,6 +924,13 @@ func extractPage(payload any) ([]any, int) {
 func normalizeCollection(value any) []any {
 	if array, ok := value.([]any); ok {
 		return array
+	}
+	if array, ok := value.([]map[string]any); ok {
+		out := make([]any, len(array))
+		for index := range array {
+			out[index] = array[index]
+		}
+		return out
 	}
 	record, ok := asObject(value)
 	if !ok {

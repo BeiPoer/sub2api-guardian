@@ -100,6 +100,10 @@ func (s *Server) buildView(withSamples bool) (view, error) {
 		if value, ok := global.ManualMultiplier(account.ID); ok {
 			manualMultiplier = &value
 		}
+		var linkedMultiplier *float64
+		if value, ok := global.LinkedMultiplier(account.ID); ok {
+			linkedMultiplier = &value
+		}
 		var upstreamMultiplier *float64
 		var upstreamMultiplierUpdatedAt *time.Time
 		if hasSnapshot {
@@ -140,6 +144,8 @@ func (s *Server) buildView(withSamples bool) (view, error) {
 			Multiplier:                       multiplier,
 			MultiplierManual:                 global.HasManualMultiplier(account.ID),
 			ManualMultiplier:                 manualMultiplier,
+			MultiplierLinked:                 linkedMultiplier != nil,
+			LinkedMultiplier:                 linkedMultiplier,
 			UpstreamMultiplierEnabled:        global.UpstreamMultiplierEnabled(account.ID, account.Type),
 			UpstreamMultiplierBreakerEnabled: hasUpstreamBreaker && upstreamBreaker.Enabled,
 			UpstreamMultiplierThreshold:      upstreamMultiplierThreshold,
@@ -681,6 +687,9 @@ func (s *Server) saveLocalChannelSettings(id int64, payload map[string]any) erro
 	}
 
 	if hasMultiplier {
+		// 显式修改调度倍率代表用户接管该账号，立即解除当前联动；
+		// 上游下一次仍匹配成功时会重新建立联动。
+		delete(p.AccountLinkedMultipliers, key)
 		value, ok := rawMultiplier.(float64)
 		if !ok || value <= 0 {
 			delete(p.AccountMultipliers, key)

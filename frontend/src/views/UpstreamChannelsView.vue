@@ -1318,7 +1318,7 @@ function firstNumeric(row: Row | undefined, keys: string[]) {
     const raw = row[key]
     if (typeof raw === 'string' && !raw.trim()) continue
     const value = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN
-    if (typeof value === 'number' && Number.isFinite(value)) return value
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value
   }
   return null
 }

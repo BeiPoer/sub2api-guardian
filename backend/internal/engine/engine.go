@@ -55,6 +55,7 @@ type Engine struct {
 	lastCatalogSync    time.Time
 	multiplierMu       sync.Mutex
 	multiplierAttempts map[int64]time.Time
+	linkedMultiplierMu sync.Mutex
 
 	notifyMu sync.RWMutex
 	notify   func()

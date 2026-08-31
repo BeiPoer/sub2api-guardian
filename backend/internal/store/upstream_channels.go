@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// UpstreamChannelType 是外部渠道的协议族，与 Guardian 自身的渠道池无关。
+// UpstreamChannelType 是外部渠道的协议族；上游目录数据独立，Sub2API 倍率可显式联动 Guardian 渠道池。
 type UpstreamChannelType string
 
 const (

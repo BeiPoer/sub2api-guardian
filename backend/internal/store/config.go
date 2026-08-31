@@ -131,6 +131,39 @@ func (s *Store) SavePolicy(p policy.Policy) (policy.Policy, error) {
 	return p, nil
 }
 
+// MergeAccountLinkedMultipliers 原子合并渠道管理联动倍率，只修改联动 Map。
+// 自动同步可能与渠道池编辑器同时保存策略，不能用一份旧策略覆盖人工字段。
+func (s *Store) MergeAccountLinkedMultipliers(values map[string]float64) (bool, error) {
+	if len(values) == 0 {
+		return false, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	p := policy.Default()
+	if err := s.getJSON(metaPolicy, &p); err != nil && !IsNotFound(err) {
+		return false, err
+	}
+	policy.Normalize(&p)
+	changed := false
+	for key, value := range values {
+		if key == "" || value <= 0 || math.IsNaN(value) || math.IsInf(value, 0) {
+			continue
+		}
+		if previous, exists := p.AccountLinkedMultipliers[key]; !exists || previous != value {
+			p.AccountLinkedMultipliers[key] = value
+			changed = true
+		}
+	}
+	if !changed {
+		return false, nil
+	}
+	if err := s.setJSON(metaPolicy, p); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // GroupOverrides 读取全部分组覆盖。
 func (s *Store) GroupOverrides() (map[int64]*policy.GroupOverride, error) {
 	rows, err := s.db.Query(`SELECT group_id, json FROM group_overrides`)

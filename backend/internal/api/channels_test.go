@@ -329,6 +329,11 @@ func TestUpdateChannelMultiplierClears(t *testing.T) {
 	doJSON(t, handler, http.MethodPut, "/api/channels/101", map[string]any{
 		"multiplier": 3.0,
 	})
+	p, _ := st.Policy()
+	p.AccountLinkedMultipliers["101"] = 0.12
+	if _, err := st.SavePolicy(p); err != nil {
+		t.Fatalf("准备联动倍率失败: %v", err)
+	}
 	rec := doJSON(t, handler, http.MethodPut, "/api/channels/101", map[string]any{
 		"multiplier": 0,
 	})
@@ -336,9 +341,42 @@ func TestUpdateChannelMultiplierClears(t *testing.T) {
 		t.Fatalf("状态码 = %d, 响应 = %s", rec.Code, rec.Body.String())
 	}
 
-	p, _ := st.Policy()
+	p, _ = st.Policy()
 	if _, ok := p.AccountMultipliers["101"]; ok {
 		t.Fatalf("填 0 应清除调度倍率，实际仍为 %v", p.AccountMultipliers["101"])
+	}
+	if _, ok := p.AccountLinkedMultipliers["101"]; ok {
+		t.Fatalf("手工修改应解除联动倍率，实际仍为 %v", p.AccountLinkedMultipliers["101"])
+	}
+}
+
+func TestChannelsExposeLinkedMultiplierSource(t *testing.T) {
+	fake := &fakeUpstream{groupCount: 1}
+	handler, st := setupAPI(t, fake)
+	syncCatalog(t, handler)
+
+	p, _ := st.Policy()
+	p.AccountLinkedMultipliers["101"] = 0.12
+	if _, err := st.SavePolicy(p); err != nil {
+		t.Fatalf("保存联动倍率失败: %v", err)
+	}
+	rec := doJSON(t, handler, http.MethodGet, "/api/channels", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("读取渠道失败: %d %s", rec.Code, rec.Body.String())
+	}
+	var result struct {
+		Items []ChannelDTO `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatalf("解析渠道响应失败: %v", err)
+	}
+	if len(result.Items) != 1 {
+		t.Fatalf("渠道数 = %d, 期望 1", len(result.Items))
+	}
+	channel := result.Items[0]
+	if channel.Multiplier != 0.12 || channel.MultiplierSource != "linked" ||
+		!channel.MultiplierLinked || channel.LinkedMultiplier == nil || *channel.LinkedMultiplier != 0.12 {
+		t.Fatalf("联动倍率 DTO 异常: %+v", channel)
 	}
 }
 

@@ -31,6 +31,7 @@ var apiKeyTypes = map[string]struct{}{
 const (
 	MultiplierSourceDefault          = "default"
 	MultiplierSourceManual           = "manual"
+	MultiplierSourceLinked           = "linked"
 	MultiplierSourceUpstream         = "upstream"
 	MultiplierSourceUpstreamFallback = "upstream_fallback"
 )
@@ -59,6 +60,9 @@ func DefaultMultiplierFor(accountType string) float64 {
 // ResolveMultiplier 保留旧调用口径，供不持有倍率快照的兼容代码使用。
 // 新的运行链路使用 ResolveMultiplierSnapshot。
 func (p Policy) ResolveMultiplier(accountID int64, accountType string, upstream float64) (float64, string) {
+	if value, ok := p.LinkedMultiplier(accountID); ok {
+		return value, MultiplierSourceLinked
+	}
 	if p.UpstreamMultiplierEnabled(accountID, accountType) {
 		if validMultiplier(upstream) {
 			return upstream, MultiplierSourceUpstream
@@ -80,6 +84,9 @@ func (p Policy) ResolveMultiplierSnapshot(
 	upstreamSnapshot float64,
 	hasSnapshot bool,
 ) (float64, string) {
+	if value, ok := p.LinkedMultiplier(accountID); ok {
+		return value, MultiplierSourceLinked
+	}
 	if p.UpstreamMultiplierEnabled(accountID, accountType) {
 		if hasSnapshot && validMultiplier(upstreamSnapshot) {
 			return upstreamSnapshot, MultiplierSourceUpstream
@@ -97,6 +104,9 @@ func (p Policy) ResolveMultiplierSnapshot(
 
 // MultiplierFor 保留原有调用口径：不提供上游倍率时解析本地配置。
 func (p Policy) MultiplierFor(accountID int64, accountType string) float64 {
+	if value, ok := p.LinkedMultiplier(accountID); ok {
+		return value
+	}
 	if value, ok := p.ManualMultiplier(accountID); ok {
 		return value
 	}
@@ -112,6 +122,12 @@ func (p Policy) HasManualMultiplier(accountID int64) bool {
 // ManualMultiplier 返回某账号保存的人工倍率。
 func (p Policy) ManualMultiplier(accountID int64) (float64, bool) {
 	value, ok := p.AccountMultipliers[itoa(accountID)]
+	return value, ok && validMultiplier(value)
+}
+
+// LinkedMultiplier 返回渠道管理按凭据匹配得到的调度倍率。
+func (p Policy) LinkedMultiplier(accountID int64) (float64, bool) {
+	value, ok := p.AccountLinkedMultipliers[itoa(accountID)]
 	return value, ok && validMultiplier(value)
 }
 

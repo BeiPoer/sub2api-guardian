@@ -3,6 +3,7 @@ package channelmanager
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -366,15 +367,127 @@ func groupKey(group any) string {
 }
 
 func groupRatio(group any) (float64, bool) {
-	if value, ok := finiteNumber(group); ok {
+	if value, ok := finiteNumber(group); ok && value > 0 {
 		return value, true
 	}
 	record, ok := asObject(group)
 	if !ok {
 		return 0, false
 	}
-	for _, key := range []string{"ratio", "rate", "multiplier", "rate_multiplier", "rateMultiplier", "group_ratio", "model_ratio", "倍率", "value", "user_rate_multiplier"} {
-		if value, ok := finiteNumber(record[key]); ok {
+	for _, key := range []string{"user_rate_multiplier", "userRateMultiplier", "custom_rate_multiplier", "customRateMultiplier", "ratio", "rate", "multiplier", "rate_multiplier", "rateMultiplier", "group_ratio", "model_ratio", "倍率", "value"} {
+		if value, ok := finiteNumber(record[key]); ok && value > 0 {
+			return value, true
+		}
+	}
+	return 0, false
+}
+
+// tokenMultipliersForLink 提取完整令牌 Key 对应的用户分组倍率。
+// 只用于 Sub2API：new-api 的令牌结构和渠道池凭据不在本次联动范围内。
+func tokenMultipliersForLink(groups, tokens any, channelType store.UpstreamChannelType) map[string]float64 {
+	return tokenMultiplierLinkCandidates(groups, tokens, channelType).ratios
+}
+
+type tokenMultiplierLinkExtraction struct {
+	ratios    map[string]float64
+	conflicts int
+}
+
+func tokenMultiplierLinkCandidates(groups, tokens any, channelType store.UpstreamChannelType) tokenMultiplierLinkExtraction {
+	result := make(map[string]float64)
+	if channelType != store.UpstreamChannelSub2API {
+		return tokenMultiplierLinkExtraction{ratios: result}
+	}
+	conflicts := make(map[string]struct{})
+	groupRows := normalizeCollection(groups)
+	for _, rawToken := range normalizeCollection(tokens) {
+		token, ok := asObject(rawToken)
+		if !ok {
+			continue
+		}
+		key := tokenKey(token)
+		if key == "" {
+			continue
+		}
+		if _, conflicted := conflicts[key]; conflicted {
+			continue
+		}
+		var matched any
+		identifiers := tokenGroupIdentifiers(token, channelType)
+		for _, group := range groupRows {
+			for identifier := range groupIdentifiers(group) {
+				if identifiers[identifier] {
+					matched = group
+					break
+				}
+			}
+			if matched != nil {
+				break
+			}
+		}
+		if matched == nil {
+			// 允许令牌自带完整分组对象作为关联依据；只有名称/Key
+			// 没有任何分组信息时才视为缺少分组并跳过。
+			embedded := first(token, "group", "Group")
+			if len(groupIdentifiers(embedded)) > 0 {
+				matched = embedded
+			}
+		}
+		if matched == nil {
+			continue
+		}
+		ratio, ok := tokenGroupRatioForLink(matched, token)
+		if !ok || ratio <= 0 || math.IsNaN(ratio) || math.IsInf(ratio, 0) {
+			continue
+		}
+		if previous, exists := result[key]; exists && previous != ratio {
+			delete(result, key)
+			conflicts[key] = struct{}{}
+			continue
+		}
+		result[key] = ratio
+	}
+	return tokenMultiplierLinkExtraction{ratios: result, conflicts: len(conflicts)}
+}
+
+func tokenGroupRatioForLink(group any, token map[string]any) (float64, bool) {
+	embedded := first(token, "group", "Group")
+	for _, candidate := range []any{group, embedded, token} {
+		if value, ok := explicitGroupRatio(candidate); ok {
+			return value, true
+		}
+	}
+	for _, candidate := range []any{embedded, group, token} {
+		if value, ok := ordinaryGroupRatio(candidate); ok {
+			return value, true
+		}
+	}
+	return 0, false
+}
+
+func explicitGroupRatio(group any) (float64, bool) {
+	record, ok := asObject(group)
+	if !ok {
+		return 0, false
+	}
+	for _, key := range []string{"user_rate_multiplier", "userRateMultiplier", "custom_rate_multiplier", "customRateMultiplier"} {
+		if value, ok := finiteNumber(record[key]); ok && value > 0 {
+			return value, true
+		}
+	}
+	return 0, false
+}
+
+func ordinaryGroupRatio(group any) (float64, bool) {
+	if value, ok := finiteNumber(group); ok && value > 0 {
+		return value, true
+	}
+	record, ok := asObject(group)
+	if !ok {
+		return 0, false
+	}
+	for _, key := range []string{"ratio", "rate", "multiplier", "rate_multiplier", "rateMultiplier", "group_ratio", "model_ratio", "倍率", "value"} {
+		if value, ok := finiteNumber(record[key]); ok && value > 0 {
 			return value, true
 		}
 	}

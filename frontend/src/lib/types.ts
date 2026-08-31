@@ -369,13 +369,16 @@ export interface Channel {
 
   /** Guardian 内部调度倍率：越低越优先，与网站计费无关。 */
   multiplier: number
-  /** 是否保存过人工倍率；实时倍率开启时该配置仍会保留。 */
+  /** 是否保存过人工倍率；自动联动或实时倍率开启时该配置仍会保留。 */
   multiplier_manual: boolean
   manual_multiplier?: number
+  /** 是否由渠道管理按 URL + API Key 联动得到倍率。 */
+  multiplier_linked: boolean
+  linked_multiplier?: number
   upstream_multiplier_enabled: boolean
   upstream_multiplier_breaker_enabled: boolean
   upstream_multiplier_threshold?: number
-  multiplier_source: 'default' | 'manual' | 'upstream' | 'upstream_fallback'
+  multiplier_source: 'default' | 'manual' | 'linked' | 'upstream' | 'upstream_fallback'
   upstream_multiplier?: number
   upstream_multiplier_updated_at?: string
   balance?: number
@@ -671,6 +674,8 @@ export interface Policy {
   account_test_models: Record<string, string>
   /** 人工设置的调度倍率，键为渠道 ID。 */
   account_multipliers: Record<string, number>
+  /** 渠道管理按 URL + API Key 同步的调度倍率，键为渠道 ID。 */
+  account_linked_multipliers: Record<string, number>
   /** 开启实时读取 Sub2API 账号倍率的 API Key 渠道，键为渠道 ID。 */
   account_upstream_multiplier_enabled: Record<string, boolean>
   /** 渠道级上游倍率阈值熔断配置，键为渠道 ID。 */

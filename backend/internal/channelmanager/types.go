@@ -1,4 +1,4 @@
-// Package channelmanager 管理独立的上游渠道目录，不参与 Guardian 自身渠道调度。
+// Package channelmanager 管理独立的上游渠道目录；目录数据隔离，倍率可通过回调联动 Guardian 调度。
 package channelmanager
 
 import (

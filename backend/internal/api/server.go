@@ -109,6 +109,7 @@ func NewServer(st *store.Store, client *upstream.Client, eng *engine.Engine, ass
 		go s.image2CleanupLoop()
 	}
 	eng.SetNotifier(s.hub.broadcast)
+	s.upstreamChannels.SetMultiplierLinker(eng.SyncLinkedMultipliers)
 	return s
 }
 

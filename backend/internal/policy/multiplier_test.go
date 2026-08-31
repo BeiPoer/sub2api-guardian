@@ -74,6 +74,18 @@ func TestResolveMultiplier(t *testing.T) {
 			wantValue:  0.5,
 			wantSource: MultiplierSourceManual,
 		},
+		{
+			name:        "联动倍率覆盖实时与人工值",
+			accountType: "apikey",
+			upstream:    2,
+			configure: func(p *Policy) {
+				p.AccountMultipliers["101"] = 0.5
+				p.AccountLinkedMultipliers["101"] = 0.12
+				p.AccountUpstreamMultiplierEnabled["101"] = true
+			},
+			wantValue:  0.12,
+			wantSource: MultiplierSourceLinked,
+		},
 	}
 
 	for _, tt := range tests {
@@ -97,6 +109,11 @@ func TestNormalizeRemovesInvalidMultipliers(t *testing.T) {
 		"inf":  math.Inf(1),
 		"ok":   1.25,
 	}
+	p.AccountLinkedMultipliers = map[string]float64{
+		"bad": 0,
+		"nan": math.NaN(),
+		"ok":  0.12,
+	}
 	p.AccountUpstreamMultiplierEnabled = map[string]bool{"off": false, "on": true}
 	p.AccountUpstreamMultiplierBreakers = map[string]UpstreamMultiplierBreaker{
 		"off":     {Enabled: true, Threshold: 1.5},
@@ -108,6 +125,9 @@ func TestNormalizeRemovesInvalidMultipliers(t *testing.T) {
 
 	if len(p.AccountMultipliers) != 1 || p.AccountMultipliers["ok"] != 1.25 {
 		t.Fatalf("非法倍率未清理: %#v", p.AccountMultipliers)
+	}
+	if len(p.AccountLinkedMultipliers) != 1 || p.AccountLinkedMultipliers["ok"] != 0.12 {
+		t.Fatalf("非法联动倍率未清理: %#v", p.AccountLinkedMultipliers)
 	}
 	if len(p.AccountUpstreamMultiplierEnabled) != 1 || !p.AccountUpstreamMultiplierEnabled["on"] {
 		t.Fatalf("关闭项未清理: %#v", p.AccountUpstreamMultiplierEnabled)
@@ -166,5 +186,17 @@ func TestResolveMultiplierSnapshot(t *testing.T) {
 	value, source = p.ResolveMultiplierSnapshot(101, "apikey", 0, math.NaN(), true)
 	if value != DefaultAPIKeyMultiplier || source != MultiplierSourceUpstreamFallback {
 		t.Fatalf("非法快照回退 = %v/%s", value, source)
+	}
+}
+
+func TestLinkedMultiplierIsHighestPriorityWithSnapshot(t *testing.T) {
+	p := Default()
+	p.AccountMultipliers["101"] = 0.5
+	p.AccountLinkedMultipliers["101"] = 0.12
+	p.AccountUpstreamMultiplierEnabled["101"] = true
+
+	value, source := p.ResolveMultiplierSnapshot(101, "apikey", 1.75, 2.25, true)
+	if value != 0.12 || source != MultiplierSourceLinked {
+		t.Fatalf("联动倍率未覆盖快照 = %v/%s", value, source)
 	}
 }

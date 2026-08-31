@@ -187,7 +187,7 @@ func healthGate(score, floor float64) float64 {
 
 // multiplierBasis 返回参与权重计算的倍率，越小越优先。
 //
-// 倍率是 Guardian 内部口径（人工设置 > 按账号类型取默认值），
+// 倍率是 Guardian 内部口径（渠道管理联动 > 实时上游 > 人工设置 > 类型默认），
 // 与 sub2api 的计费倍率无关，也不会写回网站。
 func multiplierBasis(ch *channel) float64 {
 	if ch.state.Multiplier > 0 {

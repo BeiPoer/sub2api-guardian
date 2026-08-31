@@ -26,6 +26,7 @@ type fakeSub2API struct {
 	probeFatal map[int64]bool
 
 	updates     map[int64]map[string]any
+	nameUpdates map[int64]int
 	schedulable map[int64]bool
 	clearedErr  map[int64]bool
 	hidden      map[int64]bool
@@ -49,6 +50,7 @@ type fakeSub2API struct {
 
 	// upstreamMultipliers 模拟新版 Sub2API 原生上游计费探测的当前有效倍率。
 	upstreamMultipliers map[int64]float64
+	credentials         map[int64]map[string]any
 }
 
 // probeResult 是假 sub2api 可以返回的探测结果类型。
@@ -63,6 +65,7 @@ func newFakeSub2API() *fakeSub2API {
 	return &fakeSub2API{
 		probeFatal:          map[int64]bool{},
 		updates:             map[int64]map[string]any{},
+		nameUpdates:         map[int64]int{},
 		schedulable:         map[int64]bool{},
 		clearedErr:          map[int64]bool{},
 		hidden:              map[int64]bool{},
@@ -72,6 +75,7 @@ func newFakeSub2API() *fakeSub2API {
 		probeResults:        map[int64]probeResult{},
 		rateLimitReset:      map[int64]time.Time{},
 		upstreamMultipliers: map[int64]float64{},
+		credentials:         map[int64]map[string]any{},
 	}
 }
 
@@ -150,6 +154,21 @@ func (f *fakeSub2API) handler(t *testing.T) http.Handler {
 		writeEnvelope(w, map[string]any{"results": results})
 	})
 
+	mux.HandleFunc("/api/v1/admin/accounts/data", func(w http.ResponseWriter, r *http.Request) {
+		var accountID int64
+		_, _ = fmt.Sscanf(r.URL.Query().Get("ids"), "%d", &accountID)
+		f.mu.Lock()
+		credentials := f.credentials[accountID]
+		f.mu.Unlock()
+		if credentials == nil {
+			writeEnvelope(w, map[string]any{"accounts": []any{}})
+			return
+		}
+		writeEnvelope(w, map[string]any{"accounts": []map[string]any{{
+			"name": "测试渠道", "type": "api_key", "credentials": credentials,
+		}}})
+	})
+
 	mux.HandleFunc("/api/v1/admin/accounts/", func(w http.ResponseWriter, r *http.Request) {
 		rest := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/accounts/")
 		parts := strings.Split(rest, "/")
@@ -217,6 +236,9 @@ func (f *fakeSub2API) handler(t *testing.T) http.Handler {
 			}
 			for key, value := range payload {
 				f.updates[accountID][key] = value
+			}
+			if _, ok := payload["name"]; ok {
+				f.nameUpdates[accountID]++
 			}
 			f.mu.Unlock()
 			writeEnvelope(w, map[string]any{"ok": true})
@@ -318,6 +340,12 @@ func (f *fakeSub2API) setUpstreamMultiplier(accountID int64, value float64) {
 	f.mu.Unlock()
 }
 
+func (f *fakeSub2API) setCredentials(accountID int64, credentials map[string]any) {
+	f.mu.Lock()
+	f.credentials[accountID] = credentials
+	f.mu.Unlock()
+}
+
 func (f *fakeSub2API) upstreamMultiplier(accountID int64) float64 {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -394,6 +422,12 @@ func (f *fakeSub2API) updateOf(accountID int64, key string) (any, bool) {
 	return value, ok
 }
 
+func (f *fakeSub2API) nameUpdateCount(accountID int64) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.nameUpdates[accountID]
+}
+
 // setupEngine 起一个假 sub2api 并连上真实的 store 与引擎。
 func setupEngine(t *testing.T) (*Engine, *store.Store, *fakeSub2API) {
 	t.Helper()
@@ -431,6 +465,95 @@ func setupEngine(t *testing.T) (*Engine, *store.Store, *fakeSub2API) {
 
 	client := upstream.New(server.URL, "test-key", 10*time.Second)
 	return New(st, client), st, fake
+}
+
+func TestSyncLinkedMultipliersMatchesCredentialsAndReplacesNameSuffix(t *testing.T) {
+	eng, st, fake := setupEngine(t)
+	if err := eng.RunOnce(context.Background()); err != nil {
+		t.Fatalf("初始化目录失败: %v", err)
+	}
+	conn, err := st.Connection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.setCredentials(101, map[string]any{
+		"api_key":  "linked-key",
+		"base_url": conn.BaseURL + "/",
+	})
+	channel := store.UpstreamChannel{ID: 1, Type: store.UpstreamChannelSub2API, BaseURL: conn.BaseURL}
+
+	if err := eng.SyncLinkedMultipliers(context.Background(), channel, map[string]float64{"linked-key": 0.12}); err != nil {
+		t.Fatalf("倍率联动失败: %v", err)
+	}
+	p, err := st.Policy()
+	if err != nil || p.AccountLinkedMultipliers["101"] != 0.12 {
+		t.Fatalf("联动倍率未保存: %+v err=%v", p.AccountLinkedMultipliers, err)
+	}
+	if name, ok := fake.updateOf(101, "name"); !ok || name != "健康渠道【x0.12】" {
+		t.Fatalf("渠道名称写回异常: %v/%v", name, ok)
+	}
+	account, err := st.Account(101)
+	if err != nil || account.Name != "健康渠道【x0.12】" {
+		t.Fatalf("本地渠道缓存异常: %+v err=%v", account, err)
+	}
+	if fake.nameUpdateCount(101) != 1 {
+		t.Fatalf("首次同步应只写一次名称: %d", fake.nameUpdateCount(101))
+	}
+
+	if err := eng.SyncLinkedMultipliers(context.Background(), channel, map[string]float64{"linked-key": 0.12}); err != nil {
+		t.Fatalf("重复倍率联动失败: %v", err)
+	}
+	if fake.nameUpdateCount(101) != 1 {
+		t.Fatalf("重复同步不应再次写名称: %d", fake.nameUpdateCount(101))
+	}
+}
+
+func TestSyncLinkedMultipliersKeepsLocalValueWhenNameWriteFails(t *testing.T) {
+	eng, st, fake := setupEngine(t)
+	if err := eng.RunOnce(context.Background()); err != nil {
+		t.Fatalf("初始化目录失败: %v", err)
+	}
+	conn, _ := st.Connection()
+	fake.setCredentials(101, map[string]any{"api_key": "linked-key", "base_url": conn.BaseURL})
+	fake.setFailWrites(101, true)
+	channel := store.UpstreamChannel{ID: 1, Type: store.UpstreamChannelSub2API, BaseURL: conn.BaseURL}
+	if err := eng.SyncLinkedMultipliers(context.Background(), channel, map[string]float64{"linked-key": 0.2}); err != nil {
+		t.Fatalf("名称写回失败不应中断联动: %v", err)
+	}
+	p, err := st.Policy()
+	if err != nil || p.AccountLinkedMultipliers["101"] != 0.2 {
+		t.Fatalf("名称失败时本地倍率仍应保存: %+v err=%v", p.AccountLinkedMultipliers, err)
+	}
+	if fake.nameUpdateCount(101) != 0 {
+		t.Fatalf("写回失败不应计入成功名称更新: %d", fake.nameUpdateCount(101))
+	}
+}
+
+func TestSyncLinkedMultipliersSkipsURLAndKeyMismatches(t *testing.T) {
+	eng, st, fake := setupEngine(t)
+	if err := eng.RunOnce(context.Background()); err != nil {
+		t.Fatalf("初始化目录失败: %v", err)
+	}
+	conn, _ := st.Connection()
+	p, _ := st.Policy()
+	p.AccountLinkedMultipliers["101"] = 0.5
+	p.AccountLinkedMultipliers["102"] = 0.6
+	if _, err := st.SavePolicy(p); err != nil {
+		t.Fatalf("准备旧联动倍率失败: %v", err)
+	}
+	fake.setCredentials(101, map[string]any{"api_key": "different-key", "base_url": conn.BaseURL})
+	fake.setCredentials(102, map[string]any{"api_key": "linked-key", "base_url": conn.BaseURL + "/other"})
+	channel := store.UpstreamChannel{ID: 1, Type: store.UpstreamChannelSub2API, BaseURL: conn.BaseURL}
+	if err := eng.SyncLinkedMultipliers(context.Background(), channel, map[string]float64{"linked-key": 0.12}); err != nil {
+		t.Fatalf("失配联动不应失败: %v", err)
+	}
+	p, _ = st.Policy()
+	if p.AccountLinkedMultipliers["101"] != 0.5 || p.AccountLinkedMultipliers["102"] != 0.6 {
+		t.Fatalf("失配账号旧倍率不应被清理: %#v", p.AccountLinkedMultipliers)
+	}
+	if fake.nameUpdateCount(101) != 0 || fake.nameUpdateCount(102) != 0 {
+		t.Fatalf("URL/Key 失配账号不应写回名称: 101=%d 102=%d", fake.nameUpdateCount(101), fake.nameUpdateCount(102))
+	}
 }
 
 // TestEndToEndFuseAndRecover 覆盖完整链路：

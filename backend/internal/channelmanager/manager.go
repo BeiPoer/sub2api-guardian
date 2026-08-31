@@ -18,6 +18,10 @@ const (
 	upstreamHistoryRetention = 7 * 24 * time.Hour
 )
 
+// MultiplierLinker 把渠道管理中按令牌解析出的倍率交给渠道池处理。
+// API Key 只在当前调用栈中存在，不应由实现记录或持久化。
+type MultiplierLinker func(context.Context, store.UpstreamChannel, map[string]float64) error
+
 // Manager 是上游渠道功能的唯一运行期入口。
 type Manager struct {
 	store  *store.Store
@@ -28,12 +32,27 @@ type Manager struct {
 
 	lockMu sync.Mutex
 	locks  map[int64]*sync.Mutex
+	linker MultiplierLinker
 
 	stop      chan struct{}
 	done      chan struct{}
 	startOnce sync.Once
 	stopOnce  sync.Once
 	started   bool
+}
+
+// SetMultiplierLinker 注册渠道管理到渠道池的倍率联动回调。
+// Server 构造时调用，测试和未配置渠道池时可以不注册。
+func (m *Manager) SetMultiplierLinker(linker MultiplierLinker) {
+	m.lockMu.Lock()
+	m.linker = linker
+	m.lockMu.Unlock()
+}
+
+func (m *Manager) multiplierLinker() MultiplierLinker {
+	m.lockMu.Lock()
+	defer m.lockMu.Unlock()
+	return m.linker
 }
 
 func New(st *store.Store) *Manager {

@@ -44,6 +44,45 @@ func TestFetchAccountUpstreamMultiplierUsesNativeSub2APIProbe(t *testing.T) {
 	}
 }
 
+func TestExportAccountCredentialsReturnsOnlyConnectionFields(t *testing.T) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/admin/accounts/data" || r.URL.Query().Get("ids") != "101" ||
+			r.URL.Query().Get("include_proxies") != "false" || r.Header.Get("x-api-key") != "admin-key" {
+			t.Fatalf("导出凭据请求异常: %s?%s", r.URL.Path, r.URL.RawQuery)
+		}
+		writeTestEnvelope(t, w, map[string]any{"accounts": []map[string]any{{
+			"name": "channel", "type": "api_key",
+			"credentials": map[string]any{"api_key": "secret-key", "base_url": server.URL + "/v1", "password": "do-not-return"},
+		}}})
+	}))
+	t.Cleanup(server.Close)
+
+	client := New(server.URL, "admin-key", 5*time.Second)
+	credentials, err := client.ExportAccountCredentials(context.Background(), 101)
+	if err != nil || credentials.BaseURL != server.URL+"/v1" || credentials.APIKey != "secret-key" {
+		t.Fatalf("账号凭据 = %+v, err=%v", credentials, err)
+	}
+	raw, _ := json.Marshal(credentials)
+	if strings.Contains(string(raw), "secret-key") {
+		t.Fatalf("导出凭据不应进入序列化结果: %s", raw)
+	}
+}
+
+func TestExportAccountCredentialsSanitizesErrorBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"code":502,"message":"secret-key"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	client := New(server.URL, "admin-key", 5*time.Second)
+	_, err := client.ExportAccountCredentials(context.Background(), 101)
+	if err == nil || strings.Contains(err.Error(), "secret-key") {
+		t.Fatalf("导出错误不应携带凭据: %v", err)
+	}
+}
+
 func TestFetchAccountUpstreamMultiplierUsesNativeProbeForNonOpenAIAPIKey(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/admin/accounts/202/upstream-billing-probe", func(w http.ResponseWriter, _ *http.Request) {

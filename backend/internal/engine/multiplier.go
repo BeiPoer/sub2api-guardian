@@ -10,8 +10,8 @@ func itoa(id int64) string { return strconv.FormatInt(id, 10) }
 
 // resolveMultipliers 给每个渠道算出生效的调度倍率。
 //
-// 默认使用本地人工倍率或账号类型默认值。API Key 渠道显式开启实时倍率后，
-// 使用本轮目录同步得到的 sub2api 账号倍率；无有效值时回退 1。
+// 优先使用渠道管理凭据联动倍率；没有联动时，API Key 渠道显式开启实时倍率后
+// 使用本轮目录同步得到的 sub2api 账号倍率，再回退人工倍率或账号类型默认值。
 // 该值只参与价格优先的权重计算，不会写回 sub2api。
 func resolveMultipliers(r *round) {
 	for _, ch := range r.channels {

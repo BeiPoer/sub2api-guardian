@@ -67,6 +67,8 @@ type ChannelDTO struct {
 	Multiplier                       float64    `json:"multiplier"`
 	MultiplierManual                 bool       `json:"multiplier_manual"`
 	ManualMultiplier                 *float64   `json:"manual_multiplier,omitempty"`
+	MultiplierLinked                 bool       `json:"multiplier_linked"`
+	LinkedMultiplier                 *float64   `json:"linked_multiplier,omitempty"`
 	UpstreamMultiplierEnabled        bool       `json:"upstream_multiplier_enabled"`
 	UpstreamMultiplierBreakerEnabled bool       `json:"upstream_multiplier_breaker_enabled"`
 	UpstreamMultiplierThreshold      *float64   `json:"upstream_multiplier_threshold,omitempty"`

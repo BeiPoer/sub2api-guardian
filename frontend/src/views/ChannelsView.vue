@@ -385,9 +385,11 @@
             type="number"
             :min="0"
             :step="0.01"
-            :disabled="editor.upstreamMultiplierEnabled"
+            :disabled="editor.upstreamMultiplierEnabled && !editor.multiplierLinked"
             :hint="
-              editor.upstreamMultiplierEnabled
+              editor.multiplierLinked
+                ? '当前值由渠道管理按 URL + API Key 同步，修改后解除本次关联'
+                : editor.upstreamMultiplierEnabled
                 ? '实时倍率开启时人工值暂不生效，关闭后自动恢复'
                 : '越低越优先。仅供调度系统使用，不会写回 sub2api；填 0 表示回落到类型默认值'
             "
@@ -546,6 +548,8 @@ function isAPIKeyType(accountType: string): boolean {
 
 function multiplierSourceLabel(channel: Channel): string {
   switch (channel.multiplier_source) {
+    case 'linked':
+      return '渠道管理同步'
     case 'upstream':
       return '上游倍率'
     case 'upstream_fallback':
@@ -694,6 +698,7 @@ const editor = reactive({
   concurrency: 1,
   multiplier: 0,
   type: '',
+  multiplierLinked: false,
   upstreamMultiplierEnabled: false,
   upstreamMultiplierBreakerEnabled: false,
   upstreamMultiplierThreshold: 0,
@@ -731,10 +736,12 @@ function openEditor(channel: Channel) {
   editor.loadFactor = channel.load_factor ?? 1
   editor.concurrency = channel.concurrency
   editor.type = channel.type
-  // 实时倍率开启时生效值来自上游，人工配置通过独立字段回显并保留。
+  // 联动或实时倍率开启时生效值可能来自自动来源，人工配置通过独立字段回显并保留。
   editor.multiplier =
+    channel.linked_multiplier ??
     channel.manual_multiplier ??
     (channel.multiplier_source === 'manual' ? channel.multiplier : 0)
+  editor.multiplierLinked = channel.multiplier_linked
   editor.upstreamMultiplierEnabled = channel.upstream_multiplier_enabled
   editor.upstreamMultiplierBreakerEnabled = channel.upstream_multiplier_breaker_enabled
   editor.upstreamMultiplierThreshold = channel.upstream_multiplier_threshold ?? 0

@@ -28,6 +28,13 @@ type exportedAccount struct {
 	Credentials map[string]any `json:"credentials"`
 }
 
+// AccountCredentials 是一次性读取的账号连接信息，仅供内部凭据匹配使用。
+// 调用方不得将 APIKey 或 BaseURL 写入日志、缓存或 API 响应。
+type AccountCredentials struct {
+	BaseURL string `json:"-"`
+	APIKey  string `json:"-"`
+}
+
 type accountExport struct {
 	Accounts []exportedAccount `json:"accounts"`
 }
@@ -73,6 +80,45 @@ func (c *Client) FetchAccountUpstreamMultiplier(ctx context.Context, accountID i
 		return value, err
 	}
 	return c.fetchLegacyUpstreamMultiplier(ctx, accountID)
+}
+
+// ExportAccountCredentials 读取单个账号的原始连接信息。
+// Sub2API 的普通账号接口会脱敏凭据，因此这里复用管理员导出接口；
+// 返回值只在当前调用栈中存在。
+func (c *Client) ExportAccountCredentials(ctx context.Context, accountID int64) (AccountCredentials, error) {
+	account, err := c.exportedAccount(ctx, accountID)
+	if err != nil {
+		return AccountCredentials{}, sanitizeCredentialExportError(err)
+	}
+	if strings.TrimSpace(account.Type) != "" && !isAPIKeyAccountType(account.Type) {
+		return AccountCredentials{}, errors.New("只有 API Key 类型渠道可以匹配 API Key")
+	}
+	credentials := account.Credentials
+	apiKey := firstCredentialString(credentials, "api_key", "apiKey", "key", "token")
+	baseURL := firstCredentialString(credentials, "base_url", "baseURL", "url")
+	if apiKey == "" {
+		return AccountCredentials{}, errors.New("渠道未配置 API Key，无法进行精确匹配")
+	}
+	if baseURL == "" {
+		return AccountCredentials{}, errors.New("渠道未配置上游地址，无法进行精确匹配")
+	}
+	return AccountCredentials{BaseURL: baseURL, APIKey: apiKey}, nil
+}
+
+// sanitizeCredentialExportError 不把管理员导出接口的响应正文带出当前调用栈。
+// 某些上游错误响应可能回显连接配置，联动日志只能保留状态或通用错误。
+func sanitizeCredentialExportError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return fmt.Errorf("读取渠道连接信息失败（HTTP %d）", apiErr.StatusCode)
+	}
+	return errors.New("读取渠道连接信息失败")
 }
 
 // fetchNativeUpstreamMultiplier 使用与 Sub2API 账户管理页面相同的探测接口。
@@ -199,15 +245,10 @@ func multiplierFromProbeResult(result upstreamBillingProbeResult) (float64, erro
 }
 
 func (c *Client) fetchLegacyUpstreamMultiplier(ctx context.Context, accountID int64) (float64, error) {
-	var exported accountExport
-	path := fmt.Sprintf("/api/v1/admin/accounts/data?ids=%d&include_proxies=false", accountID)
-	if err := c.request(ctx, http.MethodGet, path, nil, &exported); err != nil {
-		return 0, fmt.Errorf("读取渠道连接信息失败: %w", err)
+	account, err := c.exportedAccount(ctx, accountID)
+	if err != nil {
+		return 0, err
 	}
-	if len(exported.Accounts) != 1 {
-		return 0, fmt.Errorf("渠道 #%d 的连接信息不存在或不唯一", accountID)
-	}
-	account := exported.Accounts[0]
 	if !isAPIKeyAccountType(account.Type) {
 		return 0, errors.New("只有 API Key 类型渠道可以同步上游倍率")
 	}
@@ -222,6 +263,21 @@ func (c *Client) fetchLegacyUpstreamMultiplier(ctx context.Context, accountID in
 	return requestMultiplier(ctx, endpoint, apiKey)
 }
 
+func (c *Client) exportedAccount(ctx context.Context, accountID int64) (exportedAccount, error) {
+	if accountID <= 0 {
+		return exportedAccount{}, errors.New("渠道 ID 无效")
+	}
+	var exported accountExport
+	path := fmt.Sprintf("/api/v1/admin/accounts/data?ids=%d&include_proxies=false", accountID)
+	if err := c.request(ctx, http.MethodGet, path, nil, &exported); err != nil {
+		return exportedAccount{}, fmt.Errorf("读取渠道连接信息失败: %w", err)
+	}
+	if len(exported.Accounts) != 1 {
+		return exportedAccount{}, fmt.Errorf("渠道 #%d 的连接信息不存在或不唯一", accountID)
+	}
+	return exported.Accounts[0], nil
+}
+
 func isAPIKeyAccountType(accountType string) bool {
 	switch strings.ToLower(strings.TrimSpace(accountType)) {
 	case "apikey", "api_key", "key":
@@ -234,6 +290,15 @@ func isAPIKeyAccountType(accountType string) bool {
 func credentialString(credentials map[string]any, key string) string {
 	value, _ := credentials[key].(string)
 	return strings.TrimSpace(value)
+}
+
+func firstCredentialString(credentials map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value := credentialString(credentials, key); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // multiplierEndpoint 优先采用账号显式配置的倍率 URL；否则复用 API base_url

@@ -278,6 +278,10 @@ type Policy struct {
 	// 未设置的账号按类型取默认值（见 DefaultMultiplierFor）。
 	AccountMultipliers map[string]float64 `json:"account_multipliers"`
 
+	// AccountLinkedMultipliers 是由渠道管理按 URL + API Key 同步得到的调度倍率。
+	// 它优先于实时上游倍率与人工倍率，但不修改 sub2api 的计费倍率。
+	AccountLinkedMultipliers map[string]float64 `json:"account_linked_multipliers"`
+
 	// AccountUpstreamMultiplierEnabled 控制 API Key 渠道是否使用 sub2api
 	// 账号目录返回的最新倍率。只保存开启项，键为账号 ID。
 	AccountUpstreamMultiplierEnabled map[string]bool `json:"account_upstream_multiplier_enabled"`
@@ -435,6 +439,7 @@ func Default() Policy {
 		PausedAccountIDs:                  []int64{},
 		AccountTestModels:                 map[string]string{},
 		AccountMultipliers:                map[string]float64{},
+		AccountLinkedMultipliers:          map[string]float64{},
 		AccountUpstreamMultiplierEnabled:  map[string]bool{},
 		AccountUpstreamMultiplierBreakers: map[string]UpstreamMultiplierBreaker{},
 	}
@@ -607,6 +612,14 @@ func Normalize(p *Policy) {
 	for key, value := range p.AccountMultipliers {
 		if !validMultiplier(value) {
 			delete(p.AccountMultipliers, key)
+		}
+	}
+	if p.AccountLinkedMultipliers == nil {
+		p.AccountLinkedMultipliers = map[string]float64{}
+	}
+	for key, value := range p.AccountLinkedMultipliers {
+		if !validMultiplier(value) {
+			delete(p.AccountLinkedMultipliers, key)
 		}
 	}
 	if p.AccountUpstreamMultiplierEnabled == nil {

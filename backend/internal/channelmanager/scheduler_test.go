@@ -41,6 +41,49 @@ func TestEvaluateTasks(t *testing.T) {
 	}
 }
 
+func TestTokenMultipliersForLinkUsesCompleteKeysAndUserRates(t *testing.T) {
+	groups := []any{
+		map[string]any{"id": 1, "name": "pro", "rate_multiplier": 9.0, "user_rate_multiplier": 0.12},
+		map[string]any{"id": 2, "name": "basic", "rate_multiplier": 0.8},
+	}
+	tokens := []any{
+		map[string]any{"key": "key-pro", "group_id": 1},
+		map[string]any{"api_key": "key-basic", "group_id": 2},
+		map[string]any{"key": "key-masked*", "group_id": 1},
+		map[string]any{"key": "key-no-group"},
+		map[string]any{"key": "key-conflict", "group_id": 1},
+		map[string]any{"key": "key-conflict", "group_id": 2},
+	}
+
+	got := tokenMultipliersForLink(groups, tokens, store.UpstreamChannelSub2API)
+	if got["key-pro"] != 0.12 || got["key-basic"] != 0.8 {
+		t.Fatalf("令牌倍率 = %#v", got)
+	}
+	extraction := tokenMultiplierLinkCandidates(groups, tokens, store.UpstreamChannelSub2API)
+	if extraction.conflicts != 1 {
+		t.Fatalf("冲突令牌数量 = %d, 期望 1", extraction.conflicts)
+	}
+	for _, key := range []string{"key-masked*", "key-no-group", "key-conflict"} {
+		if _, ok := got[key]; ok {
+			t.Fatalf("失配令牌 %q 不应参与联动: %#v", key, got)
+		}
+	}
+	if linked := tokenMultipliersForLink(groups, tokens, store.UpstreamChannelNewAPI); len(linked) != 0 {
+		t.Fatalf("new-api 不应参与 Sub2API 联动: %#v", linked)
+	}
+}
+
+func TestTokenMultiplierLinkFallsBackWhenUserRateIsInvalid(t *testing.T) {
+	groups := []any{map[string]any{
+		"id": 1, "name": "pro", "user_rate_multiplier": 0, "rate_multiplier": 0.8,
+	}}
+	tokens := []any{map[string]any{"key": "key-pro", "group_id": 1}}
+	got := tokenMultipliersForLink(groups, tokens, store.UpstreamChannelSub2API)
+	if got["key-pro"] != 0.8 {
+		t.Fatalf("无效用户倍率应回退普通倍率: %#v", got)
+	}
+}
+
 func TestDueTaskRecordsAlertWhenEmailIsUnconfigured(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/auth/login", func(w http.ResponseWriter, r *http.Request) {
