@@ -7,7 +7,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"sub2api-guardian/backend/internal/domain"
@@ -19,9 +18,7 @@ import (
 const linkedMultiplierMarker = "【x"
 
 const (
-	// ponytail: keep the admin API fan-out bounded; raise only after observing no throttling.
-	linkedMultiplierConcurrency = 8
-	linkedCredentialCacheTTL   = 10 * time.Minute
+	linkedCredentialCacheTTL = 10 * time.Minute
 )
 
 // SyncLinkedMultipliers 将渠道管理中令牌对应的分组倍率同步到渠道池。
@@ -73,69 +70,26 @@ func (e *Engine) SyncLinkedMultipliers(
 		return err
 	}
 
-	// Export 接口一次只能可靠地关联一个账号 ID，因此用有界并发读取，
-	// 避免渠道较多时每次分组同步都串行等待几十个请求。
-	type credentialResult struct {
-		account     domain.Account
-		credentials upstream.AccountCredentials
-		err         error
+	credentialsByID, err := e.linkedCredentials(ctx)
+	if err != nil {
+		return err
 	}
-	jobs := make(chan domain.Account)
-	results := make(chan credentialResult, len(accountCandidates))
-	workerCount := linkedMultiplierConcurrency
-	if workerCount > len(accountCandidates) {
-		workerCount = len(accountCandidates)
-	}
-	var workers sync.WaitGroup
-	for i := 0; i < workerCount; i++ {
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
-			for account := range jobs {
-				credentials, fetchErr := e.linkedCredential(ctx, account.ID)
-				select {
-				case results <- credentialResult{account: account, credentials: credentials, err: fetchErr}:
-				case <-ctx.Done():
-					return
-				}
-			}
-		}()
-	}
-	for _, account := range accountCandidates {
-		select {
-		case jobs <- account:
-		case <-ctx.Done():
-			close(jobs)
-			workers.Wait()
-			close(results)
-			return ctx.Err()
-		}
-	}
-	close(jobs)
-	workers.Wait()
-	close(results)
 
 	matched := make([]linkedAccount, 0)
-	for result := range results {
-		if result.err != nil {
-			// 凭据缺失/类型不符属于正常失配；网络或服务端错误继续记录，
-			// 但不让一个账号阻塞其他账号的联动。
-			if !isExpectedCredentialMismatch(result.err) {
-				accountID := result.account.ID
-				e.store.Log("warn", "upstream_multiplier_link_account_failed", &accountID, nil,
-					fmt.Sprintf("读取渠道连接信息失败: %s", result.err), nil)
-			}
-			continue
-		}
-		accountURL, valid := normalizeLinkedURL(result.credentials.BaseURL)
-		if !valid || accountURL != sourceURL {
-			continue
-		}
-		ratio, found := validTokenMultipliers[linkedCredentialKey(result.credentials.APIKey)]
+	for _, account := range accountCandidates {
+		credentials, found := credentialsByID[account.ID]
 		if !found {
 			continue
 		}
-		matched = append(matched, linkedAccount{account: result.account, ratio: ratio})
+		accountURL, valid := normalizeLinkedURL(credentials.BaseURL)
+		if !valid || accountURL != sourceURL {
+			continue
+		}
+		ratio, found := validTokenMultipliers[linkedCredentialKey(credentials.APIKey)]
+		if !found {
+			continue
+		}
+		matched = append(matched, linkedAccount{account: account, ratio: ratio})
 	}
 	if len(matched) == 0 {
 		return nil
@@ -197,34 +151,44 @@ func (e *Engine) SyncLinkedMultipliers(
 	return nil
 }
 
-// linkedCredential 复用短期进程内凭据快照，避免每个上游渠道都重复读取
+// linkedCredentials 复用短期批量凭据快照，避免每个上游渠道都重复读取
 // 全部渠道池账号。凭据不会写入数据库、日志或 API 响应，10 分钟后自动刷新。
-func (e *Engine) linkedCredential(ctx context.Context, accountID int64) (upstream.AccountCredentials, error) {
+func (e *Engine) linkedCredentials(ctx context.Context) (map[int64]upstream.AccountCredentials, error) {
 	now := time.Now()
 	e.linkedCredentialMu.Lock()
-	entry, ok := e.linkedCredentialCache[accountID]
 	config := e.linkedCredentialConfig
+	if !e.linkedCredentialFetchedAt.IsZero() && now.Sub(e.linkedCredentialFetchedAt) < linkedCredentialCacheTTL {
+		cached := make(map[int64]upstream.AccountCredentials, len(e.linkedCredentialCache))
+		for accountID, entry := range e.linkedCredentialCache {
+			cached[accountID] = entry.credentials
+		}
+		e.linkedCredentialMu.Unlock()
+		return cached, nil
+	}
 	e.linkedCredentialMu.Unlock()
-	if ok && now.Sub(entry.fetchedAt) < linkedCredentialCacheTTL {
-		return entry.credentials, nil
+
+	records, err := e.client.ListAccountCredentials(ctx)
+	if err != nil {
+		return nil, err
+	}
+	fresh := make(map[int64]upstream.AccountCredentials, len(records))
+	for _, record := range records {
+		fresh[record.AccountID] = record.Credentials
 	}
 
-	credentials, err := e.client.ExportAccountCredentials(ctx, accountID)
-	if err != nil {
-		return upstream.AccountCredentials{}, err
-	}
 	e.linkedCredentialMu.Lock()
-	if e.linkedCredentialCache == nil {
-		e.linkedCredentialCache = make(map[int64]linkedCredentialCacheEntry)
-	}
 	if !e.linkedCredentialReady || e.linkedCredentialConfig == config {
-		e.linkedCredentialCache[accountID] = linkedCredentialCacheEntry{
-			credentials: credentials,
-			fetchedAt:  now,
+		cache := make(map[int64]linkedCredentialCacheEntry, len(fresh))
+		for accountID, credentials := range fresh {
+			cache[accountID] = linkedCredentialCacheEntry{
+				credentials: credentials,
+			}
 		}
+		e.linkedCredentialCache = cache
+		e.linkedCredentialFetchedAt = now
 	}
 	e.linkedCredentialMu.Unlock()
-	return credentials, nil
+	return fresh, nil
 }
 
 type linkedAccount struct {
@@ -234,7 +198,6 @@ type linkedAccount struct {
 
 type linkedCredentialCacheEntry struct {
 	credentials upstream.AccountCredentials
-	fetchedAt   time.Time
 }
 
 func linkedCredentialKey(apiKey string) string {

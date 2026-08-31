@@ -19,20 +19,28 @@ const upstreamMultiplierBodyLimit = 2 << 20
 // Sub2API limits one manual upstream billing probe batch to 20 accounts.
 const upstreamMultiplierBatchSize = 20
 
-// exportedAccount 是 Sub2API 管理员备份接口返回的单账号结构。
+// exportedAccount 是 Sub2API 管理员账号接口返回的最小账号结构。
 // Credentials 只在本次调用栈中使用，不持久化、不记录日志、不返回给前端。
 type exportedAccount struct {
+	ID          int64          `json:"id"`
 	Name        string         `json:"name"`
 	Platform    string         `json:"platform"`
 	Type        string         `json:"type"`
 	Credentials map[string]any `json:"credentials"`
 }
 
-// AccountCredentials 是一次性读取的账号连接信息，仅供内部凭据匹配使用。
+// AccountCredentials 是账号连接信息，仅供内部凭据匹配使用。
 // 调用方不得将 APIKey 或 BaseURL 写入日志、缓存或 API 响应。
 type AccountCredentials struct {
 	BaseURL string `json:"-"`
 	APIKey  string `json:"-"`
+}
+
+// AccountCredentialsRecord 是批量账号列表中可用于联动匹配的最小凭据记录。
+// 凭据只在当前调用栈中存在，不写入账号缓存或 API 响应。
+type AccountCredentialsRecord struct {
+	AccountID   int64
+	Credentials AccountCredentials `json:"-"`
 }
 
 type accountExport struct {
@@ -90,6 +98,52 @@ func (c *Client) ExportAccountCredentials(ctx context.Context, accountID int64) 
 	if err != nil {
 		return AccountCredentials{}, sanitizeCredentialExportError(err)
 	}
+	return accountCredentialsFromExport(account)
+}
+
+// ListAccountCredentials 一次分页读取 API Key 账号的连接信息。
+// Sub2API 管理端列表接口支持返回完整 credentials，联动时优先使用该批量路径，
+// 避免每个上游渠道都对全部账号发起一次导出请求。
+func (c *Client) ListAccountCredentials(ctx context.Context) ([]AccountCredentialsRecord, error) {
+	accounts, err := c.listAccountCredentialsPage(ctx, 1000)
+	if err != nil && (StatusCodeOf(err) == http.StatusBadRequest || StatusCodeOf(err) == http.StatusUnprocessableEntity) {
+		// 兼容把 page_size 上限固定为 200 的旧版 Sub2API；仍然只需分页读取，
+		// 不退回逐账号导出路径。
+		accounts, err = c.listAccountCredentialsPage(ctx, 200)
+	}
+	if err != nil {
+		return nil, sanitizeCredentialExportError(err)
+	}
+	result := make([]AccountCredentialsRecord, 0, len(accounts))
+	for _, account := range accounts {
+		if account.ID <= 0 || (strings.TrimSpace(account.Type) != "" && !isAPIKeyAccountType(account.Type)) {
+			continue
+		}
+		credentials, err := accountCredentialsFromExport(account)
+		if err != nil {
+			// 脱敏、缺失凭据或非完整连接信息都只是不可联动，
+			// 不影响同一批其它账号继续匹配。
+			continue
+		}
+		result = append(result, AccountCredentialsRecord{
+			AccountID: account.ID, Credentials: credentials,
+		})
+	}
+	return result, nil
+}
+
+func (c *Client) listAccountCredentialsPage(ctx context.Context, pageSize int) ([]exportedAccount, error) {
+	return fetchAllPages[exportedAccount](ctx, c, func(pageNum int) string {
+		return fmt.Sprintf(
+			"/api/v1/admin/accounts?page=%d&page_size=%d&platform=&type=apikey&status="+
+				"&privacy_mode=&group=&search=&include_scheduler_score=0&sort_by=schedulable&"+
+				"sort_order=desc&timezone=Asia%%2FShanghai",
+			pageNum, pageSize,
+		)
+	})
+}
+
+func accountCredentialsFromExport(account exportedAccount) (AccountCredentials, error) {
 	if strings.TrimSpace(account.Type) != "" && !isAPIKeyAccountType(account.Type) {
 		return AccountCredentials{}, errors.New("只有 API Key 类型渠道可以匹配 API Key")
 	}
@@ -98,6 +152,9 @@ func (c *Client) ExportAccountCredentials(ctx context.Context, accountID int64) 
 	baseURL := firstCredentialString(credentials, "base_url", "baseURL", "url")
 	if apiKey == "" {
 		return AccountCredentials{}, errors.New("渠道未配置 API Key，无法进行精确匹配")
+	}
+	if strings.Contains(apiKey, "*") {
+		return AccountCredentials{}, errors.New("渠道 API Key 已脱敏，无法进行精确匹配")
 	}
 	if baseURL == "" {
 		return AccountCredentials{}, errors.New("渠道未配置上游地址，无法进行精确匹配")

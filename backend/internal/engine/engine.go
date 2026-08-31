@@ -62,6 +62,7 @@ type Engine struct {
 	// 不落库、不返回前端，过期后重新读取。
 	linkedCredentialMu    sync.Mutex
 	linkedCredentialCache map[int64]linkedCredentialCacheEntry
+	linkedCredentialFetchedAt time.Time
 	linkedCredentialConfig [sha256.Size]byte
 	linkedCredentialReady  bool
 
@@ -341,6 +342,7 @@ func (e *Engine) Reconfigure(conn domain.Connection) {
 	e.linkedCredentialMu.Lock()
 	if !e.linkedCredentialReady || e.linkedCredentialConfig != fingerprint {
 		e.linkedCredentialCache = make(map[int64]linkedCredentialCacheEntry)
+		e.linkedCredentialFetchedAt = time.Time{}
 		e.linkedCredentialConfig = fingerprint
 		e.linkedCredentialReady = true
 	}

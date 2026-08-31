@@ -51,7 +51,7 @@ type fakeSub2API struct {
 	// upstreamMultipliers 模拟新版 Sub2API 原生上游计费探测的当前有效倍率。
 	upstreamMultipliers map[int64]float64
 	credentials         map[int64]map[string]any
-	exportCount         int
+	credentialListCount int
 }
 
 // probeResult 是假 sub2api 可以返回的探测结果类型。
@@ -95,6 +95,11 @@ func (f *fakeSub2API) handler(t *testing.T) http.Handler {
 	})
 
 	mux.HandleFunc("/api/v1/admin/accounts", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("type") == "apikey" {
+			f.mu.Lock()
+			f.credentialListCount++
+			f.mu.Unlock()
+		}
 		all := []map[string]any{
 			{
 				"id": 101, "name": "健康渠道", "platform": "anthropic", "type": "apikey",
@@ -108,6 +113,15 @@ func (f *fakeSub2API) handler(t *testing.T) http.Handler {
 				"rate_multiplier": 3.0, "group_ids": []int64{1},
 				"rate_limit_reset_at": f.rateLimitResetOf(102),
 			},
+		}
+		for _, item := range all {
+			accountID := int64(item["id"].(int))
+			f.mu.Lock()
+			credentials := f.credentials[accountID]
+			f.mu.Unlock()
+			if credentials != nil {
+				item["credentials"] = credentials
+			}
 		}
 		items := make([]map[string]any, 0, len(all))
 		for _, item := range all {
@@ -159,7 +173,6 @@ func (f *fakeSub2API) handler(t *testing.T) http.Handler {
 		var accountID int64
 		_, _ = fmt.Sscanf(r.URL.Query().Get("ids"), "%d", &accountID)
 		f.mu.Lock()
-		f.exportCount++
 		credentials := f.credentials[accountID]
 		f.mu.Unlock()
 		if credentials == nil {
@@ -348,10 +361,10 @@ func (f *fakeSub2API) setCredentials(accountID int64, credentials map[string]any
 	f.mu.Unlock()
 }
 
-func (f *fakeSub2API) credentialExportCount() int {
+func (f *fakeSub2API) credentialListRequestCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.exportCount
+	return f.credentialListCount
 }
 
 func (f *fakeSub2API) upstreamMultiplier(accountID int64) float64 {

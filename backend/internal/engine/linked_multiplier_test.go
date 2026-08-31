@@ -34,7 +34,7 @@ func TestNormalizeLinkedURLKeepsPathAndIgnoresCase(t *testing.T) {
 	}
 }
 
-func TestLinkedCredentialUsesShortProcessCache(t *testing.T) {
+func TestLinkedCredentialsUsesBatchCache(t *testing.T) {
 	eng, st, fake := setupEngine(t)
 	conn, err := st.Connection()
 	if err != nil {
@@ -45,24 +45,24 @@ func TestLinkedCredentialUsesShortProcessCache(t *testing.T) {
 		"base_url": conn.BaseURL,
 	})
 
-	first, err := eng.linkedCredential(context.Background(), 101)
-	if err != nil || first.APIKey != "cached-key" {
+	first, err := eng.linkedCredentials(context.Background())
+	if err != nil || first[101].APIKey != "cached-key" {
 		t.Fatalf("首次读取凭据失败: %+v, %v", first, err)
 	}
-	second, err := eng.linkedCredential(context.Background(), 101)
-	if err != nil || second.APIKey != "cached-key" {
+	second, err := eng.linkedCredentials(context.Background())
+	if err != nil || second[101].APIKey != "cached-key" {
 		t.Fatalf("缓存读取凭据失败: %+v, %v", second, err)
 	}
-	if got := fake.credentialExportCount(); got != 1 {
-		t.Fatalf("短缓存应避免重复导出，实际请求次数=%d", got)
+	if got := fake.credentialListRequestCount(); got != 1 {
+		t.Fatalf("短缓存应避免重复读取，实际请求次数=%d", got)
 	}
 
 	// 连接配置刷新后清空缓存，确保新连接不会复用旧凭据。
 	eng.Reconfigure(conn)
-	if _, err := eng.linkedCredential(context.Background(), 101); err != nil {
+	if _, err := eng.linkedCredentials(context.Background()); err != nil {
 		t.Fatalf("清理缓存后读取凭据失败: %v", err)
 	}
-	if got := fake.credentialExportCount(); got != 2 {
-		t.Fatalf("连接配置刷新后应重新导出，实际请求次数=%d", got)
+	if got := fake.credentialListRequestCount(); got != 2 {
+		t.Fatalf("连接配置刷新后应重新读取，实际请求次数=%d", got)
 	}
 }

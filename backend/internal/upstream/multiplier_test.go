@@ -83,6 +83,38 @@ func TestExportAccountCredentialsSanitizesErrorBody(t *testing.T) {
 	}
 }
 
+func TestListAccountCredentialsUsesBatchEndpoint(t *testing.T) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.Query()
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/admin/accounts" ||
+			query.Get("type") != "apikey" || query.Get("page_size") != "1000" ||
+			query.Get("include_scheduler_score") != "0" || query.Get("timezone") != "Asia/Shanghai" ||
+			r.Header.Get("x-api-key") != "admin-key" {
+			t.Fatalf("批量账号凭据请求异常: %s?%s", r.URL.Path, r.URL.RawQuery)
+		}
+		writeTestEnvelope(t, w, map[string]any{
+			"items": []map[string]any{
+				{"id": 101, "type": "apikey", "credentials": map[string]any{
+					"api_key": "secret-key", "base_url": server.URL + "/v1",
+				}},
+				{"id": 102, "type": "apikey", "credentials": map[string]any{
+					"api_key": "masked********", "base_url": server.URL + "/v1",
+				}},
+			},
+			"total": 2, "page": 1, "page_size": 1000, "pages": 1,
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	client := New(server.URL, "admin-key", 5*time.Second)
+	records, err := client.ListAccountCredentials(context.Background())
+	if err != nil || len(records) != 1 || records[0].AccountID != 101 ||
+		records[0].Credentials.APIKey != "secret-key" {
+		t.Fatalf("批量账号凭据 = %+v, err=%v", records, err)
+	}
+}
+
 func TestFetchAccountUpstreamMultiplierUsesNativeProbeForNonOpenAIAPIKey(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/admin/accounts/202/upstream-billing-probe", func(w http.ResponseWriter, _ *http.Request) {
