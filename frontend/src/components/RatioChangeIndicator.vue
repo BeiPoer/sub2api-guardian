@@ -3,7 +3,7 @@
     <Icon
       :name="change.after > change.before ? 'arrowUp' : 'arrowDown'"
       size="xs"
-      :stroke-width="2.5"
+      :stroke-width="5"
       :class="change.after > change.before ? 'text-red-500 dark:text-red-400' : 'text-emerald-500 dark:text-emerald-400'"
     />
   </span>
