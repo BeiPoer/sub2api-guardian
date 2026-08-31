@@ -394,12 +394,12 @@ def main() -> int:
         stale_or_due = 0
         for channel in channel_rows:
             channel_id = int(channel["id"])
-            is_sub2api = text(channel["type"]).lower() == "sub2api"
+            is_linked_type = text(channel["type"]).lower() in ("sub2api", "newapi")
             tasks = tasks_by_channel.get(channel_id, [])
             group_tasks = [task for task in tasks if text(task["type"]) in GROUP_TASKS]
             enabled_group_tasks = [task for task in group_tasks if task["enabled"]]
             due_group_tasks = [task for task in enabled_group_tasks if task_state(task, now).startswith("已到期")]
-            if is_sub2api and due_group_tasks:
+            if is_linked_type and due_group_tasks:
                 stale_or_due += 1
             groups_row = caches.get((channel_id, "groups"))
             tokens_row = caches.get((channel_id, "tokens"))
@@ -427,7 +427,7 @@ def main() -> int:
             print(f"  任务: {task_text}")
             print(f"  缓存: {cache_text}")
 
-        print(f"Sub2API 分组任务当前已到期的上游渠道数: {stale_or_due}")
+        print(f"可联动上游分组任务当前已到期的渠道数: {stale_or_due}")
         print(f"所有上游缓存估算的唯一可联动 Key 总数: {total_candidates}")
 
         print_header("联动事件")

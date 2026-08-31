@@ -383,7 +383,7 @@ func groupRatio(group any) (float64, bool) {
 }
 
 // tokenMultipliersForLink 提取完整令牌 Key 对应的用户分组倍率。
-// 只用于 Sub2API：new-api 的令牌结构和渠道池凭据不在本次联动范围内。
+// Sub2API 和 new-api 都使用 URL + API Key 参与渠道池联动。
 func tokenMultipliersForLink(groups, tokens any, channelType store.UpstreamChannelType) map[string]float64 {
 	return tokenMultiplierLinkCandidates(groups, tokens, channelType).ratios
 }
@@ -395,7 +395,7 @@ type tokenMultiplierLinkExtraction struct {
 
 func tokenMultiplierLinkCandidates(groups, tokens any, channelType store.UpstreamChannelType) tokenMultiplierLinkExtraction {
 	result := make(map[string]float64)
-	if channelType != store.UpstreamChannelSub2API {
+	if channelType != store.UpstreamChannelSub2API && channelType != store.UpstreamChannelNewAPI {
 		return tokenMultiplierLinkExtraction{ratios: result}
 	}
 	conflicts := make(map[string]struct{})

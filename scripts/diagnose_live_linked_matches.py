@@ -2,7 +2,7 @@
 """Read-only live check for channel-management URL + API key matches.
 
 The script reads Guardian's connection settings and upstream caches from SQLite,
-then calls Sub2API's administrator export endpoint. Exported credentials stay
+then calls Sub2API's administrator account-list endpoint. Exported credentials stay
 in memory for the duration of the process and are never printed, serialized, or
 written to disk. Only counts, IDs, and safe status categories are displayed.
 """
@@ -45,7 +45,7 @@ ORDINARY_RATIO_FIELDS = (
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="只读核对 Sub2API 导出凭据与渠道管理缓存的 URL+Key 精确匹配"
+        description="只读核对上游渠道与渠道池账号的 URL+Key 精确匹配"
     )
     parser.add_argument(
         "db",
@@ -252,7 +252,7 @@ def token_ratio(group, token):
     return None
 
 
-def source_pairs(groups_raw, tokens_raw, source_url):
+def source_pairs(groups_raw, tokens_raw, source_url, channel_type):
     groups = collection(groups_raw)
     group_ids = [identifiers(group) for group in groups]
     pairs = set()
@@ -267,6 +267,8 @@ def source_pairs(groups_raw, tokens_raw, source_url):
         if not key:
             stats["missing_or_masked"] += 1
             continue
+        if channel_type == "newapi" and not key.startswith("sk-"):
+            key = "sk-" + key
         stats["full_key"] += 1
         token_ids = token_group_identifiers(token)
         matched_group = None
@@ -433,7 +435,7 @@ def main():
             ).fetchall()
             cache_map = {(int(row["channel_id"]), text(row["cache_key"])): row for row in caches}
             for channel in channels:
-                if text(channel["type"]).lower() != "sub2api":
+                if text(channel["type"]).lower() not in ("sub2api", "newapi"):
                     continue
                 source_channels += 1
                 channel_id = int(channel["id"])
@@ -448,7 +450,10 @@ def main():
                 tokens_row = cache_map.get((channel_id, "tokens"))
                 groups = parse_json(groups_row["normalized_json"], []) if groups_row else []
                 tokens = parse_json(tokens_row["normalized_json"], []) if tokens_row else []
-                pairs, key_urls, key_ratios, stats = source_pairs(groups, tokens, channel_url)
+                channel_type = text(channel["type"]).lower()
+                pairs, key_urls, key_ratios, stats = source_pairs(
+                    groups, tokens, channel_url, channel_type
+                )
                 source_pairs_set.update(pairs)
                 for pair in pairs:
                     source_pair_channels[pair].add(channel_id)
@@ -484,12 +489,12 @@ def main():
         timeout = max(1.0, float(args.timeout or 1.0))
 
         print_header("来源缓存候选")
-        print("参与核对的 Sub2API 渠道数: %d" % source_channels)
+        print("参与核对的可联动上游渠道数: %d" % source_channels)
         print("完整 Key: %d；有效分组倍率候选: %d" % (source_stats["full_key"], source_stats["candidate"]))
         print("URL+Key 候选配对数: %d" % len(source_pairs_set))
         print("候选 Key 中倍率冲突数: %d" % sum(1 for values in source_key_ratios.values() if len(values) > 1))
 
-        print_header("Sub2API 导出凭据读取")
+        print_header("渠道池 API Key 凭据读取")
         if args.account_id is not None:
             print("目标账号: #%d（总 API Key 账号缓存 %d 个）" % (args.account_id, len(all_account_ids)))
         print("待读取的 API Key 账号数: %d" % len(account_ids))
@@ -549,7 +554,7 @@ def main():
             target_linked = target_id in linked
             print("策略中已有有效联动倍率（全局）: %d" % len(linked))
             print("目标账号已有联动倍率: %s" % ("是" if target_linked else "否"))
-            print("目标账号 URL 是否出现在任一 Sub2API 渠道: %s" % (
+            print("目标账号 URL 是否出现在任一可联动上游渠道: %s" % (
                 "是" if target_presence.get("url") else "否"
             ))
             print("目标账号 Key 是否出现在有效候选中: %s" % (

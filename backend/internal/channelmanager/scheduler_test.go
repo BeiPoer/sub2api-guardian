@@ -68,8 +68,11 @@ func TestTokenMultipliersForLinkUsesCompleteKeysAndUserRates(t *testing.T) {
 			t.Fatalf("失配令牌 %q 不应参与联动: %#v", key, got)
 		}
 	}
-	if linked := tokenMultipliersForLink(groups, tokens, store.UpstreamChannelNewAPI); len(linked) != 0 {
-		t.Fatalf("new-api 不应参与 Sub2API 联动: %#v", linked)
+	if linked := tokenMultipliersForLink(groups, tokens, store.UpstreamChannelNewAPI); linked["key-pro"] != 0.12 || linked["key-basic"] != 0.8 {
+		t.Fatalf("new-api 令牌倍率应参与联动: %#v", linked)
+	}
+	if linked := tokenMultipliersForLink(groups, tokens, store.UpstreamChannelOther); len(linked) != 0 {
+		t.Fatalf("其它类型渠道不应参与联动: %#v", linked)
 	}
 }
 

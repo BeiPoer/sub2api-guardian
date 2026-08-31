@@ -134,7 +134,7 @@ func TestSyncNewAPIQuotaAndTokenModels(t *testing.T) {
 		case "/api/user/self/groups":
 			data = map[string]any{"default": map[string]any{"ratio": 1}}
 		case "/api/token/":
-			data = map[string]any{"items": []any{map[string]any{"id": 1, "name": "limited", "key": "token-body"}}, "total": 1}
+			data = map[string]any{"items": []any{map[string]any{"id": 1, "name": "limited", "key": "token-body", "group": "default"}}, "total": 1}
 		case "/api/token/1":
 			data = map[string]any{"id": 1, "name": "limited", "model_limits_enabled": true, "model_limits": "gpt-4o,claude-3-5"}
 		default:
@@ -147,6 +147,14 @@ func TestSyncNewAPIQuotaAndTokenModels(t *testing.T) {
 	defer server.Close()
 
 	manager, st := testManager(t)
+	var linked map[string]float64
+	manager.SetMultiplierLinker(func(_ context.Context, channel store.UpstreamChannel, ratios map[string]float64) error {
+		if channel.Type != store.UpstreamChannelNewAPI {
+			t.Fatalf("new-api 联动回调收到错误渠道类型: %s", channel.Type)
+		}
+		linked = ratios
+		return nil
+	})
 	channel, _ := st.CreateUpstreamChannel(store.UpstreamChannelInput{
 		Name: "new", Type: store.UpstreamChannelNewAPI, BaseURL: server.URL,
 		NewAPIAccessToken: "system-token", NewAPIUserID: "9",
@@ -162,6 +170,9 @@ func TestSyncNewAPIQuotaAndTokenModels(t *testing.T) {
 	}
 	if len(tokens) != 1 || token == nil || stringValue(token["key"]) != "sk-token-body" {
 		t.Fatalf("new-api 令牌缓存未补 sk- 前缀: %#v", overview.Tokens)
+	}
+	if linked["sk-token-body"] != 1 {
+		t.Fatalf("new-api 令牌倍率未进入联动候选: %#v", linked)
 	}
 	if overview.LatestSnapshot == nil || overview.LatestSnapshot.Balance != 14 || overview.LatestSnapshot.UsedBalance == nil || math.Abs(*overview.LatestSnapshot.UsedBalance-1.4) > 1e-9 {
 		t.Fatalf("额度换算异常: %+v", overview.LatestSnapshot)

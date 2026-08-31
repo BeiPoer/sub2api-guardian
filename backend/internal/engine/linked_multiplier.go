@@ -29,12 +29,15 @@ func (e *Engine) SyncLinkedMultipliers(
 	channel store.UpstreamChannel,
 	tokenMultipliers map[string]float64,
 ) error {
-	if channel.Type != store.UpstreamChannelSub2API || len(tokenMultipliers) == 0 {
+	if !supportsLinkedUpstreamType(channel.Type) || len(tokenMultipliers) == 0 {
 		return nil
 	}
 	validTokenMultipliers := make(map[string]float64, len(tokenMultipliers))
 	for key, ratio := range tokenMultipliers {
 		key = strings.TrimSpace(key)
+		if channel.Type == store.UpstreamChannelNewAPI && key != "" && !strings.HasPrefix(key, "sk-") {
+			key = "sk-" + key
+		}
 		if key == "" || strings.Contains(key, "*") || !validLinkedMultiplier(ratio) {
 			continue
 		}
@@ -150,6 +153,10 @@ func (e *Engine) SyncLinkedMultipliers(
 		e.fireNotify()
 	}
 	return nil
+}
+
+func supportsLinkedUpstreamType(channelType store.UpstreamChannelType) bool {
+	return channelType == store.UpstreamChannelSub2API || channelType == store.UpstreamChannelNewAPI
 }
 
 // linkedCredentials 复用短期批量凭据快照，避免每个上游渠道都重复读取

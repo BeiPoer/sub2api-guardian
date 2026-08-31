@@ -211,7 +211,7 @@ func (m *Manager) syncLocked(ctx context.Context, channelID int64) error {
 	if err := m.store.MarkUpstreamChannelSynced(channelID); err != nil {
 		return err
 	}
-	if channel.Type == store.UpstreamChannelSub2API {
+	if channel.Type == store.UpstreamChannelSub2API || channel.Type == store.UpstreamChannelNewAPI {
 		if linker := m.multiplierLinker(); linker != nil {
 			extraction := tokenMultiplierLinkCandidates(result.groups, result.tokens, channel.Type)
 			if extraction.conflicts > 0 {

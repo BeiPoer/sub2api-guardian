@@ -529,6 +529,30 @@ func TestSyncLinkedMultipliersMatchesCredentialsAndReplacesNameSuffix(t *testing
 	}
 }
 
+func TestSyncLinkedMultipliersSupportsNewAPI(t *testing.T) {
+	eng, st, fake := setupEngine(t)
+	if err := eng.RunOnce(context.Background()); err != nil {
+		t.Fatalf("初始化目录失败: %v", err)
+	}
+	conn, _ := st.Connection()
+	fake.setCredentials(101, map[string]any{
+		"api_key":  "sk-newapi-key",
+		"base_url": conn.BaseURL,
+	})
+	channel := store.UpstreamChannel{ID: 1, Type: store.UpstreamChannelNewAPI, BaseURL: conn.BaseURL}
+
+	if err := eng.SyncLinkedMultipliers(context.Background(), channel, map[string]float64{"newapi-key": 0.18}); err != nil {
+		t.Fatalf("new-api 倍率联动失败: %v", err)
+	}
+	p, err := st.Policy()
+	if err != nil || p.AccountLinkedMultipliers["101"] != 0.18 {
+		t.Fatalf("new-api 联动倍率未保存: %+v err=%v", p.AccountLinkedMultipliers, err)
+	}
+	if name, ok := fake.updateOf(101, "name"); !ok || name != "健康渠道【x0.18】" {
+		t.Fatalf("new-api 渠道名称写回异常: %v/%v", name, ok)
+	}
+}
+
 func TestSyncLinkedMultipliersKeepsLocalValueWhenNameWriteFails(t *testing.T) {
 	eng, st, fake := setupEngine(t)
 	if err := eng.RunOnce(context.Background()); err != nil {
