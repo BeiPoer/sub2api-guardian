@@ -64,6 +64,11 @@ def parse_args():
         default=10.0,
         help="单个导出请求超时秒数（默认 10）",
     )
+    parser.add_argument(
+        "--account-id",
+        type=int,
+        help="只检查指定的渠道池账号 ID（例如 35723）",
+    )
     return parser.parse_args()
 
 
@@ -469,6 +474,12 @@ def main():
                     if account_id > 0:
                         account_ids.append(account_id)
         account_ids = sorted(set(account_ids))
+        all_account_ids = list(account_ids)
+        if args.account_id is not None:
+            if args.account_id not in account_ids:
+                print("错误：账号 #%d 不在 Guardian 的账号缓存中。" % args.account_id, file=sys.stderr)
+                return 2
+            account_ids = [args.account_id]
         worker_count = max(1, min(int(args.workers or 1), 16, len(account_ids) or 1))
         timeout = max(1.0, float(args.timeout or 1.0))
 
@@ -479,6 +490,8 @@ def main():
         print("候选 Key 中倍率冲突数: %d" % sum(1 for values in source_key_ratios.values() if len(values) > 1))
 
         print_header("Sub2API 导出凭据读取")
+        if args.account_id is not None:
+            print("目标账号: #%d（总 API Key 账号缓存 %d 个）" % (args.account_id, len(all_account_ids)))
         print("待读取的 API Key 账号数: %d" % len(account_ids))
         print("并发数: %d；单请求超时: %.1fs" % (worker_count, timeout))
         if not account_ids:
@@ -545,6 +558,18 @@ def main():
                         flags.append("状态=" + status)
                     channels.append("#%d(%s)" % (channel_id, "、".join(flags) or "可触发"))
                 print("  账号#%s <- %s" % (account_id, ", ".join(channels) or "来源渠道未找到"))
+        if args.account_id is not None and table_exists(db, "events"):
+            event_rows = db.execute(
+                "SELECT action, COUNT(*) AS count, MAX(created_at) AS last_at "
+                "FROM events WHERE account_id=? AND action LIKE ? GROUP BY action ORDER BY last_at DESC",
+                (args.account_id, "upstream_multiplier_link%"),
+            ).fetchall()
+            print_header("目标账号联动事件")
+            if event_rows:
+                for row in event_rows:
+                    print("%s: %d 条，最近 %s" % (text(row["action"]), row["count"], row["last_at"] or "未记录"))
+            else:
+                print("没有找到该账号的 upstream_multiplier_link* 事件。")
         print("说明：凭据只在本进程内比较；本脚本不会输出、序列化或写入 URL、Key。")
         print("检查时间: %s" % dt.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z"))
         return 0
