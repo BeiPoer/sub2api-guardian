@@ -6,8 +6,6 @@ event details. It only reports counts, timestamps, IDs, and safe error messages.
 It uses Python's standard library only.
 """
 
-from __future__ import annotations
-
 import argparse
 import datetime as dt
 import json
@@ -17,7 +15,6 @@ import re
 import sqlite3
 import sys
 from collections import Counter, defaultdict
-from typing import Any, Iterable
 
 
 KEY_FIELDS = ("key", "Key", "api_key", "apiKey", "token")
@@ -62,7 +59,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def choose_db(explicit: str | None) -> str:
+def choose_db(explicit=None):
     if explicit:
         return os.path.abspath(explicit)
     candidates = (
@@ -77,7 +74,7 @@ def choose_db(explicit: str | None) -> str:
     return os.path.abspath(candidates[0])
 
 
-def open_readonly(path: str) -> sqlite3.Connection:
+def open_readonly(path):
     uri = "file:" + path.replace("\\", "/") + "?mode=ro"
     connection = sqlite3.connect(uri, uri=True, timeout=3)
     connection.row_factory = sqlite3.Row
@@ -85,14 +82,14 @@ def open_readonly(path: str) -> sqlite3.Connection:
     return connection
 
 
-def table_exists(db: sqlite3.Connection, name: str) -> bool:
+def table_exists(db, name):
     row = db.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
     ).fetchone()
     return row is not None
 
 
-def parse_json(raw: Any, default: Any) -> Any:
+def parse_json(raw, default):
     if raw is None:
         return default
     try:
@@ -101,11 +98,11 @@ def parse_json(raw: Any, default: Any) -> Any:
         return default
 
 
-def as_object(value: Any) -> dict[str, Any] | None:
+def as_object(value):
     return value if isinstance(value, dict) else None
 
 
-def collection(value: Any) -> list[Any]:
+def collection(value):
     if isinstance(value, list):
         return value
     if not isinstance(value, dict):
@@ -116,7 +113,7 @@ def collection(value: Any) -> list[Any]:
     return list(value.values())
 
 
-def text(value: Any) -> str:
+def text(value):
     if value is None:
         return ""
     if isinstance(value, bool):
@@ -124,7 +121,7 @@ def text(value: Any) -> str:
     return str(value).strip()
 
 
-def finite_number(value: Any) -> float | None:
+def finite_number(value):
     if value is None or isinstance(value, bool):
         return None
     try:
@@ -134,12 +131,12 @@ def finite_number(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
-def positive_number(value: Any) -> float | None:
+def positive_number(value):
     number = finite_number(value)
     return number if number is not None and number > 0 else None
 
 
-def first(record: dict[str, Any] | None, fields: Iterable[str]) -> Any:
+def first(record, fields):
     if not record:
         return None
     for field in fields:
@@ -148,7 +145,7 @@ def first(record: dict[str, Any] | None, fields: Iterable[str]) -> Any:
     return None
 
 
-def key_value(token: dict[str, Any]) -> tuple[str, str]:
+def key_value(token):
     for field in KEY_FIELDS:
         value = text(token.get(field))
         if value:
@@ -156,12 +153,12 @@ def key_value(token: dict[str, Any]) -> tuple[str, str]:
     return "", ""
 
 
-def identifiers(value: Any) -> set[str]:
+def identifiers(value):
     record = as_object(value)
     if record is None:
         value_text = text(value)
         return {value_text.lower()} if value_text else set()
-    result: set[str] = set()
+    result = set()
     fields = (
         "id",
         "ID",
@@ -192,8 +189,8 @@ def identifiers(value: Any) -> set[str]:
     return result
 
 
-def token_group_identifiers(token: dict[str, Any]) -> set[str]:
-    result: set[str] = set()
+def token_group_identifiers(token):
+    result = set()
     for field in GROUP_FIELDS:
         value = text(token.get(field))
         if value:
@@ -203,7 +200,7 @@ def token_group_identifiers(token: dict[str, Any]) -> set[str]:
     return result
 
 
-def ratio_from_fields(value: Any, fields: Iterable[str]) -> float | None:
+def ratio_from_fields(value, fields):
     record = as_object(value)
     if record is None:
         return None
@@ -214,7 +211,7 @@ def ratio_from_fields(value: Any, fields: Iterable[str]) -> float | None:
     return None
 
 
-def token_ratio(group: Any, token: dict[str, Any]) -> float | None:
+def token_ratio(group, token):
     embedded = first(token, EMBEDDED_GROUP_FIELDS)
     for candidate in (group, embedded, token):
         ratio = ratio_from_fields(candidate, EXPLICIT_RATIO_FIELDS)
@@ -230,7 +227,7 @@ def token_ratio(group: Any, token: dict[str, Any]) -> float | None:
     return None
 
 
-def parse_time(value: Any) -> dt.datetime | None:
+def parse_time(value):
     raw = text(value)
     if not raw:
         return None
@@ -243,12 +240,12 @@ def parse_time(value: Any) -> dt.datetime | None:
     return parsed.astimezone(dt.timezone.utc)
 
 
-def fmt_time(value: Any) -> str:
+def fmt_time(value):
     parsed = parse_time(value)
     return parsed.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z") if parsed else "未记录"
 
 
-def task_state(row: sqlite3.Row, now: dt.datetime) -> str:
+def task_state(row, now):
     if not row["enabled"]:
         return "关闭"
     last = parse_time(row["last_run_at"])
@@ -261,13 +258,12 @@ def task_state(row: sqlite3.Row, now: dt.datetime) -> str:
     return f"约 {interval - age:.1f} 分钟后到期"
 
 
-def analyze_tokens(groups_raw: Any, tokens_raw: Any) -> dict[str, Any]:
+def analyze_tokens(groups_raw, tokens_raw):
     groups = collection(groups_raw)
     tokens = collection(tokens_raw)
-    group_ids: list[set[str]] = [identifiers(group) for group in groups]
+    group_ids = [identifiers(group) for group in groups]
     full = masked = missing = with_group = valid_ratio = candidates = 0
-    complete_keys: list[str] = []
-    ratios_by_key: defaultdict[str, set[float]] = defaultdict(set)
+    ratios_by_key = defaultdict(set)
 
     for raw_token in tokens:
         token = as_object(raw_token)
@@ -281,7 +277,6 @@ def analyze_tokens(groups_raw: Any, tokens_raw: Any) -> dict[str, Any]:
             masked += 1
             continue
         full += 1
-        complete_keys.append(key)
         token_ids = token_group_identifiers(token)
         matched_group = None
         for index, ids in enumerate(group_ids):
@@ -359,7 +354,7 @@ def main() -> int:
         print(f"名称包含【x的数量: {suffix_count}")
         print("账号类型: " + ", ".join(f"{kind}={count}" for kind, count in account_types.items()))
 
-        linked_ids: set[str] = set()
+        linked_ids = set()
         policy_row = db.execute("SELECT value FROM meta WHERE key='policy_global'").fetchone() if table_exists(db, "meta") else None
         if policy_row:
             policy = parse_json(policy_row["value"], {})
@@ -383,7 +378,7 @@ def main() -> int:
             "SELECT id, channel_id, type, enabled, interval_minutes, last_run_at "
             "FROM upstream_automation_tasks ORDER BY channel_id, id"
         ).fetchall() if table_exists(db, "upstream_automation_tasks") else []
-        tasks_by_channel: defaultdict[int, list[sqlite3.Row]] = defaultdict(list)
+        tasks_by_channel = defaultdict(list)
         for task in task_rows:
             tasks_by_channel[int(task["channel_id"])].append(task)
 
@@ -391,7 +386,7 @@ def main() -> int:
             "SELECT channel_id, cache_key, normalized_json, synced_at "
             "FROM upstream_channel_cache WHERE cache_key IN ('groups','tokens')"
         ).fetchall() if table_exists(db, "upstream_channel_cache") else []
-        caches: dict[tuple[int, str], sqlite3.Row] = {
+        caches = {
             (int(row["channel_id"]), text(row["cache_key"])): row for row in cache_rows
         }
 
