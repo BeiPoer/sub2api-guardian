@@ -399,14 +399,28 @@ def main():
             return 2
 
         source_pairs_set = set()
+        source_pair_channels = defaultdict(set)
         source_key_urls = defaultdict(set)
         source_key_ratios = defaultdict(set)
         source_urls = set()
         source_stats = Counter()
         source_channels = 0
+        channel_info = {}
+        enabled_group_tasks = defaultdict(bool)
+        if table_exists(db, "upstream_automation_tasks"):
+            task_rows = db.execute(
+                "SELECT channel_id, type, enabled FROM upstream_automation_tasks"
+            ).fetchall()
+            for task in task_rows:
+                if text(task["type"]) in {
+                    "group_ratio_changed",
+                    "group_added",
+                    "group_removed",
+                } and bool(task["enabled"]):
+                    enabled_group_tasks[int(task["channel_id"])] = True
         if table_exists(db, "upstream_channels") and table_exists(db, "upstream_channel_cache"):
             channels = db.execute(
-                "SELECT id, type, base_url FROM upstream_channels ORDER BY id"
+                "SELECT id, type, base_url, ignored, status FROM upstream_channels ORDER BY id"
             ).fetchall()
             caches = db.execute(
                 "SELECT channel_id, cache_key, normalized_json "
@@ -417,15 +431,22 @@ def main():
                 if text(channel["type"]).lower() != "sub2api":
                     continue
                 source_channels += 1
+                channel_id = int(channel["id"])
+                channel_info[channel_id] = {
+                    "ignored": bool(channel["ignored"]),
+                    "status": text(channel["status"]) or "-",
+                }
                 channel_url = normalize_url(channel["base_url"])
                 if channel_url is not None:
                     source_urls.add(channel_url)
-                groups_row = cache_map.get((int(channel["id"]), "groups"))
-                tokens_row = cache_map.get((int(channel["id"]), "tokens"))
+                groups_row = cache_map.get((channel_id, "groups"))
+                tokens_row = cache_map.get((channel_id, "tokens"))
                 groups = parse_json(groups_row["normalized_json"], []) if groups_row else []
                 tokens = parse_json(tokens_row["normalized_json"], []) if tokens_row else []
                 pairs, key_urls, key_ratios, stats = source_pairs(groups, tokens, channel_url)
                 source_pairs_set.update(pairs)
+                for pair in pairs:
+                    source_pair_channels[pair].add(channel_id)
                 for key, urls in key_urls.items():
                     source_key_urls[key].update(urls)
                 for key, ratios in key_ratios.items():
@@ -466,6 +487,7 @@ def main():
 
         statuses = Counter()
         exact_ids = set()
+        exact_source_channels = defaultdict(set)
         key_only_ids = set()
         url_only_ids = set()
         neither_ids = set()
@@ -482,6 +504,9 @@ def main():
                 account_url, api_key = credentials
                 if (account_url, api_key) in source_pairs_set:
                     exact_ids.add(str(account_id))
+                    exact_source_channels[str(account_id)].update(
+                        source_pair_channels.get((account_url, api_key), set())
+                    )
                 elif api_key in source_key_urls:
                     key_only_ids.add(str(account_id))
                 elif account_url in source_urls:
@@ -503,6 +528,23 @@ def main():
         print("策略中已有有效联动倍率: %d" % len(linked))
         print("精确匹配但策略尚未记录: %d" % len(exact_ids - linked))
         print("策略已有联动但本次未精确匹配: %d" % len(linked - exact_ids))
+        missing_ids = sorted(exact_ids - linked, key=lambda value: int(value))
+        if missing_ids:
+            print("尚未写入策略的精确账号（仅显示 ID 和来源渠道状态）:")
+            for account_id in missing_ids:
+                channels = []
+                for channel_id in sorted(exact_source_channels.get(account_id, set())):
+                    info = channel_info.get(channel_id, {})
+                    flags = []
+                    if info.get("ignored"):
+                        flags.append("已忽略")
+                    if not enabled_group_tasks.get(channel_id):
+                        flags.append("无启用分组任务")
+                    status = info.get("status", "-")
+                    if status != "active":
+                        flags.append("状态=" + status)
+                    channels.append("#%d(%s)" % (channel_id, "、".join(flags) or "可触发"))
+                print("  账号#%s <- %s" % (account_id, ", ".join(channels) or "来源渠道未找到"))
         print("说明：凭据只在本进程内比较；本脚本不会输出、序列化或写入 URL、Key。")
         print("检查时间: %s" % dt.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z"))
         return 0
