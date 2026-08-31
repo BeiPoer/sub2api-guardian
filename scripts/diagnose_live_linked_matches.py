@@ -504,6 +504,7 @@ def main():
         key_only_ids = set()
         url_only_ids = set()
         neither_ids = set()
+        target_presence = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as pool:
             futures = [
                 pool.submit(fetch_export, base_url, admin_key, account_id, timeout)
@@ -515,6 +516,11 @@ def main():
                 if status != "ok" or credentials is None:
                     continue
                 account_url, api_key = credentials
+                if args.account_id is not None:
+                    target_presence = {
+                        "url": account_url in source_urls,
+                        "key": api_key in source_key_urls,
+                    }
                 if (account_url, api_key) in source_pairs_set:
                     exact_ids.add(str(account_id))
                     exact_source_channels[str(account_id)].update(
@@ -538,9 +544,27 @@ def main():
         print("仅 Key 相同、URL 不同: %d" % len(key_only_ids))
         print("仅 URL 相同、Key 不同: %d" % len(url_only_ids))
         print("URL 和 Key 都不同或无候选: %d" % len(neither_ids))
-        print("策略中已有有效联动倍率: %d" % len(linked))
-        print("精确匹配但策略尚未记录: %d" % len(exact_ids - linked))
-        print("策略已有联动但本次未精确匹配: %d" % len(linked - exact_ids))
+        if args.account_id is not None:
+            target_id = str(args.account_id)
+            target_linked = target_id in linked
+            print("策略中已有有效联动倍率（全局）: %d" % len(linked))
+            print("目标账号已有联动倍率: %s" % ("是" if target_linked else "否"))
+            print("目标账号 URL 是否出现在任一 Sub2API 渠道: %s" % (
+                "是" if target_presence.get("url") else "否"
+            ))
+            print("目标账号 Key 是否出现在有效候选中: %s" % (
+                "是" if target_presence.get("key") else "否"
+            ))
+            print("目标账号精确匹配但策略尚未记录: %s" % (
+                "是" if target_id in exact_ids and not target_linked else "否"
+            ))
+            print("目标账号已有联动但本次未精确匹配: %s" % (
+                "是" if target_linked and target_id not in exact_ids else "否"
+            ))
+        else:
+            print("策略中已有有效联动倍率: %d" % len(linked))
+            print("精确匹配但策略尚未记录: %d" % len(exact_ids - linked))
+            print("策略已有联动但本次未精确匹配: %d" % len(linked - exact_ids))
         missing_ids = sorted(exact_ids - linked, key=lambda value: int(value))
         if missing_ids:
             print("尚未写入策略的精确账号（仅显示 ID 和来源渠道状态）:")
