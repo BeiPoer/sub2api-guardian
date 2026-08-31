@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"sub2api-guardian/backend/internal/store"
@@ -620,7 +621,7 @@ func (m *Manager) fetchNewAPITokens(ctx context.Context, channel store.UpstreamC
 			break
 		}
 	}
-	return normalizeNewAPITokens(all), rawPages, nil
+	return m.restoreNewAPITokenKeys(ctx, channel, normalizeNewAPITokens(all)), rawPages, nil
 }
 
 func normalizeNewAPITokens(tokens []any) []any {
@@ -634,15 +635,97 @@ func normalizeNewAPITokens(tokens []any) []any {
 		copy := cloneObject(record)
 		for _, field := range []string{"key", "Key", "api_key", "apiKey", "token"} {
 			value := strings.TrimSpace(stringValue(copy[field]))
-			if value == "" || strings.HasPrefix(value, "sk-") {
+			if value == "" {
 				continue
 			}
-			copy[field] = "sk-" + value
+			copy[field] = normalizeNewAPITokenKey(value)
 			break
 		}
 		result = append(result, copy)
 	}
 	return result
+}
+
+// restoreNewAPITokenKeys 将 New API 令牌列表中被上游脱敏的 Key 恢复为完整值。
+// 列表接口通常返回类似 sk-xxxx********xxxx 的值，完整 Key 需要通过令牌详情接口读取。
+// 读取失败时保留原值，避免单个令牌影响整个渠道同步。
+func (m *Manager) restoreNewAPITokenKeys(ctx context.Context, channel store.UpstreamChannel, tokens []any) []any {
+	result := make([]any, len(tokens))
+	for index, item := range tokens {
+		if record, ok := asObject(item); ok {
+			result[index] = cloneObject(record)
+		} else {
+			result[index] = item
+		}
+	}
+	indexes := make([]int, 0)
+	for index, item := range result {
+		record, ok := asObject(item)
+		if !ok || tokenKey(record) != "" {
+			continue
+		}
+		if _, ok := tokenIDValue(record); ok {
+			indexes = append(indexes, index)
+		}
+	}
+	if len(indexes) == 0 {
+		return result
+	}
+
+	workerCount := min(8, len(indexes))
+	jobs := make(chan int, len(indexes))
+	for _, index := range indexes {
+		jobs <- index
+	}
+	close(jobs)
+	var workers sync.WaitGroup
+	for worker := 0; worker < workerCount; worker++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for index := range jobs {
+				record, ok := asObject(result[index])
+				if !ok {
+					continue
+				}
+				tokenID, _ := tokenIDValue(record)
+				payload, err := m.newAPIRequest(ctx, channel, fmt.Sprintf("/token/%d/key", tokenID), http.MethodPost, nil)
+				if err != nil {
+					continue
+				}
+				key := tokenKeyValue(payload)
+				if key == "" {
+					continue
+				}
+				updated := cloneObject(record)
+				field := tokenKeyField(record)
+				if field == "" {
+					field = "key"
+				}
+				updated[field] = normalizeNewAPITokenKey(key)
+				result[index] = updated
+			}
+		}()
+	}
+	workers.Wait()
+	return result
+}
+
+func normalizeNewAPITokenKey(value string) string {
+	value = strings.TrimSpace(value)
+	if value != "" && !strings.HasPrefix(value, "sk-") {
+		return "sk-" + value
+	}
+	return value
+}
+
+func tokenKeyField(token map[string]any) string {
+	for _, field := range []string{"key", "Key", "api_key", "apiKey", "token"} {
+		if strings.TrimSpace(stringValue(token[field])) != "" {
+			return field
+		}
+	}
+	return ""
 }
 
 func (m *Manager) LoginURL(ctx context.Context, channelID int64) (string, error) {

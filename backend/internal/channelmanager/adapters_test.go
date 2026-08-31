@@ -134,7 +134,13 @@ func TestSyncNewAPIQuotaAndTokenModels(t *testing.T) {
 		case "/api/user/self/groups":
 			data = map[string]any{"default": map[string]any{"ratio": 1}}
 		case "/api/token/":
-			data = map[string]any{"items": []any{map[string]any{"id": 1, "name": "limited", "key": "token-body", "group": "default"}}, "total": 1}
+			data = map[string]any{"items": []any{map[string]any{"id": 1, "name": "limited", "key": "sk-RhZA**********sAPV", "group": "default"}}, "total": 1}
+		case "/api/token/1/key":
+			if r.Method != http.MethodPost {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			data = "token-body"
 		case "/api/token/1":
 			data = map[string]any{"id": 1, "name": "limited", "model_limits_enabled": true, "model_limits": "gpt-4o,claude-3-5"}
 		default:
