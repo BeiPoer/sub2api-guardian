@@ -32,13 +32,23 @@ func (e *Engine) SyncLinkedMultipliers(
 	if !supportsLinkedUpstreamType(channel.Type) || len(tokenMultipliers) == 0 {
 		return nil
 	}
+	rechargeRatio := channel.RechargeRatio
+	if !validLinkedMultiplier(rechargeRatio) {
+		rechargeRatio = 1
+	}
 	validTokenMultipliers := make(map[string]float64, len(tokenMultipliers))
-	for key, ratio := range tokenMultipliers {
+	for key, upstreamRatio := range tokenMultipliers {
 		key = strings.TrimSpace(key)
 		if channel.Type == store.UpstreamChannelNewAPI && key != "" && !strings.HasPrefix(key, "sk-") {
 			key = "sk-" + key
 		}
-		if key == "" || strings.Contains(key, "*") || !validLinkedMultiplier(ratio) {
+		if key == "" || strings.Contains(key, "*") || !validLinkedMultiplier(upstreamRatio) {
+			continue
+		}
+		// 渠道管理的充值比例是 1:x；上游令牌倍率需换算成 Guardian
+		// 调度口径，避免把“充值 1 元到账 x 元”重复当成成本倍率。
+		ratio := upstreamRatio / rechargeRatio
+		if !validLinkedMultiplier(ratio) {
 			continue
 		}
 		validTokenMultipliers[key] = ratio

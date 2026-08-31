@@ -488,7 +488,7 @@ func setupEngine(t *testing.T) (*Engine, *store.Store, *fakeSub2API) {
 	return New(st, client), st, fake
 }
 
-func TestSyncLinkedMultipliersMatchesCredentialsAndReplacesNameSuffix(t *testing.T) {
+func TestSyncLinkedMultipliersAppliesRechargeRatioAndReplacesNameSuffix(t *testing.T) {
 	eng, st, fake := setupEngine(t)
 	if err := eng.RunOnce(context.Background()); err != nil {
 		t.Fatalf("初始化目录失败: %v", err)
@@ -501,27 +501,27 @@ func TestSyncLinkedMultipliersMatchesCredentialsAndReplacesNameSuffix(t *testing
 		"api_key":  "linked-key",
 		"base_url": conn.BaseURL + "/",
 	})
-	channel := store.UpstreamChannel{ID: 1, Type: store.UpstreamChannelSub2API, BaseURL: conn.BaseURL}
+	channel := store.UpstreamChannel{ID: 1, Type: store.UpstreamChannelSub2API, BaseURL: conn.BaseURL, RechargeRatio: 10}
 
-	if err := eng.SyncLinkedMultipliers(context.Background(), channel, map[string]float64{"linked-key": 0.12}); err != nil {
+	if err := eng.SyncLinkedMultipliers(context.Background(), channel, map[string]float64{"linked-key": 0.15}); err != nil {
 		t.Fatalf("倍率联动失败: %v", err)
 	}
 	p, err := st.Policy()
-	if err != nil || p.AccountLinkedMultipliers["101"] != 0.12 {
+	if err != nil || p.AccountLinkedMultipliers["101"] != 0.015 {
 		t.Fatalf("联动倍率未保存: %+v err=%v", p.AccountLinkedMultipliers, err)
 	}
-	if name, ok := fake.updateOf(101, "name"); !ok || name != "健康渠道【x0.12】" {
+	if name, ok := fake.updateOf(101, "name"); !ok || name != "健康渠道【x0.015】" {
 		t.Fatalf("渠道名称写回异常: %v/%v", name, ok)
 	}
 	account, err := st.Account(101)
-	if err != nil || account.Name != "健康渠道【x0.12】" {
+	if err != nil || account.Name != "健康渠道【x0.015】" {
 		t.Fatalf("本地渠道缓存异常: %+v err=%v", account, err)
 	}
 	if fake.nameUpdateCount(101) != 1 {
 		t.Fatalf("首次同步应只写一次名称: %d", fake.nameUpdateCount(101))
 	}
 
-	if err := eng.SyncLinkedMultipliers(context.Background(), channel, map[string]float64{"linked-key": 0.12}); err != nil {
+	if err := eng.SyncLinkedMultipliers(context.Background(), channel, map[string]float64{"linked-key": 0.15}); err != nil {
 		t.Fatalf("重复倍率联动失败: %v", err)
 	}
 	if fake.nameUpdateCount(101) != 1 {
