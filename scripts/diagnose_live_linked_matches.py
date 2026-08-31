@@ -258,6 +258,7 @@ def source_pairs(groups_raw, tokens_raw, source_url, channel_type):
     pairs = set()
     key_urls = defaultdict(set)
     key_ratios = defaultdict(set)
+    complete_keys = set()
     stats = Counter()
     for raw_token in collection(tokens_raw):
         token = as_object(raw_token)
@@ -270,6 +271,7 @@ def source_pairs(groups_raw, tokens_raw, source_url, channel_type):
         if channel_type == "newapi" and not key.startswith("sk-"):
             key = "sk-" + key
         stats["full_key"] += 1
+        complete_keys.add(key)
         token_ids = token_group_identifiers(token)
         matched_group = None
         for index, ids in enumerate(group_ids):
@@ -294,7 +296,7 @@ def source_pairs(groups_raw, tokens_raw, source_url, channel_type):
         pairs.add(pair)
         key_urls[key].add(source_url)
         key_ratios[key].add(ratio)
-    return pairs, key_urls, key_ratios, stats
+    return pairs, key_urls, key_ratios, stats, complete_keys
 
 
 def connection_settings(db):
@@ -409,7 +411,11 @@ def main():
         source_pair_channels = defaultdict(set)
         source_key_urls = defaultdict(set)
         source_key_ratios = defaultdict(set)
+        source_complete_keys = set()
+        source_complete_key_channels = defaultdict(set)
         source_urls = set()
+        source_url_channels = defaultdict(set)
+        source_channel_stats = {}
         source_stats = Counter()
         source_channels = 0
         channel_info = {}
@@ -446,14 +452,19 @@ def main():
                 channel_url = normalize_url(channel["base_url"])
                 if channel_url is not None:
                     source_urls.add(channel_url)
+                    source_url_channels[channel_url].add(channel_id)
                 groups_row = cache_map.get((channel_id, "groups"))
                 tokens_row = cache_map.get((channel_id, "tokens"))
                 groups = parse_json(groups_row["normalized_json"], []) if groups_row else []
                 tokens = parse_json(tokens_row["normalized_json"], []) if tokens_row else []
                 channel_type = text(channel["type"]).lower()
-                pairs, key_urls, key_ratios, stats = source_pairs(
+                pairs, key_urls, key_ratios, stats, complete_keys = source_pairs(
                     groups, tokens, channel_url, channel_type
                 )
+                source_complete_keys.update(complete_keys)
+                for key in complete_keys:
+                    source_complete_key_channels[key].add(channel_id)
+                source_channel_stats[channel_id] = stats
                 source_pairs_set.update(pairs)
                 for pair in pairs:
                     source_pair_channels[pair].add(channel_id)
@@ -510,6 +521,7 @@ def main():
         url_only_ids = set()
         neither_ids = set()
         target_presence = {}
+        target_credentials = None
         with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as pool:
             futures = [
                 pool.submit(fetch_export, base_url, admin_key, account_id, timeout)
@@ -521,6 +533,8 @@ def main():
                 if status != "ok" or credentials is None:
                     continue
                 account_url, api_key = credentials
+                if args.account_id is not None:
+                    target_credentials = credentials
                 if args.account_id is not None:
                     target_presence = {
                         "url": account_url in source_urls,
@@ -557,6 +571,9 @@ def main():
             print("目标账号 URL 是否出现在任一可联动上游渠道: %s" % (
                 "是" if target_presence.get("url") else "否"
             ))
+            print("目标账号 Key 是否出现在完整令牌缓存中: %s" % (
+                "是" if target_credentials and target_credentials[1] in source_complete_keys else "否"
+            ))
             print("目标账号 Key 是否出现在有效候选中: %s" % (
                 "是" if target_presence.get("key") else "否"
             ))
@@ -566,6 +583,36 @@ def main():
             print("目标账号已有联动但本次未精确匹配: %s" % (
                 "是" if target_linked and target_id not in exact_ids else "否"
             ))
+            if target_credentials:
+                target_url, target_key = target_credentials
+                target_source_channels = sorted(source_url_channels.get(target_url, set()))
+                target_key_channels = source_complete_key_channels.get(target_key, set())
+                if target_source_channels:
+                    print("目标账号 URL 对应的来源渠道（仅显示 ID 和缓存统计）:")
+                    for channel_id in target_source_channels:
+                        info = channel_info.get(channel_id, {})
+                        stats = source_channel_stats.get(channel_id, {})
+                        flags = []
+                        if info.get("ignored"):
+                            flags.append("已忽略")
+                        if not enabled_group_tasks.get(channel_id):
+                            flags.append("无启用分组任务")
+                        status = info.get("status", "-")
+                        if status != "active":
+                            flags.append("状态=" + status)
+                        print(
+                            "  #%d(%s；完整Key=%d；有效候选=%d)"
+                            % (
+                                channel_id,
+                                "、".join(flags) or "可触发",
+                                stats.get("full_key", 0),
+                                stats.get("candidate", 0),
+                            )
+                        )
+                if target_key_channels:
+                    print("目标账号 Key 出现过的来源渠道 ID: %s" % ", ".join(
+                        "#%d" % channel_id for channel_id in sorted(target_key_channels)
+                    ))
         else:
             print("策略中已有有效联动倍率: %d" % len(linked))
             print("精确匹配但策略尚未记录: %d" % len(exact_ids - linked))
