@@ -14,7 +14,7 @@ import (
 func TestEvaluateTasks(t *testing.T) {
 	low := store.UpstreamAutomationTask{Type: store.UpstreamTaskLowBalance, Threshold: 10}
 	result := EvaluateBalanceTask(low, []store.UpstreamBalanceSnapshot{{ID: 1, Balance: 9, Unit: "USD"}}, "渠道A")
-	if !result.Triggered || !strings.Contains(result.Message, "低于或等于") {
+	if !result.Triggered || !strings.Contains(result.Message, "低于或等于") || strings.Contains(result.Message, "USD") {
 		t.Fatalf("低余额判断异常: %+v", result)
 	}
 
@@ -24,7 +24,7 @@ func TestEvaluateTasks(t *testing.T) {
 		{ID: 1, Balance: 20, Unit: "USD", CapturedAt: now.Add(-time.Hour).Format(time.RFC3339Nano)},
 		{ID: 2, Balance: 15, Unit: "USD", CapturedAt: now.Format(time.RFC3339Nano)},
 	}, "渠道A")
-	if !result.Triggered {
+	if !result.Triggered || strings.Contains(result.Message, "USD") {
 		t.Fatalf("消耗速度判断异常: %+v", result)
 	}
 

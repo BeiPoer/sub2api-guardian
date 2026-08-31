@@ -28,7 +28,7 @@ func EvaluateBalanceTask(task store.UpstreamAutomationTask, snapshots []store.Up
 		triggered := latest.Balance <= task.Threshold
 		message := channelName + " 当前余额未低于阈值"
 		if triggered {
-			message = fmt.Sprintf("%s 当前余额 %.4f %s，已低于或等于阈值 %.4f", channelName, latest.Balance, latest.Unit, task.Threshold)
+			message = fmt.Sprintf("%s 当前余额 %.2f，已低于或等于阈值 %.2f", channelName, latest.Balance, task.Threshold)
 		}
 		return EvaluationResult{Triggered: triggered, Message: message, Snapshot: latest}
 	}
@@ -61,8 +61,8 @@ func EvaluateBalanceTask(task store.UpstreamAutomationTask, snapshots []store.Up
 	triggered := hourlyRate >= task.Threshold
 	message := channelName + " 消耗速度未超过阈值"
 	if triggered {
-		message = fmt.Sprintf("%s 最近 %.0f 分钟消耗 %.4f %s，折算每小时 %.4f，超过阈值 %.4f",
-			channelName, elapsedMinutes, consumed, latest.Unit, hourlyRate, task.Threshold)
+		message = fmt.Sprintf("%s 最近 %.0f 分钟消耗 %.2f，折算每小时 %.2f，超过阈值 %.2f",
+			channelName, elapsedMinutes, consumed, hourlyRate, task.Threshold)
 	}
 	return EvaluationResult{Triggered: triggered, Message: message, Snapshot: map[string]any{
 		"old": oldest, "latest": latest, "consumed": consumed, "hourly_rate": hourlyRate,
