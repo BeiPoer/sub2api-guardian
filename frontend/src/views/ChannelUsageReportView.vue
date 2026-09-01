@@ -1,5 +1,5 @@
 <template>
-  <AppLayout title="渠道使用报告" subtitle="按主 Sub2API 连接汇总最近窗口的 usage，并在首 T 超标时通知企微">
+  <AppLayout title="渠道使用报告" subtitle="按报告源站汇总最近窗口的渠道用量，并在首 T 超标时通知企微">
     <div v-if="loading" class="card flex min-h-64 items-center justify-center gap-3 text-sm text-gray-500 dark:text-dark-400">
       <span class="h-4 w-4 animate-spin rounded-full border-2 border-primary-500 border-t-transparent" />
       正在加载渠道使用报告…
@@ -15,7 +15,7 @@
             </Badge>
           </div>
           <p class="mt-1 max-w-3xl text-sm leading-relaxed text-gray-500 dark:text-dark-400">
-            每次执行读取主 Sub2API 的全部 usage records，按分组和账号汇总；只有全站首 T 高延迟数超过触发条数才发送普通文本告警。
+            每次执行从当前报告源站读取消费记录，按分组和渠道账号汇总；只有全站首 T 高延迟数超过触发条数才发送普通文本告警。
           </p>
         </div>
         <div class="flex flex-wrap items-center gap-2">
@@ -139,23 +139,35 @@
       </form>
 
       <section class="card">
-        <div class="card-header">
-          <h2 class="text-base font-semibold text-gray-900 dark:text-white">主 Sub2API 连接</h2>
-          <p class="mt-0.5 text-sm text-gray-500 dark:text-dark-400">报告跟随项目当前主连接，连接设置变更后下一次报告请求自动使用新配置。</p>
-        </div>
-        <div class="grid grid-cols-1 gap-4 p-6 sm:grid-cols-2">
-          <div class="rounded-xl border border-gray-100 bg-gray-50/60 p-4 dark:border-dark-700 dark:bg-dark-900/40">
-            <p class="text-xs text-gray-500 dark:text-dark-400">连接地址</p>
-            <p class="mt-1 break-all text-sm font-medium text-gray-900 dark:text-white">{{ connection.base_url || '未配置' }}</p>
+        <div class="card-header flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 class="text-base font-semibold text-gray-900 dark:text-white">报告源站</h2>
+            <p class="mt-0.5 text-sm text-gray-500 dark:text-dark-400">每次执行开始时解析当前共享源站，配置变更只影响后续运行。</p>
           </div>
-          <div class="rounded-xl border border-gray-100 bg-gray-50/60 p-4 dark:border-dark-700 dark:bg-dark-900/40">
+          <RouterLink to="/reports/source" class="btn btn-secondary btn-sm">
+            <Icon name="globe" size="sm" />
+            源站配置
+          </RouterLink>
+        </div>
+        <div class="grid grid-cols-1 gap-4 p-6 sm:grid-cols-3">
+          <div class="rounded-lg border border-gray-100 bg-gray-50/60 p-4 dark:border-dark-700 dark:bg-dark-900/40">
+            <p class="text-xs text-gray-500 dark:text-dark-400">模式 / 类型</p>
+            <p class="mt-1 text-sm font-medium text-gray-900 dark:text-white">
+              {{ source.mode === 'global' ? '全局' : '自定义' }} / {{ sourceTypeLabel(source.type) }}
+            </p>
+          </div>
+          <div class="min-w-0 rounded-lg border border-gray-100 bg-gray-50/60 p-4 dark:border-dark-700 dark:bg-dark-900/40">
+            <p class="text-xs text-gray-500 dark:text-dark-400">连接地址</p>
+            <p class="mt-1 break-all text-sm font-medium text-gray-900 dark:text-white">{{ source.base_url || '未配置' }}</p>
+          </div>
+          <div class="rounded-lg border border-gray-100 bg-gray-50/60 p-4 dark:border-dark-700 dark:bg-dark-900/40">
             <p class="text-xs text-gray-500 dark:text-dark-400">配置状态</p>
             <div class="mt-1 flex items-center gap-2">
-              <Badge :tone="connection.configured ? 'success' : 'danger'" dot>
-                {{ connection.configured ? '已配置，可读取 usage' : '未完成，请先配置连接' }}
+              <Badge :tone="source.configured ? 'success' : 'danger'" dot>
+                {{ source.configured ? '已配置，可读取报告数据' : '未完成，请先配置源站' }}
               </Badge>
-              <RouterLink v-if="!connection.configured" to="/connection" class="text-xs text-primary-600 hover:underline dark:text-primary-300">
-                前往连接设置
+              <RouterLink v-if="!source.configured" to="/reports/source" class="text-xs text-primary-600 hover:underline dark:text-primary-300">
+                前往配置
               </RouterLink>
             </div>
           </div>
@@ -254,7 +266,7 @@
               </tr>
             </tbody>
           </table>
-          <p v-if="!selectedRun.summary?.length" class="p-6 text-center text-sm text-gray-500 dark:text-dark-400">本次窗口没有可统计的 usage records。</p>
+          <p v-if="!selectedRun.summary?.length" class="p-6 text-center text-sm text-gray-500 dark:text-dark-400">本次窗口没有可统计的消费记录。</p>
         </div>
       </template>
     </Modal>
@@ -320,7 +332,12 @@ const config = computed(() => view.value?.config ?? {
   trigger_count: form.value.trigger_count,
   last_run_at: '', last_status: 'never', last_error: '', next_run_at: ''
 })
-const connection = computed(() => view.value?.connection ?? { configured: false, base_url: '' })
+const source = computed(() => view.value?.source ?? {
+  mode: 'global' as const,
+  type: 'sub2api' as const,
+  configured: false,
+  base_url: ''
+})
 const latestRun = computed(() => view.value?.latest_run ?? runs.value[0] ?? null)
 const busy = computed(() => saving.value || running.value || refreshing.value)
 const nextRunLabel = computed(() => config.value.next_run_at ? formatTime(config.value.next_run_at) : '待启用')
@@ -443,5 +460,9 @@ function ratio(numerator: number, denominator: number) {
 function formatThreshold(seconds: number) {
   if (!Number.isFinite(seconds) || seconds <= 0) return '—'
   return `${seconds % 1 === 0 ? seconds.toFixed(0) : seconds.toFixed(3)} 秒`
+}
+
+function sourceTypeLabel(type: string) {
+  return type === 'newapi' ? 'New API' : 'Sub2API'
 }
 </script>

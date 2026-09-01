@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"sub2api-guardian/backend/internal/reports"
+	"sub2api-guardian/backend/internal/store"
 	"sub2api-guardian/backend/internal/upstream"
 )
 
@@ -78,6 +79,67 @@ func TestChannelUsageReportAPIRejectsInvalidConfig(t *testing.T) {
 	})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("非法运行间隔应返回 400: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestReportSourceAPIGetSavePreserveAndValidate(t *testing.T) {
+	handler, st := setupAPI(t, &fakeUpstream{groupCount: 1})
+
+	rec := doJSON(t, handler, http.MethodGet, "/api/reports/source", nil)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"mode":"global"`) ||
+		!strings.Contains(rec.Body.String(), `"effective_type":"sub2api"`) || !strings.Contains(rec.Body.String(), `"configured":true`) {
+		t.Fatalf("默认报告源站响应异常: %d %s", rec.Code, rec.Body.String())
+	}
+
+	rec = doJSON(t, handler, http.MethodPut, "/api/reports/source", map[string]any{
+		"mode": "custom", "source_type": "sub2api", "base_url": "https://custom.example.com/", "credential": "custom-secret",
+	})
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"base_url":"https://custom.example.com"`) ||
+		!strings.Contains(rec.Body.String(), `"has_credential":true`) || strings.Contains(rec.Body.String(), "custom-secret") || strings.Contains(rec.Body.String(), `"credential"`) {
+		t.Fatalf("保存源站响应异常或泄露凭据: %d %s", rec.Code, rec.Body.String())
+	}
+
+	rec = doJSON(t, handler, http.MethodPut, "/api/reports/source", map[string]any{
+		"mode": "custom", "source_type": "sub2api", "base_url": "https://custom-2.example.com", "credential": "",
+	})
+	settings, _, err := st.ScheduledReportSourceSettings()
+	if rec.Code != http.StatusOK || err != nil || settings.Credential != "custom-secret" {
+		t.Fatalf("同类型空凭据未保留: %d %s settings=%+v err=%v", rec.Code, rec.Body.String(), settings, err)
+	}
+
+	for _, payload := range []map[string]any{
+		{"mode": "custom", "source_type": "newapi", "base_url": "not-a-url", "credential": "token", "newapi_user_id": 1},
+		{"mode": "custom", "source_type": "newapi", "base_url": "https://new.example.com", "credential": "token", "newapi_user_id": 0},
+		{"mode": "custom", "source_type": "newapi", "base_url": "https://new.example.com", "credential": "", "newapi_user_id": 1},
+	} {
+		rec = doJSON(t, handler, http.MethodPut, "/api/reports/source", payload)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("非法源站配置应返回 400: payload=%+v code=%d body=%s", payload, rec.Code, rec.Body.String())
+		}
+	}
+
+	rec = doJSON(t, handler, http.MethodPut, "/api/reports/source", map[string]any{"mode": "global"})
+	settings, _, err = st.ScheduledReportSourceSettings()
+	if rec.Code != http.StatusOK || err != nil || settings.Mode != store.ScheduledReportSourceGlobal ||
+		settings.BaseURL != "https://custom-2.example.com" || settings.Credential != "custom-secret" {
+		t.Fatalf("全局模式未保留自定义配置: %d %s settings=%+v err=%v", rec.Code, rec.Body.String(), settings, err)
+	}
+}
+
+func TestReportRunWithIncompleteCustomSourceReturnsPrecondition(t *testing.T) {
+	handler, st := setupAPI(t, &fakeUpstream{groupCount: 1})
+	if _, err := st.SaveScheduledReportSourceSettings(store.ScheduledReportSourceSettings{
+		Mode: store.ScheduledReportSourceCustom, SourceType: store.ScheduledReportSourceNewAPI,
+		BaseURL: "https://new.example.com", Credential: "", NewAPIUserID: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec := doJSON(t, handler, http.MethodPost, "/api/reports/channel-usage/run", nil)
+	if rec.Code != http.StatusPreconditionFailed || !strings.Contains(rec.Body.String(), "报告源站未配置完整") {
+		t.Fatalf("未完整配置自定义源站应返回 412: %d %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "custom-secret") || strings.Contains(rec.Body.String(), "api-key") {
+		t.Fatalf("错误响应不应暴露凭据: %s", rec.Body.String())
 	}
 }
 

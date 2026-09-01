@@ -20,6 +20,7 @@ const (
 // 充值金额按币种分别保存，避免把不同币种直接相加。
 type DailyReportStats struct {
 	TotalActualCost float64            `json:"total_actual_cost"`
+	QuotaUnit       string             `json:"quota_unit"`
 	TotalTokens     int64              `json:"total_tokens"`
 	NewUsers        int                `json:"new_users"`
 	RechargeAmounts map[string]float64 `json:"recharge_amounts"`

@@ -1,5 +1,5 @@
 <template>
-  <AppLayout title="每日报告" subtitle="按配置的执行小时汇总当天 Sub2API 使用、注册和充值数据，并发送企微通知">
+  <AppLayout title="每日报告" subtitle="按配置的执行小时汇总报告源站当天的使用、注册和充值数据，并发送企微通知">
     <div v-if="loading" class="card flex min-h-64 items-center justify-center gap-3 text-sm text-gray-500 dark:text-dark-400">
       <span class="h-4 w-4 animate-spin rounded-full border-2 border-primary-500 border-t-transparent" />
       正在加载每日报告…
@@ -55,7 +55,7 @@
         <div class="stat-card">
           <div class="stat-icon stat-icon-primary"><Icon name="dollar" size="lg" /></div>
           <div class="min-w-0">
-            <p class="stat-value text-base">{{ latestSummary ? formatAmount(latestSummary.total_actual_cost) : '—' }}</p>
+            <p class="stat-value text-base">{{ latestSummary ? formatQuotaAmount(latestSummary.total_actual_cost, latestSummary.quota_unit) : '—' }}</p>
             <p class="stat-label">今日消耗额度</p>
           </div>
         </div>
@@ -129,6 +129,42 @@
       <section class="card">
         <div class="card-header flex flex-wrap items-start justify-between gap-3">
           <div>
+            <h2 class="text-base font-semibold text-gray-900 dark:text-white">报告源站</h2>
+            <p class="mt-0.5 text-sm text-gray-500 dark:text-dark-400">每日消耗、Token、注册和充值统计都由当前共享源站提供。</p>
+          </div>
+          <RouterLink to="/reports/source" class="btn btn-secondary btn-sm">
+            <Icon name="globe" size="sm" />
+            源站配置
+          </RouterLink>
+        </div>
+        <div class="grid grid-cols-1 gap-4 p-6 sm:grid-cols-3">
+          <div class="rounded-lg border border-gray-100 bg-gray-50/60 p-4 dark:border-dark-700 dark:bg-dark-900/40">
+            <p class="text-xs text-gray-500 dark:text-dark-400">模式 / 类型</p>
+            <p class="mt-1 text-sm font-medium text-gray-900 dark:text-white">
+              {{ source.mode === 'global' ? '全局' : '自定义' }} / {{ sourceTypeLabel(source.type) }}
+            </p>
+          </div>
+          <div class="min-w-0 rounded-lg border border-gray-100 bg-gray-50/60 p-4 dark:border-dark-700 dark:bg-dark-900/40">
+            <p class="text-xs text-gray-500 dark:text-dark-400">连接地址</p>
+            <p class="mt-1 break-all text-sm font-medium text-gray-900 dark:text-white">{{ source.base_url || '未配置' }}</p>
+          </div>
+          <div class="rounded-lg border border-gray-100 bg-gray-50/60 p-4 dark:border-dark-700 dark:bg-dark-900/40">
+            <p class="text-xs text-gray-500 dark:text-dark-400">配置状态</p>
+            <div class="mt-1 flex flex-wrap items-center gap-2">
+              <Badge :tone="source.configured ? 'success' : 'danger'" dot>
+                {{ source.configured ? '已配置，可读取报告数据' : '未完成，请先配置源站' }}
+              </Badge>
+              <RouterLink v-if="!source.configured" to="/reports/source" class="text-xs text-primary-600 hover:underline dark:text-primary-300">
+                前往配置
+              </RouterLink>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-header flex flex-wrap items-start justify-between gap-3">
+          <div>
             <h2 class="text-base font-semibold text-gray-900 dark:text-white">最近统计</h2>
             <p class="mt-0.5 text-sm text-gray-500 dark:text-dark-400">
               {{ latestSummary ? `统计日期：${latestSummary.date}（${latestSummary.timezone}）` : '尚未执行过每日报告。' }}
@@ -139,7 +175,7 @@
         <div v-if="latestSummary" class="grid grid-cols-1 gap-4 p-6 sm:grid-cols-2 xl:grid-cols-4">
           <div class="rounded-xl border border-gray-100 bg-gray-50/60 p-4 dark:border-dark-700 dark:bg-dark-900/40">
             <p class="text-xs text-gray-500 dark:text-dark-400">消耗额度</p>
-            <p class="mt-1 text-lg font-semibold text-gray-900 dark:text-white">{{ formatAmount(latestSummary.total_actual_cost) }}</p>
+            <p class="mt-1 text-lg font-semibold text-gray-900 dark:text-white">{{ formatQuotaAmount(latestSummary.total_actual_cost, latestSummary.quota_unit) }}</p>
           </div>
           <div class="rounded-xl border border-gray-100 bg-gray-50/60 p-4 dark:border-dark-700 dark:bg-dark-900/40">
             <p class="text-xs text-gray-500 dark:text-dark-400">总 Token</p>
@@ -202,7 +238,7 @@
                 </td>
                 <td class="whitespace-nowrap text-xs text-gray-500 dark:text-dark-400">{{ run.summary?.date || '—' }}</td>
                 <td class="whitespace-nowrap text-xs tabular-nums">
-                  <span>{{ run.summary ? formatAmount(run.summary.total_actual_cost) : '—' }}</span>
+                  <span>{{ run.summary ? formatQuotaAmount(run.summary.total_actual_cost, run.summary.quota_unit) : '—' }}</span>
                   <span class="mx-1 text-gray-300 dark:text-dark-600">/</span>
                   <span>{{ run.summary ? formatTokens(run.summary.total_tokens) : '—' }}</span>
                 </td>
@@ -246,7 +282,7 @@
     >
       <template v-if="selectedRun">
         <div v-if="selectedRun.summary" class="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <div class="rounded-lg bg-gray-50 p-3 dark:bg-dark-900/60"><p class="text-xs text-gray-500 dark:text-dark-400">消耗额度</p><p class="mt-1 text-lg font-semibold text-gray-900 dark:text-white">{{ formatAmount(selectedRun.summary.total_actual_cost) }}</p></div>
+          <div class="rounded-lg bg-gray-50 p-3 dark:bg-dark-900/60"><p class="text-xs text-gray-500 dark:text-dark-400">消耗额度</p><p class="mt-1 text-lg font-semibold text-gray-900 dark:text-white">{{ formatQuotaAmount(selectedRun.summary.total_actual_cost, selectedRun.summary.quota_unit) }}</p></div>
           <div class="rounded-lg bg-gray-50 p-3 dark:bg-dark-900/60"><p class="text-xs text-gray-500 dark:text-dark-400">总 Token</p><p class="mt-1 text-lg font-semibold text-gray-900 dark:text-white">{{ formatTokens(selectedRun.summary.total_tokens) }}</p></div>
           <div class="rounded-lg bg-gray-50 p-3 dark:bg-dark-900/60"><p class="text-xs text-gray-500 dark:text-dark-400">注册人数</p><p class="mt-1 text-lg font-semibold text-gray-900 dark:text-white">{{ formatNumber(selectedRun.summary.new_users) }}</p></div>
           <div class="rounded-lg bg-gray-50 p-3 dark:bg-dark-900/60"><p class="text-xs text-gray-500 dark:text-dark-400">统计日期</p><p class="mt-1 text-sm font-semibold text-gray-900 dark:text-white">{{ selectedRun.summary.date }}</p></div>
@@ -323,6 +359,12 @@ const config = computed(() => view.value?.config ?? {
 })
 const latestRun = computed(() => view.value?.latest_run ?? runs.value[0] ?? null)
 const latestSummary = computed(() => latestRun.value?.summary ?? null)
+const source = computed(() => view.value?.source ?? {
+  mode: 'global' as const,
+  type: 'sub2api' as const,
+  configured: false,
+  base_url: ''
+})
 const busy = computed(() => saving.value || running.value || refreshing.value)
 
 onMounted(() => void load())
@@ -445,6 +487,10 @@ function formatAmount(value: number) {
   return Number(value || 0).toFixed(2)
 }
 
+function formatQuotaAmount(value: number, unit?: string) {
+  return `${formatAmount(value)}${unit ? ` ${unit}` : ''}`
+}
+
 function rechargeEntries(summary: DailyReportSummary) {
   return Object.entries(summary.recharge_amounts || {}).sort(([a], [b]) => a.localeCompare(b))
 }
@@ -454,5 +500,9 @@ function rechargeText(summary: DailyReportSummary) {
   if (!entries.length) return '0'
   if (entries.length === 1) return `${entries[0][0]} ${formatAmount(entries[0][1])}`
   return `${entries.length} 个币种`
+}
+
+function sourceTypeLabel(type: string) {
+  return type === 'newapi' ? 'New API' : 'Sub2API'
 }
 </script>

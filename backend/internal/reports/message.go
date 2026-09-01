@@ -56,7 +56,11 @@ func buildDailyText(summary DailyReportSummary, startedAt, windowStart time.Time
 	fmt.Fprintf(&builder, "执行时间：%s\n", formatReportTime(startedAt, location))
 	fmt.Fprintf(&builder, "统计日期：%s\n", textCell(summary.Date))
 	fmt.Fprintf(&builder, "统计窗口：%s 至 %s\n", formatReportTime(windowStart, location), formatReportTime(startedAt, location))
-	fmt.Fprintf(&builder, "今日消耗额度：%.2f\n", summary.TotalActualCost)
+	quotaUnit := ""
+	if strings.TrimSpace(summary.QuotaUnit) != "" {
+		quotaUnit = " " + textCell(summary.QuotaUnit)
+	}
+	fmt.Fprintf(&builder, "今日消耗额度：%.2f%s\n", summary.TotalActualCost, quotaUnit)
 	fmt.Fprintf(&builder, "今日总 Token：%s\n", formatTokenCount(summary.TotalTokens))
 	fmt.Fprintf(&builder, "今日注册人数：%d 人\n", summary.NewUsers)
 	builder.WriteString("今日充值量：")

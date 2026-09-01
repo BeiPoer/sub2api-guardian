@@ -20,6 +20,29 @@ func (s *Server) getReportNotifications(w http.ResponseWriter, _ *http.Request) 
 	writeJSON(w, http.StatusOK, config)
 }
 
+func (s *Server) getReportSource(w http.ResponseWriter, _ *http.Request) {
+	config, err := s.scheduledReports.SourceSettings()
+	if err != nil {
+		writeReportError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, config)
+}
+
+func (s *Server) saveReportSource(w http.ResponseWriter, r *http.Request) {
+	var payload reports.SourceSaveInput
+	if err := decodeBody(r, &payload); err != nil {
+		writeReportError(w, err)
+		return
+	}
+	config, err := s.scheduledReports.SaveSourceSettings(payload)
+	if err != nil {
+		writeReportError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, config)
+}
+
 func (s *Server) saveReportNotifications(w http.ResponseWriter, r *http.Request) {
 	var payload reports.NotificationSaveInput
 	if err := decodeBody(r, &payload); err != nil {
@@ -87,7 +110,7 @@ func (s *Server) runChannelUsageReport(w http.ResponseWriter, r *http.Request) {
 		writeReportError(w, err)
 		return
 	}
-	if run.Status == "error" && run.Error == upstream.ErrNotConfigured.Error() {
+	if reportSourceNotConfigured(run.Status, run.Error) {
 		writeJSON(w, http.StatusPreconditionFailed, map[string]any{"error": run.Error, "run": run})
 		return
 	}
@@ -136,11 +159,20 @@ func (s *Server) runDailyReport(w http.ResponseWriter, r *http.Request) {
 		writeReportError(w, err)
 		return
 	}
-	if run.Status == "error" && run.Error == upstream.ErrNotConfigured.Error() {
+	if reportSourceNotConfigured(run.Status, run.Error) {
 		writeJSON(w, http.StatusPreconditionFailed, map[string]any{"error": run.Error, "run": run})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"run": run})
+}
+
+func reportSourceNotConfigured(status, message string) bool {
+	if status != "error" {
+		return false
+	}
+	return message == reports.ErrSourceNotConfigured.Error() ||
+		message == upstream.ErrNotConfigured.Error() ||
+		message == upstream.ErrNewAPINotConfigured.Error()
 }
 
 func writeReportError(w http.ResponseWriter, err error) {
@@ -152,7 +184,7 @@ func writeReportError(w http.ResponseWriter, err error) {
 		status = reportErr.Status
 	case errors.Is(err, reports.ErrAlreadyRunning):
 		status = http.StatusConflict
-	case errors.Is(err, upstream.ErrNotConfigured):
+	case errors.Is(err, reports.ErrSourceNotConfigured), errors.Is(err, upstream.ErrNotConfigured), errors.Is(err, upstream.ErrNewAPINotConfigured):
 		status = http.StatusPreconditionFailed
 	case errors.As(err, &wecomErr):
 		status = http.StatusBadGateway

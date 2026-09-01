@@ -114,7 +114,7 @@ func (c *Client) requestUsagePage(ctx context.Context, path string, out any) err
 }
 
 func retryableUsageError(err error) bool {
-	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, ErrNotConfigured) {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, ErrNotConfigured) || errors.Is(err, ErrNewAPINotConfigured) {
 		return false
 	}
 	status := StatusCodeOf(err)

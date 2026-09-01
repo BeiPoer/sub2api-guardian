@@ -378,9 +378,13 @@ func (m *Manager) execute(ctx context.Context, report store.ScheduledReport, con
 	}
 	notificationSettings, notificationErr := m.notificationSettings()
 
-	queryCtx, cancel := context.WithTimeout(ctx, usageRequestTimeout*time.Second)
-	records, queryErr := m.client.ListUsage(queryCtx, windowStart, windowEnd, report.Timezone)
-	cancel()
+	source, queryErr := m.resolveSource()
+	var records []upstream.UsageRecord
+	if queryErr == nil {
+		queryCtx, cancel := context.WithTimeout(ctx, usageRequestTimeout*time.Second)
+		records, queryErr = source.ListUsage(queryCtx, windowStart, windowEnd, report.Timezone)
+		cancel()
+	}
 	if queryErr != nil {
 		run.Status = "error"
 		run.Error = safeError(queryErr)
@@ -436,9 +440,13 @@ func (m *Manager) executeDaily(ctx context.Context, report store.ScheduledReport
 	}
 	notificationSettings, notificationErr := m.notificationSettings()
 
-	queryCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
-	stats, queryErr := m.client.GetDailyReportStats(queryCtx, windowStart, startedAt, report.Timezone)
-	cancel()
+	source, queryErr := m.resolveSource()
+	var stats upstream.DailyReportStats
+	if queryErr == nil {
+		queryCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+		stats, queryErr = source.GetDailyReportStats(queryCtx, windowStart, startedAt, report.Timezone)
+		cancel()
+	}
 	if queryErr != nil {
 		run.Status = "error"
 		run.Error = safeError(queryErr)
@@ -451,6 +459,7 @@ func (m *Manager) executeDaily(ctx context.Context, report store.ScheduledReport
 		Date:            localNow.Format("2006-01-02"),
 		Timezone:        report.Timezone,
 		TotalActualCost: stats.TotalActualCost,
+		QuotaUnit:       stats.QuotaUnit,
 		TotalTokens:     stats.TotalTokens,
 		NewUsers:        stats.NewUsers,
 		RechargeAmounts: stats.RechargeAmounts,
@@ -536,6 +545,10 @@ func (m *Manager) viewFor(report store.ScheduledReport, config storedConfig) (Vi
 			latest = &items[0]
 		}
 	}
+	source, err := m.sourceSummary()
+	if err != nil {
+		return View{}, err
+	}
 	return View{
 		Config: ChannelUsageConfig{
 			Enabled: report.Enabled, IntervalMinutes: report.IntervalMinutes,
@@ -545,7 +558,8 @@ func (m *Manager) viewFor(report store.ScheduledReport, config storedConfig) (Vi
 			LastRunAt:    report.LastRunAt, LastStatus: report.LastStatus,
 			LastError: report.LastError, NextRunAt: report.NextRunAt,
 		},
-		Connection: ConnectionSummary{Configured: m.client.Ready() == nil, BaseURL: m.client.BaseURL()},
+		Source:     source,
+		Connection: ConnectionSummary{Configured: source.Configured, BaseURL: source.BaseURL},
 		LatestRun:  latest,
 	}, nil
 }
@@ -572,13 +586,18 @@ func (m *Manager) dailyViewFor(report store.ScheduledReport) (DailyView, error) 
 			latest = &items[0]
 		}
 	}
+	source, err := m.sourceSummary()
+	if err != nil {
+		return DailyView{}, err
+	}
 	return DailyView{
 		Config: DailyReportConfig{
 			Enabled: report.Enabled, RunHour: report.StartHour, Timezone: report.Timezone,
 			LastRunAt: report.LastRunAt, LastStatus: report.LastStatus,
 			LastError: report.LastError, NextRunAt: report.NextRunAt,
 		},
-		Connection: ConnectionSummary{Configured: m.client.Ready() == nil, BaseURL: m.client.BaseURL()},
+		Source:     source,
+		Connection: ConnectionSummary{Configured: source.Configured, BaseURL: source.BaseURL},
 		LatestRun:  latest,
 	}, nil
 }

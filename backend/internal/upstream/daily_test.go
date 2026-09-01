@@ -135,7 +135,8 @@ func TestGetDailyReportStatsStopsUserAndOrderPaginationAfterWindow(t *testing.T)
 
 func TestGetDailyReportStatsRejectsInvalidTimeRange(t *testing.T) {
 	client := New("http://example.invalid", "key", time.Second)
-	_, err := client.GetDailyReportStats(context.Background(), time.Now(), time.Now(), "UTC")
+	now := time.Now()
+	_, err := client.GetDailyReportStats(context.Background(), now, now, "UTC")
 	if err == nil || !strings.Contains(err.Error(), "时间范围无效") {
 		t.Fatalf("非法时间范围错误异常: %v", err)
 	}

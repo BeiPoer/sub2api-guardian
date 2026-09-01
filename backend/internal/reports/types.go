@@ -21,7 +21,10 @@ const (
 	runHistoryRetentionHours = 7 * 24
 )
 
-var ErrAlreadyRunning = errors.New("定时报告正在执行")
+var (
+	ErrAlreadyRunning      = errors.New("定时报告正在执行")
+	ErrSourceNotConfigured = errors.New("报告源站未配置完整，请前往源站配置完成设置")
+)
 
 // Error 是报告 API 可以安全返回给前端的业务错误。
 type Error struct {
@@ -44,6 +47,32 @@ type NotificationWeComConfig struct {
 
 type NotificationConfig struct {
 	WeCom NotificationWeComConfig `json:"wecom"`
+}
+
+type SourceConfig struct {
+	Mode             store.ScheduledReportSourceMode `json:"mode"`
+	SourceType       store.ScheduledReportSourceType `json:"source_type"`
+	BaseURL          string                          `json:"base_url"`
+	NewAPIUserID     int64                           `json:"newapi_user_id"`
+	HasCredential    bool                            `json:"has_credential"`
+	Configured       bool                            `json:"configured"`
+	EffectiveType    store.ScheduledReportSourceType `json:"effective_type"`
+	EffectiveBaseURL string                          `json:"effective_base_url"`
+}
+
+type SourceSaveInput struct {
+	Mode         store.ScheduledReportSourceMode `json:"mode"`
+	SourceType   store.ScheduledReportSourceType `json:"source_type"`
+	BaseURL      string                          `json:"base_url"`
+	Credential   string                          `json:"credential"`
+	NewAPIUserID int64                           `json:"newapi_user_id"`
+}
+
+type SourceSummary struct {
+	Mode       store.ScheduledReportSourceMode `json:"mode"`
+	Type       store.ScheduledReportSourceType `json:"type"`
+	Configured bool                            `json:"configured"`
+	BaseURL    string                          `json:"base_url"`
 }
 
 // ChannelUsageConfig 是对外返回的配置与运行状态。
@@ -109,12 +138,14 @@ type ConnectionSummary struct {
 
 type View struct {
 	Config     ChannelUsageConfig        `json:"config"`
+	Source     SourceSummary             `json:"source"`
 	Connection ConnectionSummary         `json:"connection"`
 	LatestRun  *store.ScheduledReportRun `json:"latest_run"`
 }
 
 type DailyView struct {
 	Config     DailyReportConfig         `json:"config"`
+	Source     SourceSummary             `json:"source"`
 	Connection ConnectionSummary         `json:"connection"`
 	LatestRun  *store.ScheduledReportRun `json:"latest_run"`
 }
@@ -137,6 +168,7 @@ type DailyReportSummary struct {
 	Date            string             `json:"date"`
 	Timezone        string             `json:"timezone"`
 	TotalActualCost float64            `json:"total_actual_cost"`
+	QuotaUnit       string             `json:"quota_unit"`
 	TotalTokens     int64              `json:"total_tokens"`
 	NewUsers        int                `json:"new_users"`
 	RechargeAmounts map[string]float64 `json:"recharge_amounts"`

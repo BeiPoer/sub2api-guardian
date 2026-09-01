@@ -28,7 +28,9 @@ import type {
   DailyReportSaveInput,
   DailyReportView,
   ReportNotificationConfig,
-  ReportNotificationSaveInput
+  ReportNotificationSaveInput,
+  ReportSourceConfig,
+  ReportSourceSaveInput
 } from './types'
 
 export interface EventPage {
@@ -91,7 +93,7 @@ async function request<T>(path: string, init?: RequestInit, timeoutMs = DEFAULT_
     })
   } catch (err) {
     if ((err as Error).name === 'AbortError') {
-      throw new Error(`请求超时（${Math.round(timeoutMs / 1000)} 秒），请检查 sub2api 是否可达`)
+      throw new Error(`请求超时（${Math.round(timeoutMs / 1000)} 秒），请检查上游服务是否可达`)
     }
     throw err
   } finally {
@@ -341,6 +343,11 @@ export const api = {
     put<ReportNotificationConfig>('/api/reports/notifications', payload),
   testReportNotificationWeCom: () =>
     post<{ ok: boolean; message_id: string }>('/api/reports/notifications/wecom/test', undefined, LONG_TIMEOUT_MS),
+
+  reportSourceSettings: () =>
+    request<ReportSourceConfig>('/api/reports/source'),
+  saveReportSourceSettings: (payload: ReportSourceSaveInput) =>
+    put<ReportSourceConfig>('/api/reports/source', payload),
 
   channelUsageReport: () =>
     request<ChannelUsageReportView>('/api/reports/channel-usage'),

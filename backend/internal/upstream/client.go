@@ -106,6 +106,10 @@ func StatusCodeOf(err error) int {
 	if errors.As(err, &apiErr) {
 		return apiErr.StatusCode
 	}
+	var newAPIErr *NewAPIError
+	if errors.As(err, &newAPIErr) {
+		return newAPIErr.StatusCode
+	}
 	return 0
 }
 

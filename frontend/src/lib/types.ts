@@ -163,6 +163,35 @@ export interface ReportNotificationConfig {
   wecom: ReportNotificationWeComConfig
 }
 
+export type ReportSourceMode = 'global' | 'custom'
+export type ReportSourceType = 'sub2api' | 'newapi'
+
+export interface ReportSourceConfig {
+  mode: ReportSourceMode
+  source_type: ReportSourceType
+  base_url: string
+  newapi_user_id: number
+  has_credential: boolean
+  configured: boolean
+  effective_type: ReportSourceType
+  effective_base_url: string
+}
+
+export interface ReportSourceSaveInput {
+  mode: ReportSourceMode
+  source_type: ReportSourceType
+  base_url: string
+  credential: string
+  newapi_user_id: number
+}
+
+export interface ReportSourceSummary {
+  mode: ReportSourceMode
+  type: ReportSourceType
+  configured: boolean
+  base_url: string
+}
+
 export interface ChannelUsageReportConfig {
   enabled: boolean
   interval_minutes: number
@@ -204,6 +233,7 @@ export interface ChannelUsageReportRun {
 
 export interface ChannelUsageReportView {
   config: ChannelUsageReportConfig
+  source: ReportSourceSummary
   connection: { configured: boolean; base_url: string }
   latest_run?: ChannelUsageReportRun | null
 }
@@ -233,6 +263,7 @@ export interface DailyReportSummary {
   date: string
   timezone: string
   total_actual_cost: number
+  quota_unit?: string
   total_tokens: number
   new_users: number
   recharge_amounts: Record<string, number>
@@ -258,6 +289,7 @@ export interface DailyReportRun {
 
 export interface DailyReportView {
   config: DailyReportConfig
+  source: ReportSourceSummary
   connection: { configured: boolean; base_url: string }
   latest_run?: DailyReportRun | null
 }
