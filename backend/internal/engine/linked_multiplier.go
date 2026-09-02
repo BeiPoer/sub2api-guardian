@@ -32,6 +32,15 @@ func (e *Engine) SyncLinkedMultipliers(
 	if !supportsLinkedUpstreamType(channel.Type) || len(tokenMultipliers) == 0 {
 		return nil
 	}
+	// 远程倍率源模式下，本地渠道目录仍可用于查看和同步，但不能再覆盖
+	// G1 提供的联动值。
+	settings, _, err := e.store.MultiplierSourceSettings()
+	if err != nil {
+		return err
+	}
+	if settings.Mode == store.MultiplierSourceRemote {
+		return nil
+	}
 	rechargeRatio := channel.RechargeRatio
 	if !validLinkedMultiplier(rechargeRatio) {
 		rechargeRatio = 1
@@ -66,6 +75,15 @@ func (e *Engine) SyncLinkedMultipliers(
 	// 同一上游同步不能并发修改联动策略或账号名称。
 	e.linkedMultiplierMu.Lock()
 	defer e.linkedMultiplierMu.Unlock()
+	// 配置切换可能发生在上面的快速检查之后；锁内再确认一次，避免旧的本地
+	// 同步结果覆盖刚切换到远程源的值。
+	settings, _, err = e.store.MultiplierSourceSettings()
+	if err != nil {
+		return err
+	}
+	if settings.Mode == store.MultiplierSourceRemote {
+		return nil
+	}
 
 	accounts, err := e.store.Accounts()
 	if err != nil {
@@ -108,61 +126,8 @@ func (e *Engine) SyncLinkedMultipliers(
 	if len(matched) == 0 {
 		return nil
 	}
-
-	linkedValues := make(map[string]float64, len(matched))
-	for _, item := range matched {
-		key := itoa(item.account.ID)
-		linkedValues[key] = item.ratio
-	}
-	policyChanged, err := e.store.MergeAccountLinkedMultipliers(linkedValues)
-	if err != nil {
-		return err
-	}
-
-	changed := policyChanged
-	for _, item := range matched {
-		desiredName := linkedMultiplierName(item.account.Name, item.ratio)
-		if desiredName == item.account.Name {
-			continue
-		}
-		accountID := item.account.ID
-		if err := e.client.UpdateAccount(ctx, accountID, map[string]any{"name": desiredName}); err != nil {
-			e.store.Log("warn", "upstream_multiplier_link_name_failed", &accountID, nil,
-				"同步渠道名称失败，将在下一次同步重试", nil)
-			continue
-		}
-		// 目录同步可能与联动并行；重新读取当前缓存只替换名称，避免
-		// 用联动开始时的旧状态覆盖刚同步的账号字段，也不在账号已删除时复活它。
-		cached, cacheErr := e.store.Account(accountID)
-		if cacheErr != nil {
-			e.store.Log("warn", "upstream_multiplier_link_cache_failed", &accountID, nil,
-				fmt.Sprintf("渠道名称已写回，但读取本地缓存失败: %s", cacheErr), nil)
-		} else {
-			cached.Name = desiredName
-			if err := e.store.UpsertAccount(cached); err != nil {
-				e.store.Log("warn", "upstream_multiplier_link_cache_failed", &accountID, nil,
-					fmt.Sprintf("渠道名称已写回，但刷新本地缓存失败: %s", err), nil)
-			}
-		}
-		changed = true
-		e.store.Log("info", "upstream_multiplier_linked", &accountID, nil,
-			fmt.Sprintf("渠道管理倍率已同步为 %g，名称后缀已更新", item.ratio), map[string]any{
-				"multiplier": item.ratio,
-				"name":       desiredName,
-			})
-	}
-	if policyChanged {
-		if err := e.refreshGroupStates(); err != nil {
-			// 联动倍率已经可靠写入策略；聚合刷新留给下一轮修复，
-			// 不能因此把上游渠道同步标成失败或阻断其他账号。
-			e.store.Log("warn", "upstream_multiplier_link_refresh_failed", nil, nil,
-				fmt.Sprintf("联动倍率已保存，但分组聚合刷新失败: %s", err), nil)
-		}
-	}
-	if changed {
-		e.fireNotify()
-	}
-	return nil
+	_, err = e.applyLinkedMultiplierMatches(ctx, matched, "渠道管理")
+	return err
 }
 
 func supportsLinkedUpstreamType(channelType store.UpstreamChannelType) bool {
@@ -215,6 +180,81 @@ func (e *Engine) linkedCredentials(ctx context.Context) (map[int64]upstream.Acco
 type linkedAccount struct {
 	account domain.Account
 	ratio   float64
+	// fingerprint 仅由远程倍率源使用；本地渠道管理为空。
+	fingerprint string
+}
+
+// linkedApplyResult 返回名称归属信息，远程源据此安全清理自己生成的后缀。
+type linkedApplyResult struct {
+	changed       bool
+	generatedName map[string]string
+}
+
+// applyLinkedMultiplierMatches 统一应用本地与远程倍率源的匹配结果。
+// 调用方只需提供 G2 本地账号和最终调度倍率，所有副作用保持同一套行为。
+func (e *Engine) applyLinkedMultiplierMatches(
+	ctx context.Context,
+	matched []linkedAccount,
+	sourceLabel string,
+) (linkedApplyResult, error) {
+	result := linkedApplyResult{generatedName: make(map[string]string, len(matched))}
+	if len(matched) == 0 {
+		return result, nil
+	}
+	linkedValues := make(map[string]float64, len(matched))
+	for _, item := range matched {
+		linkedValues[itoa(item.account.ID)] = item.ratio
+	}
+	policyChanged, err := e.store.MergeAccountLinkedMultipliers(linkedValues)
+	if err != nil {
+		return result, err
+	}
+	result.changed = policyChanged
+	for _, item := range matched {
+		desiredName := linkedMultiplierName(item.account.Name, item.ratio)
+		accountID := item.account.ID
+		if desiredName == item.account.Name {
+			result.generatedName[itoa(accountID)] = desiredName
+			continue
+		}
+		if err := e.client.UpdateAccount(ctx, accountID, map[string]any{"name": desiredName}); err != nil {
+			e.store.Log("warn", "upstream_multiplier_link_name_failed", &accountID, nil,
+				"同步渠道名称失败，将在下一次同步重试", nil)
+			continue
+		}
+		// 目录同步可能与联动并行；重新读取当前缓存只替换名称，避免
+		// 用联动开始时的旧状态覆盖刚同步的账号字段，也不在账号已删除时复活它。
+		cached, cacheErr := e.store.Account(accountID)
+		if cacheErr != nil {
+			e.store.Log("warn", "upstream_multiplier_link_cache_failed", &accountID, nil,
+				fmt.Sprintf("渠道名称已写回，但读取本地缓存失败: %s", cacheErr), nil)
+		} else {
+			cached.Name = desiredName
+			if err := e.store.UpsertAccount(cached); err != nil {
+				e.store.Log("warn", "upstream_multiplier_link_cache_failed", &accountID, nil,
+					fmt.Sprintf("渠道名称已写回，但刷新本地缓存失败: %s", err), nil)
+			}
+		}
+		result.generatedName[itoa(accountID)] = desiredName
+		result.changed = true
+		e.store.Log("info", "upstream_multiplier_linked", &accountID, nil,
+			fmt.Sprintf("%s倍率已同步为 %g，名称后缀已更新", sourceLabel, item.ratio), map[string]any{
+				"multiplier": item.ratio,
+				"name":       desiredName,
+			})
+	}
+	if policyChanged {
+		if err := e.refreshGroupStates(); err != nil {
+			// 联动倍率已经可靠写入策略；聚合刷新留给下一轮修复，
+			// 不能因此把上游渠道同步标成失败或阻断其他账号。
+			e.store.Log("warn", "upstream_multiplier_link_refresh_failed", nil, nil,
+				fmt.Sprintf("联动倍率已保存，但分组聚合刷新失败: %s", err), nil)
+		}
+	}
+	if result.changed {
+		e.fireNotify()
+	}
+	return result, nil
 }
 
 type linkedCredentialCacheEntry struct {

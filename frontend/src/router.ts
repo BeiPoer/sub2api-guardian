@@ -25,6 +25,11 @@ const router = createRouter({
       name: 'upstream-channel-list',
       component: upstreamChannelsView
     },
+    {
+      path: '/upstream-channels/multiplier-source',
+      name: 'upstream-multiplier-source',
+      component: () => import('@/views/MultiplierSourceView.vue')
+    },
     { path: '/policy', name: 'policy', component: () => import('@/views/PolicyView.vue') },
     { path: '/events', name: 'events', component: () => import('@/views/EventsView.vue') },
     { path: '/reports', redirect: '/reports/channel-usage' },

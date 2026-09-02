@@ -118,7 +118,8 @@ var schemaStatements = []string{
 		user_id INTEGER NOT NULL,
 		created_at TEXT NOT NULL,
 		expires_at TEXT NOT NULL,
-		user_agent TEXT NOT NULL DEFAULT ''
+		user_agent TEXT NOT NULL DEFAULT '',
+		scope TEXT NOT NULL DEFAULT 'admin'
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at)`,
@@ -526,6 +527,7 @@ func (s *Store) addMissingColumns() error {
 		{"upstream_channels", "recharge_fee", `ALTER TABLE upstream_channels ADD COLUMN recharge_fee TEXT NOT NULL DEFAULT ''`},
 		{"upstream_alert_events", "wecom_sent", `ALTER TABLE upstream_alert_events ADD COLUMN wecom_sent INTEGER NOT NULL DEFAULT 0`},
 		{"upstream_alert_events", "wecom_error", `ALTER TABLE upstream_alert_events ADD COLUMN wecom_error TEXT NOT NULL DEFAULT ''`},
+		{"sessions", "scope", `ALTER TABLE sessions ADD COLUMN scope TEXT NOT NULL DEFAULT 'admin'`},
 	}
 
 	for _, add := range additions {

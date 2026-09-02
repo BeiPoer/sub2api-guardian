@@ -30,7 +30,8 @@ import type {
   ReportNotificationConfig,
   ReportNotificationSaveInput,
   ReportSourceConfig,
-  ReportSourceSaveInput
+  ReportSourceSaveInput,
+  MultiplierSourceConfig
 } from './types'
 
 export interface EventPage {
@@ -336,6 +337,25 @@ export const api = {
     post<{ ok: boolean; message_id: string }>('/api/upstream-wecom-settings/test', {
       target: target || ''
     }),
+
+  multiplierSource: () => request<MultiplierSourceConfig>('/api/multiplier-source'),
+  saveMultiplierSource: (payload: Record<string, unknown>) =>
+    put<MultiplierSourceConfig>('/api/multiplier-source', payload, LONG_TIMEOUT_MS),
+  authorizeMultiplierSource: (payload: Record<string, unknown>) =>
+    post<{
+      config: MultiplierSourceConfig
+      sync?: { state: string; revision: string; complete: boolean; matched: number; total: number; changed: boolean }
+      sync_error?: string
+    }>('/api/multiplier-source/authorize', payload, LONG_TIMEOUT_MS),
+  testMultiplierSource: () =>
+    post<{ status: unknown; config: MultiplierSourceConfig }>('/api/multiplier-source/test', undefined, LONG_TIMEOUT_MS),
+  syncMultiplierSource: () =>
+    post<{
+      result: { state: string; revision: string; complete: boolean; matched: number; total: number; changed: boolean }
+      config: MultiplierSourceConfig
+    }>('/api/multiplier-source/sync', undefined, LONG_TIMEOUT_MS),
+  clearMultiplierSource: () =>
+    request<MultiplierSourceConfig>('/api/multiplier-source', { method: 'DELETE' }, LONG_TIMEOUT_MS),
 
   reportNotificationSettings: () =>
     request<ReportNotificationConfig>('/api/reports/notifications'),

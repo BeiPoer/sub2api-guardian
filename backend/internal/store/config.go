@@ -164,6 +164,36 @@ func (s *Store) MergeAccountLinkedMultipliers(values map[string]float64) (bool, 
 	return true, nil
 }
 
+// RemoveAccountLinkedMultipliers 原子移除指定的联动倍率。
+// 远程完整快照成功后只清理该远程源曾经负责的账号，不影响人工倍率。
+func (s *Store) RemoveAccountLinkedMultipliers(keys map[string]struct{}) (bool, error) {
+	if len(keys) == 0 {
+		return false, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	p := policy.Default()
+	if err := s.getJSON(metaPolicy, &p); err != nil && !IsNotFound(err) {
+		return false, err
+	}
+	policy.Normalize(&p)
+	changed := false
+	for key := range keys {
+		if _, exists := p.AccountLinkedMultipliers[key]; exists {
+			delete(p.AccountLinkedMultipliers, key)
+			changed = true
+		}
+	}
+	if !changed {
+		return false, nil
+	}
+	if err := s.setJSON(metaPolicy, p); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // GroupOverrides 读取全部分组覆盖。
 func (s *Store) GroupOverrides() (map[int64]*policy.GroupOverride, error) {
 	rows, err := s.db.Query(`SELECT group_id, json FROM group_overrides`)

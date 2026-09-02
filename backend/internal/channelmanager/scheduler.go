@@ -388,9 +388,25 @@ func tokenMultipliersForLink(groups, tokens any, channelType store.UpstreamChann
 	return tokenMultiplierLinkCandidates(groups, tokens, channelType).ratios
 }
 
+// TokenMultiplierLinkCandidates returns ratios and completeness diagnostics
+// from the shared linker parser.
+type TokenMultiplierLinkCandidates struct {
+	Ratios     map[string]float64
+	Conflicts  int
+	Incomplete bool
+}
+
+func TokenMultiplierLinkCandidatesForLink(groups, tokens any, channelType store.UpstreamChannelType) TokenMultiplierLinkCandidates {
+	extraction := tokenMultiplierLinkCandidates(groups, tokens, channelType)
+	return TokenMultiplierLinkCandidates{
+		Ratios: extraction.ratios, Conflicts: extraction.conflicts, Incomplete: extraction.incomplete,
+	}
+}
+
 type tokenMultiplierLinkExtraction struct {
-	ratios    map[string]float64
-	conflicts int
+	ratios     map[string]float64
+	conflicts  int
+	incomplete bool
 }
 
 func tokenMultiplierLinkCandidates(groups, tokens any, channelType store.UpstreamChannelType) tokenMultiplierLinkExtraction {
@@ -399,14 +415,18 @@ func tokenMultiplierLinkCandidates(groups, tokens any, channelType store.Upstrea
 		return tokenMultiplierLinkExtraction{ratios: result}
 	}
 	conflicts := make(map[string]struct{})
+	incomplete := false
 	groupRows := normalizeCollection(groups)
 	for _, rawToken := range normalizeCollection(tokens) {
 		token, ok := asObject(rawToken)
 		if !ok {
+			incomplete = true
 			continue
 		}
 		key := tokenKey(token)
 		if key == "" {
+			// 脱敏或缺失 Key 无法参与 URL + Key 精确匹配；快照不能宣称完整。
+			incomplete = true
 			continue
 		}
 		if _, conflicted := conflicts[key]; conflicted {
@@ -434,10 +454,12 @@ func tokenMultiplierLinkCandidates(groups, tokens any, channelType store.Upstrea
 			}
 		}
 		if matched == nil {
+			incomplete = true
 			continue
 		}
 		ratio, ok := tokenGroupRatioForLink(matched, token)
 		if !ok || ratio <= 0 || math.IsNaN(ratio) || math.IsInf(ratio, 0) {
+			incomplete = true
 			continue
 		}
 		if previous, exists := result[key]; exists && previous != ratio {
@@ -447,7 +469,7 @@ func tokenMultiplierLinkCandidates(groups, tokens any, channelType store.Upstrea
 		}
 		result[key] = ratio
 	}
-	return tokenMultiplierLinkExtraction{ratios: result, conflicts: len(conflicts)}
+	return tokenMultiplierLinkExtraction{ratios: result, conflicts: len(conflicts), incomplete: incomplete}
 }
 
 func tokenGroupRatioForLink(group any, token map[string]any) (float64, bool) {

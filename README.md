@@ -87,6 +87,18 @@ New API 列表接口返回脱敏 Key 时，渠道管理同步会按令牌 ID 读
 `other` 类型只保存站点记录。每个渠道还可以配置充值比例（默认 1:1，数值表示到账倍数）、支付宝/微信/卡网
 充值方式和自定义手续费；充值方式会以图标显示在汇总卡片右上角，三项配置也会在详情中展示。
 
+#### 多个 Guardian 共用倍率源
+
+如果 G1 和 G2 的渠道池账号来自同一批上游，但只想维护一份「渠道管理」数据：
+
+1. 在 G1 保持本地渠道管理模式，正常同步渠道、分组和令牌缓存。
+2. 在 G2 打开「渠道管理 → 倍率同步源站」，选择「G1 Guardian」，填写 G1 面板根地址、用户名和密码，点击「保存并授权」。
+3. G2 会向 G1 换取 `multiplier_read` 只读令牌并立即同步；G1 密码只用于这次授权请求，G2 不保存密码。以后 G1 修改密码后，回到这里重新授权即可。
+
+G2 仍需保留自己的 Sub2API 账号目录，G1/G2 的账号名称可以不同；同步按规范化的上游 URL + 完整 API Key 匹配，匹配成功后复用本地倍率联动逻辑，设置渠道池调度倍率并更新 G2 账号名称后缀（例如 `渠道【x0.015】`）。G1 快照暂时不完整或授权失效时，G2 对无法确认的账号保留最近一次成功倍率，不会用不完整结果整体清空现有配置。生产环境建议使用 HTTPS 访问 G1。
+
+如果 G1 前面有 Nginx/Caddy 反代，需要转发 `/internal/v1/multiplier-source/` 路径并保留 `Authorization` 请求头。
+
 企微通知参考 [push-server](https://github.com/qingzhou-dev/push-server) 对企业微信 API 的实现，Guardian 直接调用官方接口：
 在渠道汇总或详情页打开「企微设置」，填写企业 ID、应用 AgentId、应用 Secret 和企微成员 ID（或 `@all`）。
 
@@ -529,8 +541,9 @@ sqlite3 data/guardian.sqlite "DELETE FROM users; DELETE FROM sessions;"
 
 ## 登录与安全
 
-- **全部接口需要登录**：除 `/healthz`、`/api/setup`、`/api/login` 之外，
-  所有 `/api/*` 未登录一律返回 401
+- **管理接口需要登录**：除 `/healthz`、`/api/setup`、`/api/login` 之外，
+  所有 `/api/*` 未登录一律返回 401；G1 的倍率读取 `status/resolve` 接口只接受
+  授权接口签发的 `multiplier_read` Bearer 令牌，不接受普通浏览器会话
 - **会话用 HttpOnly Cookie**：`SameSite=Strict`（挡 CSRF），JS 读不到（防 XSS），
   HTTPS 下自动加 `Secure`。有效期 14 天，使用中自动续期
 - **Guardian 登录口令不存明文**：口令存 PBKDF2-SHA256（20 万次迭代 + 每人独立随机盐），
@@ -584,6 +597,7 @@ frontend/                Vue 3 + TypeScript + Tailwind + Pinia + Vue Router
 - **数据目录**：与工作目录无关、`go run` 临时目录回退
 - **迁移**：老库补新字段、不覆盖用户显式设置、只执行一次
 - **上游渠道**：独立表级联、Sub2API/New API 同步、401 映射、告警冷却、SMTP/企微应用通知与密钥掩码
+- **共享倍率源**：G1 密码换取窄权限令牌、指纹匹配、部分快照保留与完整快照清理
 
 ```bash
 cd backend && go test ./...

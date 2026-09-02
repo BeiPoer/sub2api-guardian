@@ -52,19 +52,21 @@ type Engine struct {
 	runDone  chan struct{}
 	stopping bool
 
-	monitoringOK       bool
-	monitoringChecked  time.Time
-	lastCatalogSync    time.Time
-	multiplierMu       sync.Mutex
-	multiplierAttempts map[int64]time.Time
-	linkedMultiplierMu sync.Mutex
+	monitoringOK                bool
+	monitoringChecked           time.Time
+	lastCatalogSync             time.Time
+	multiplierMu                sync.Mutex
+	multiplierAttempts          map[int64]time.Time
+	linkedMultiplierMu          sync.Mutex
+	remoteMultiplierMu          sync.Mutex
+	lastRemoteMultiplierAttempt time.Time
 	// 联动凭据只在进程内短暂缓存，避免每个上游渠道重复导出全部账号；
 	// 不落库、不返回前端，过期后重新读取。
-	linkedCredentialMu    sync.Mutex
-	linkedCredentialCache map[int64]linkedCredentialCacheEntry
+	linkedCredentialMu        sync.Mutex
+	linkedCredentialCache     map[int64]linkedCredentialCacheEntry
 	linkedCredentialFetchedAt time.Time
-	linkedCredentialConfig [sha256.Size]byte
-	linkedCredentialReady  bool
+	linkedCredentialConfig    [sha256.Size]byte
+	linkedCredentialReady     bool
 
 	notifyMu sync.RWMutex
 	notify   func()
@@ -298,6 +300,12 @@ func (e *Engine) SyncNow(ctx context.Context) error {
 	if err := e.Sync(ctx); err != nil {
 		return err
 	}
+	// 手动目录同步也刷新已配置的远程倍率源；G1 暂时不可用时保留最近成功值，
+	// 不阻断本次目录同步和分组聚合刷新。
+	if _, remoteErr := e.SyncConfiguredMultiplierSource(ctx, true); remoteErr != nil {
+		e.store.Log("warn", "remote_multiplier_source_sync_failed", nil, nil,
+			fmt.Sprintf("远程倍率源同步失败，继续使用最近成功值: %s", remoteErr), nil)
+	}
 
 	e.mu.Lock()
 	e.lastCatalogSync = time.Now()
@@ -483,6 +491,17 @@ func (e *Engine) runOnce(ctx context.Context) (Summary, error) {
 		return summary, err
 	}
 	if err := e.Sync(ctx); err != nil {
+		return summary, err
+	}
+	// 远程倍率源与本地渠道管理共用后续的倍率应用逻辑；远程暂时不可用时
+	// 保留最近成功值，不阻断本轮健康探测与调度。
+	if _, remoteErr := e.SyncConfiguredMultiplierSource(ctx, false); remoteErr != nil {
+		e.store.Log("warn", "remote_multiplier_source_sync_failed", nil, nil,
+			fmt.Sprintf("远程倍率源同步失败，继续使用最近成功值: %s", remoteErr), nil)
+	}
+	// 远程同步可能刚刚更新了联动 Map，不能继续使用同步前读取的旧策略。
+	global, err = e.store.Policy()
+	if err != nil {
 		return summary, err
 	}
 	e.mu.Lock()

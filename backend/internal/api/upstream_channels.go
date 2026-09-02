@@ -41,10 +41,14 @@ type upstreamChannelListItem struct {
 
 func (s *Server) upstreamNoStore(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Pragma", "no-cache")
+		setNoStore(w)
 		next(w, r)
 	}
+}
+
+func setNoStore(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
 }
 
 func (s *Server) listUpstreamChannels(w http.ResponseWriter, _ *http.Request) {

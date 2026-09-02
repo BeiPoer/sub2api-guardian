@@ -205,6 +205,12 @@ func (s *Server) protectedRoutes() map[string]http.HandlerFunc {
 		"GET /api/upstream-wecom-settings":                        s.upstreamNoStore(s.getUpstreamWeComSettings),
 		"PUT /api/upstream-wecom-settings":                        s.upstreamNoStore(s.saveUpstreamWeComSettings),
 		"POST /api/upstream-wecom-settings/test":                  s.upstreamNoStore(s.testUpstreamWeComSettings),
+		"GET /api/multiplier-source":                              s.upstreamNoStore(s.multiplierSourceConfig),
+		"PUT /api/multiplier-source":                              s.upstreamNoStore(s.saveMultiplierSourceConfig),
+		"POST /api/multiplier-source/authorize":                   s.upstreamNoStore(s.authorizeRemoteMultiplierSource),
+		"POST /api/multiplier-source/test":                        s.upstreamNoStore(s.testRemoteMultiplierSource),
+		"POST /api/multiplier-source/sync":                        s.upstreamNoStore(s.syncRemoteMultiplierSource),
+		"DELETE /api/multiplier-source":                           s.upstreamNoStore(s.clearRemoteMultiplierSource),
 		"GET /api/reports/notifications":                          s.upstreamNoStore(s.getReportNotifications),
 		"PUT /api/reports/notifications":                          s.upstreamNoStore(s.saveReportNotifications),
 		"POST /api/reports/notifications/wecom/test":              s.upstreamNoStore(s.testReportNotificationsWeCom),
@@ -235,6 +241,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/setup", s.setupStatus)
 	mux.HandleFunc("POST /api/setup", s.setup)
 	mux.HandleFunc("POST /api/login", s.login)
+	mux.HandleFunc("POST /internal/v1/multiplier-source/authorize", s.authorizeMultiplierSource)
+	mux.HandleFunc("GET /internal/v1/multiplier-source/status", s.multiplierSourceStatus)
+	mux.HandleFunc("POST /internal/v1/multiplier-source/resolve", s.multiplierSourceResolve)
 	mux.HandleFunc("GET /images/from/{name}", s.serveImage2URL)
 	mux.HandleFunc("GET /images/{name}", s.serveImage2File)
 	mux.HandleFunc("GET /files/{name}", s.serveImage2File)

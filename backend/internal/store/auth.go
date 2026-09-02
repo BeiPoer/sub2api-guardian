@@ -108,31 +108,52 @@ func (s *Store) UpdateUsername(userID int64, username string) error {
 
 // CreateSession 记录一个会话，入参是令牌明文，库里只落摘要。
 func (s *Store) CreateSession(token string, userID int64, expiresAt time.Time, userAgent string) error {
+	return s.CreateScopedSession(token, userID, expiresAt, userAgent, "admin")
+}
+
+// CreateScopedSession 创建带权限范围的会话。scope 为空时按管理员会话处理。
+func (s *Store) CreateScopedSession(token string, userID int64, expiresAt time.Time, userAgent, scope string) error {
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
+		scope = "admin"
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	_, err := s.db.Exec(
-		`INSERT INTO sessions(token_hash, user_id, created_at, expires_at, user_agent)
-		 VALUES(?, ?, ?, ?, ?)`,
+		`INSERT INTO sessions(token_hash, user_id, created_at, expires_at, user_agent, scope)
+		 VALUES(?, ?, ?, ?, ?, ?)`,
 		auth.HashToken(token), userID, nowString(),
-		expiresAt.Format(time.RFC3339Nano), shorten(userAgent, 200))
+		expiresAt.Format(time.RFC3339Nano), shorten(userAgent, 200), scope)
 	return err
 }
 
 // SessionUser 用令牌明文换取用户，令牌无效或已过期时返回 sql.ErrNoRows。
 func (s *Store) SessionUser(token string) (domain.User, error) {
+	return s.SessionUserWithScope(token, "admin")
+}
+
+// SessionUserWithScope 用令牌换取用户，并要求令牌拥有指定 scope。
+// 管理员 scope 可以访问所有受保护的内部接口；窄 scope 只能访问其明确用途。
+func (s *Store) SessionUserWithScope(token, requiredScope string) (domain.User, error) {
 	var (
 		userID    int64
 		expiresAt string
+		scope     string
 	)
-	err := s.db.QueryRow(`SELECT user_id, expires_at FROM sessions WHERE token_hash = ?`,
-		auth.HashToken(token)).Scan(&userID, &expiresAt)
+	err := s.db.QueryRow(`SELECT user_id, expires_at, scope FROM sessions WHERE token_hash = ?`,
+		auth.HashToken(token)).Scan(&userID, &expiresAt, &scope)
 	if err != nil {
 		return domain.User{}, err
 	}
 	// 过期会话等同于不存在。顺手删掉，避免过期记录长期堆积。
 	if expiry := parseTime(expiresAt); expiry.IsZero() || !time.Now().Before(expiry) {
 		_ = s.DeleteSession(token)
+		return domain.User{}, sql.ErrNoRows
+	}
+	scope = strings.TrimSpace(scope)
+	requiredScope = strings.TrimSpace(requiredScope)
+	if requiredScope != "" && scope != "admin" && scope != requiredScope {
 		return domain.User{}, sql.ErrNoRows
 	}
 	return s.User(userID)

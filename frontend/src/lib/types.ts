@@ -578,6 +578,35 @@ export interface Connection {
   has_admin_key: boolean
 }
 
+export type MultiplierSourceMode = 'local' | 'remote'
+
+export interface MultiplierSourceStatus {
+  protocol: number
+  source_id: string
+  state: string
+  revision: string
+  complete: boolean
+  indexed_tokens: number
+  last_sync_at?: string
+}
+
+export interface MultiplierSourceConfig {
+  mode: MultiplierSourceMode
+  base_url: string
+  username: string
+  timeout_seconds: number
+  has_authorization: boolean
+  source_id: string
+  last_revision: string
+  last_state: string
+  last_complete: boolean
+  last_success_at?: string
+  last_error?: string
+  last_matched: number
+  last_total: number
+  local_status: MultiplierSourceStatus
+}
+
 export interface EventScores {
   perfect: number
   slow_ttfb: number

@@ -63,6 +63,9 @@ func TestTokenMultipliersForLinkUsesCompleteKeysAndUserRates(t *testing.T) {
 	if extraction.conflicts != 1 {
 		t.Fatalf("冲突令牌数量 = %d, 期望 1", extraction.conflicts)
 	}
+	if !extraction.incomplete {
+		t.Fatal("存在脱敏或缺少分组的令牌时，快照应标记为不完整")
+	}
 	for _, key := range []string{"key-masked*", "key-no-group", "key-conflict"} {
 		if _, ok := got[key]; ok {
 			t.Fatalf("失配令牌 %q 不应参与联动: %#v", key, got)

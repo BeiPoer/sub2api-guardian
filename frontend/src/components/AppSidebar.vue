@@ -195,7 +195,8 @@ const toolsNav = [
 
 const channelManagementNav = [
   { to: '/upstream-channels/summary', label: '渠道汇总', icon: 'chartBar' as const },
-  { to: '/upstream-channels/list', label: '渠道列表', icon: 'server' as const }
+  { to: '/upstream-channels/list', label: '渠道列表', icon: 'server' as const },
+  { to: '/upstream-channels/multiplier-source', label: '倍率同步源站', icon: 'link' as const }
 ]
 
 /** 系统：与调度无关的账号自身设置。 */

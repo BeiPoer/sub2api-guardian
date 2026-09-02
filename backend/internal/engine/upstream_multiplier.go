@@ -197,13 +197,17 @@ func (e *Engine) refreshCachedUpstreamMultipliers(conn domain.Connection) error 
 	if err != nil {
 		return err
 	}
-	if len(accounts) == 0 {
-		return nil
-	}
 
 	e.Reconfigure(conn)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
+	if _, remoteErr := e.SyncConfiguredMultiplierSource(ctx, false); remoteErr != nil {
+		e.store.Log("warn", "remote_multiplier_source_sync_failed", nil, nil,
+			fmt.Sprintf("自动守护已关闭，远程倍率源同步失败: %s", remoteErr), nil)
+	}
+	if len(accounts) == 0 {
+		return nil
+	}
 	updated, err := e.refreshEnabledUpstreamMultipliers(ctx, accounts)
 	if err != nil || updated == 0 {
 		return err
