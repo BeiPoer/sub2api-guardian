@@ -106,7 +106,7 @@ func TestRemoteMultiplierSourceAuthorizesAndAppliesSharedLink(t *testing.T) {
 			writeJSONForTest(w, map[string]any{"code": 0, "data": map[string]any{
 				"items": []any{map[string]any{
 					"id": 101, "name": "G2 channel", "type": "apikey",
-					"credentials": map[string]any{"api_key": "linked-key", "base_url": "https://upstream.example.com/"},
+					"credentials": map[string]any{"api_key": "linked-key", "base_url": "https://different-upstream.example.com/"},
 				}}, "pages": 1,
 			}})
 		case "/api/v1/admin/accounts/101":

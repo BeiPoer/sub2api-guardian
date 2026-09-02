@@ -25,7 +25,8 @@ import (
 
 const (
 	// MultiplierSourceProtocol is the wire-format version shared by G1 and G2.
-	MultiplierSourceProtocol = 1
+	// Version 2 fingerprints the complete API Key only; version 1 included the URL.
+	MultiplierSourceProtocol = 2
 	multiplierSourceMaxItems = 10000
 )
 
@@ -244,28 +245,23 @@ func (e *Engine) buildMultiplierSourceIndex(secret string) (multiplierSourceInde
 	return multiplierSourceIndex{status: status, items: items}, nil
 }
 
-// LinkedCredentialFingerprint 用统一规则生成 URL + Key 的不可逆指纹。
+// LinkedCredentialFingerprint 生成完整 API Key 的不可逆指纹。
+// baseURL 参数保留用于兼容旧调用，但不再参与指纹计算。
 func LinkedCredentialFingerprint(secret, baseURL, apiKey string) (string, bool) {
+	_ = baseURL
 	secret = strings.TrimSpace(secret)
 	apiKey = strings.TrimSpace(apiKey)
 	if secret == "" || apiKey == "" || strings.Contains(apiKey, "*") {
 		return "", false
 	}
-	canonicalURL, ok := normalizeLinkedURL(baseURL)
-	if !ok {
-		return "", false
-	}
 	mac := hmac.New(sha256.New, []byte(secret))
-	_, _ = mac.Write([]byte(canonicalURL + "\x00" + apiKey))
+	_, _ = mac.Write([]byte(apiKey))
 	return hex.EncodeToString(mac.Sum(nil)), true
 }
 
 func linkedIdentityRevision(baseURL, apiKey string) string {
-	canonicalURL, ok := normalizeLinkedURL(baseURL)
-	if !ok {
-		return ""
-	}
-	hash := sha256.Sum256([]byte(canonicalURL + "\x00" + strings.TrimSpace(apiKey)))
+	_ = baseURL
+	hash := sha256.Sum256([]byte(strings.TrimSpace(apiKey)))
 	return hex.EncodeToString(hash[:])
 }
 

@@ -65,13 +65,6 @@ func (e *Engine) SyncLinkedMultipliers(
 	if len(validTokenMultipliers) == 0 {
 		return nil
 	}
-	sourceURL, ok := normalizeLinkedURL(channel.BaseURL)
-	if !ok {
-		// 上游渠道同步本身已经成功；地址无法规范化时仅跳过联动，
-		// 不让一次配置失配改变渠道管理同步的成功状态。
-		return nil
-	}
-
 	// 同一上游同步不能并发修改联动策略或账号名称。
 	e.linkedMultiplierMu.Lock()
 	defer e.linkedMultiplierMu.Unlock()
@@ -113,12 +106,19 @@ func (e *Engine) SyncLinkedMultipliers(
 		if !found {
 			continue
 		}
-		accountURL, valid := normalizeLinkedURL(credentials.BaseURL)
-		if !valid || accountURL != sourceURL {
-			continue
+		keys := []string{credentials.APIKey}
+		if channel.Type == store.UpstreamChannelNewAPI {
+			keys = sourceLinkedKeyVariants(credentials.APIKey)
 		}
-		ratio, found := validTokenMultipliers[linkedCredentialKey(credentials.APIKey)]
-		if !found {
+		var ratio float64
+		matchedKey := false
+		for _, key := range keys {
+			if candidate, ok := validTokenMultipliers[linkedCredentialKey(key)]; ok {
+				ratio, matchedKey = candidate, true
+				break
+			}
+		}
+		if !matchedKey {
 			continue
 		}
 		matched = append(matched, linkedAccount{account: account, ratio: ratio})
@@ -265,6 +265,7 @@ func linkedCredentialKey(apiKey string) string {
 	return strings.TrimSpace(apiKey)
 }
 
+// normalizeLinkedURL 保留旧的 URL 规范化辅助函数；联动匹配本身已不再使用 URL。
 func normalizeLinkedURL(raw string) (string, bool) {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || parsed.Host == "" {
@@ -304,6 +305,5 @@ func validLinkedMultiplier(value float64) bool {
 
 func isExpectedCredentialMismatch(err error) bool {
 	message := err.Error()
-	return strings.Contains(message, "未配置 API Key") || strings.Contains(message, "未配置上游地址") ||
-		strings.Contains(message, "只有 API Key 类型")
+	return strings.Contains(message, "未配置 API Key") || strings.Contains(message, "只有 API Key 类型")
 }

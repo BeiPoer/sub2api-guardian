@@ -278,7 +278,7 @@ type Policy struct {
 	// 未设置的账号按类型取默认值（见 DefaultMultiplierFor）。
 	AccountMultipliers map[string]float64 `json:"account_multipliers"`
 
-	// AccountLinkedMultipliers 是由渠道管理按 URL + API Key 同步得到的调度倍率。
+	// AccountLinkedMultipliers 是由渠道管理按完整 API Key 同步得到的调度倍率。
 	// 它优先于实时上游倍率与人工倍率，但不修改 sub2api 的计费倍率。
 	AccountLinkedMultipliers map[string]float64 `json:"account_linked_multipliers"`
 

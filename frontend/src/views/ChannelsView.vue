@@ -388,7 +388,7 @@
             :disabled="editor.upstreamMultiplierEnabled && !editor.multiplierLinked"
             :hint="
               editor.multiplierLinked
-                ? '当前值由渠道管理按 URL + API Key 同步，修改后解除本次关联'
+                ? '当前值由渠道管理按完整 API Key 同步，修改后解除本次关联'
                 : editor.upstreamMultiplierEnabled
                 ? '实时倍率开启时人工值暂不生效，关闭后自动恢复'
                 : '越低越优先。仅供调度系统使用，不会写回 sub2api；填 0 表示回落到类型默认值'

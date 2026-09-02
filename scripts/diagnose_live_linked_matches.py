@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only live check for channel-management URL + API key matches.
+"""Read-only live check for channel-management API key matches.
 
 The script reads Guardian's connection settings and upstream caches from SQLite,
 then calls Sub2API's administrator account-list endpoint. Exported credentials stay
@@ -45,7 +45,7 @@ ORDINARY_RATIO_FIELDS = (
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="只读核对上游渠道与渠道池账号的 URL+Key 精确匹配"
+        description="只读核对上游渠道与渠道池账号的 API Key 精确匹配"
     )
     parser.add_argument(
         "db",
@@ -215,6 +215,18 @@ def token_key(token):
     return ""
 
 
+def newapi_key_variants(value):
+    value = text(value)
+    if not value:
+        return set()
+    variants = {value}
+    if value.startswith("sk-"):
+        variants.add(value[3:])
+    else:
+        variants.add("sk-" + value)
+    return variants
+
+
 def token_group_identifiers(token):
     result = set()
     for field in GROUP_FIELDS:
@@ -252,11 +264,10 @@ def token_ratio(group, token):
     return None
 
 
-def source_pairs(groups_raw, tokens_raw, source_url, channel_type):
+def source_keys(groups_raw, tokens_raw, channel_type):
     groups = collection(groups_raw)
     group_ids = [identifiers(group) for group in groups]
-    pairs = set()
-    key_urls = defaultdict(set)
+    keys = set()
     key_ratios = defaultdict(set)
     complete_keys = set()
     stats = Counter()
@@ -290,13 +301,9 @@ def source_pairs(groups_raw, tokens_raw, source_url, channel_type):
             stats["invalid_ratio"] += 1
             continue
         stats["candidate"] += 1
-        if source_url is None:
-            continue
-        pair = (source_url, key)
-        pairs.add(pair)
-        key_urls[key].add(source_url)
+        keys.add(key)
         key_ratios[key].add(ratio)
-    return pairs, key_urls, key_ratios, stats, complete_keys
+    return keys, key_ratios, stats, complete_keys
 
 
 def connection_settings(db):
@@ -345,17 +352,11 @@ def credentials_from_export(payload):
     if credentials is None:
         return None, "missing_credentials"
     api_key = text(first(credentials, KEY_FIELDS))
-    base_url = text(first(credentials, ("base_url", "baseURL", "url")))
     if not api_key:
         return None, "missing_key"
     if "*" in api_key:
         return None, "masked_key"
-    if not base_url:
-        return None, "missing_url"
-    normalized = normalize_url(base_url)
-    if normalized is None:
-        return None, "invalid_url"
-    return (normalized, api_key), "ok"
+    return api_key, "ok"
 
 
 def fetch_export(base_url, admin_key, account_id, timeout):
@@ -407,14 +408,11 @@ def main():
             print("错误：SQLite 中的 Sub2API 地址不是有效的 HTTP(S) 地址。", file=sys.stderr)
             return 2
 
-        source_pairs_set = set()
-        source_pair_channels = defaultdict(set)
-        source_key_urls = defaultdict(set)
+        source_candidate_keys = set()
+        source_key_channels = defaultdict(set)
         source_key_ratios = defaultdict(set)
         source_complete_keys = set()
         source_complete_key_channels = defaultdict(set)
-        source_urls = set()
-        source_url_channels = defaultdict(set)
         source_channel_stats = {}
         source_stats = Counter()
         source_channels = 0
@@ -433,7 +431,7 @@ def main():
                     enabled_group_tasks[int(task["channel_id"])] = True
         if table_exists(db, "upstream_channels") and table_exists(db, "upstream_channel_cache"):
             channels = db.execute(
-                "SELECT id, type, base_url, ignored, status FROM upstream_channels ORDER BY id"
+                "SELECT id, type, ignored, status FROM upstream_channels ORDER BY id"
             ).fetchall()
             caches = db.execute(
                 "SELECT channel_id, cache_key, normalized_json "
@@ -449,27 +447,23 @@ def main():
                     "ignored": bool(channel["ignored"]),
                     "status": text(channel["status"]) or "-",
                 }
-                channel_url = normalize_url(channel["base_url"])
-                if channel_url is not None:
-                    source_urls.add(channel_url)
-                    source_url_channels[channel_url].add(channel_id)
                 groups_row = cache_map.get((channel_id, "groups"))
                 tokens_row = cache_map.get((channel_id, "tokens"))
                 groups = parse_json(groups_row["normalized_json"], []) if groups_row else []
                 tokens = parse_json(tokens_row["normalized_json"], []) if tokens_row else []
                 channel_type = text(channel["type"]).lower()
-                pairs, key_urls, key_ratios, stats, complete_keys = source_pairs(
-                    groups, tokens, channel_url, channel_type
-                )
-                source_complete_keys.update(complete_keys)
+                keys, key_ratios, stats, complete_keys = source_keys(groups, tokens, channel_type)
                 for key in complete_keys:
-                    source_complete_key_channels[key].add(channel_id)
+                    variants = newapi_key_variants(key) if channel_type == "newapi" else {key}
+                    source_complete_keys.update(variants)
+                    for variant in variants:
+                        source_complete_key_channels[variant].add(channel_id)
                 source_channel_stats[channel_id] = stats
-                source_pairs_set.update(pairs)
-                for pair in pairs:
-                    source_pair_channels[pair].add(channel_id)
-                for key, urls in key_urls.items():
-                    source_key_urls[key].update(urls)
+                for key in keys:
+                    variants = newapi_key_variants(key) if channel_type == "newapi" else {key}
+                    source_candidate_keys.update(variants)
+                    for variant in variants:
+                        source_key_channels[variant].add(channel_id)
                 for key, ratios in key_ratios.items():
                     source_key_ratios[key].update(ratios)
                 source_stats.update(stats)
@@ -502,7 +496,7 @@ def main():
         print_header("来源缓存候选")
         print("参与核对的可联动上游渠道数: %d" % source_channels)
         print("完整 Key: %d；有效分组倍率候选: %d" % (source_stats["full_key"], source_stats["candidate"]))
-        print("URL+Key 候选配对数: %d" % len(source_pairs_set))
+        print("可联动 Key 候选数: %d" % len(source_candidate_keys))
         print("候选 Key 中倍率冲突数: %d" % sum(1 for values in source_key_ratios.values() if len(values) > 1))
 
         print_header("渠道池 API Key 凭据读取")
@@ -517,9 +511,7 @@ def main():
         statuses = Counter()
         exact_ids = set()
         exact_source_channels = defaultdict(set)
-        key_only_ids = set()
-        url_only_ids = set()
-        neither_ids = set()
+        not_candidate_ids = set()
         target_presence = {}
         target_credentials = None
         with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as pool:
@@ -532,25 +524,19 @@ def main():
                 statuses[status] += 1
                 if status != "ok" or credentials is None:
                     continue
-                account_url, api_key = credentials
+                api_key = credentials
                 if args.account_id is not None:
                     target_credentials = credentials
                 if args.account_id is not None:
                     target_presence = {
-                        "url": account_url in source_urls,
-                        "key": api_key in source_key_urls,
+                        "complete": api_key in source_complete_keys,
+                        "candidate": api_key in source_candidate_keys,
                     }
-                if (account_url, api_key) in source_pairs_set:
+                if api_key in source_candidate_keys:
                     exact_ids.add(str(account_id))
-                    exact_source_channels[str(account_id)].update(
-                        source_pair_channels.get((account_url, api_key), set())
-                    )
-                elif api_key in source_key_urls:
-                    key_only_ids.add(str(account_id))
-                elif account_url in source_urls:
-                    url_only_ids.add(str(account_id))
+                    exact_source_channels[str(account_id)].update(source_key_channels.get(api_key, set()))
                 else:
-                    neither_ids.add(str(account_id))
+                    not_candidate_ids.add(str(account_id))
 
         print("导出成功: %d" % statuses["ok"])
         for status, count in sorted(statuses.items()):
@@ -559,36 +545,31 @@ def main():
 
         print_header("精确匹配结果")
         linked = linked_ids(db)
-        print("URL+Key 精确匹配账号数: %d" % len(exact_ids))
-        print("仅 Key 相同、URL 不同: %d" % len(key_only_ids))
-        print("仅 URL 相同、Key 不同: %d" % len(url_only_ids))
-        print("URL 和 Key 都不同或无候选: %d" % len(neither_ids))
+        print("API Key 精确匹配账号数: %d" % len(exact_ids))
+        print("完整 Key 但无有效倍率候选: %d" % len(not_candidate_ids))
         if args.account_id is not None:
             target_id = str(args.account_id)
             target_linked = target_id in linked
             print("策略中已有有效联动倍率（全局）: %d" % len(linked))
             print("目标账号已有联动倍率: %s" % ("是" if target_linked else "否"))
-            print("目标账号 URL 是否出现在任一可联动上游渠道: %s" % (
-                "是" if target_presence.get("url") else "否"
-            ))
             print("目标账号 Key 是否出现在完整令牌缓存中: %s" % (
-                "是" if target_credentials and target_credentials[1] in source_complete_keys else "否"
+                "是" if target_presence.get("complete") else "否"
             ))
             print("目标账号 Key 是否出现在有效候选中: %s" % (
-                "是" if target_presence.get("key") else "否"
+                "是" if target_presence.get("candidate") else "否"
             ))
-            print("目标账号精确匹配但策略尚未记录: %s" % (
+            print("目标账号匹配但策略尚未记录: %s" % (
                 "是" if target_id in exact_ids and not target_linked else "否"
             ))
-            print("目标账号已有联动但本次未精确匹配: %s" % (
+            print("目标账号已有联动但本次未匹配: %s" % (
                 "是" if target_linked and target_id not in exact_ids else "否"
             ))
             if target_credentials:
-                target_url, target_key = target_credentials
-                target_source_channels = sorted(source_url_channels.get(target_url, set()))
+                target_key = target_credentials
+                target_source_channels = sorted(source_key_channels.get(target_key, set()))
                 target_key_channels = source_complete_key_channels.get(target_key, set())
                 if target_source_channels:
-                    print("目标账号 URL 对应的来源渠道（仅显示 ID 和缓存统计）:")
+                    print("目标账号 Key 对应的来源渠道（仅显示 ID 和缓存统计）:")
                     for channel_id in target_source_channels:
                         info = channel_info.get(channel_id, {})
                         stats = source_channel_stats.get(channel_id, {})
@@ -615,11 +596,11 @@ def main():
                     ))
         else:
             print("策略中已有有效联动倍率: %d" % len(linked))
-            print("精确匹配但策略尚未记录: %d" % len(exact_ids - linked))
-            print("策略已有联动但本次未精确匹配: %d" % len(linked - exact_ids))
+            print("Key 匹配但策略尚未记录: %d" % len(exact_ids - linked))
+            print("策略已有联动但本次未匹配: %d" % len(linked - exact_ids))
         missing_ids = sorted(exact_ids - linked, key=lambda value: int(value))
         if missing_ids:
-            print("尚未写入策略的精确账号（仅显示 ID 和来源渠道状态）:")
+            print("尚未写入策略的 Key 匹配账号（仅显示 ID 和来源渠道状态）:")
             for account_id in missing_ids:
                 channels = []
                 for channel_id in sorted(exact_source_channels.get(account_id, set())):
@@ -646,7 +627,7 @@ def main():
                     print("%s: %d 条，最近 %s" % (text(row["action"]), row["count"], row["last_at"] or "未记录"))
             else:
                 print("没有找到该账号的 upstream_multiplier_link* 事件。")
-        print("说明：凭据只在本进程内比较；本脚本不会输出、序列化或写入 URL、Key。")
+        print("说明：凭据只在本进程内比较；本脚本不会输出、序列化或写入 API Key。")
         print("检查时间: %s" % dt.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z"))
         return 0
     finally:

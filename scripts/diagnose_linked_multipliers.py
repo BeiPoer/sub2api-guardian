@@ -477,8 +477,8 @@ def main() -> int:
         elif stale_or_due > 0:
             print("仍有分组任务已到期：优先检查后台任务是否持续运行，以及对应渠道是否有错误。")
         else:
-            print("任务和缓存看起来已处理，但仍有账号未加后缀；重点看 URL/Key 精确匹配和联动失败事件。")
-        print("说明：账号凭据不会写入 Guardian SQLite，因此本脚本无法也不会直接核对 URL+Key 原文。")
+            print("任务和缓存看起来已处理，但仍有账号未加后缀；重点看 API Key 精确匹配和联动失败事件。")
+        print("说明：账号凭据不会写入 Guardian SQLite，因此本脚本无法也不会直接核对 API Key 原文。")
         return 0
     finally:
         db.close()

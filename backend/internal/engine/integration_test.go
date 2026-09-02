@@ -536,7 +536,7 @@ func TestSyncLinkedMultipliersSupportsNewAPI(t *testing.T) {
 	}
 	conn, _ := st.Connection()
 	fake.setCredentials(101, map[string]any{
-		"api_key":  "sk-newapi-key",
+		"api_key":  "newapi-key",
 		"base_url": conn.BaseURL,
 	})
 	channel := store.UpstreamChannel{ID: 1, Type: store.UpstreamChannelNewAPI, BaseURL: conn.BaseURL}
@@ -574,7 +574,7 @@ func TestSyncLinkedMultipliersKeepsLocalValueWhenNameWriteFails(t *testing.T) {
 	}
 }
 
-func TestSyncLinkedMultipliersSkipsURLAndKeyMismatches(t *testing.T) {
+func TestSyncLinkedMultipliersMatchesAPIKeyAcrossURLs(t *testing.T) {
 	eng, st, fake := setupEngine(t)
 	if err := eng.RunOnce(context.Background()); err != nil {
 		t.Fatalf("初始化目录失败: %v", err)
@@ -593,11 +593,14 @@ func TestSyncLinkedMultipliersSkipsURLAndKeyMismatches(t *testing.T) {
 		t.Fatalf("失配联动不应失败: %v", err)
 	}
 	p, _ = st.Policy()
-	if p.AccountLinkedMultipliers["101"] != 0.5 || p.AccountLinkedMultipliers["102"] != 0.6 {
-		t.Fatalf("失配账号旧倍率不应被清理: %#v", p.AccountLinkedMultipliers)
+	if p.AccountLinkedMultipliers["101"] != 0.5 || p.AccountLinkedMultipliers["102"] != 0.12 {
+		t.Fatalf("API Key 匹配结果异常: %#v", p.AccountLinkedMultipliers)
 	}
-	if fake.nameUpdateCount(101) != 0 || fake.nameUpdateCount(102) != 0 {
-		t.Fatalf("URL/Key 失配账号不应写回名称: 101=%d 102=%d", fake.nameUpdateCount(101), fake.nameUpdateCount(102))
+	if fake.nameUpdateCount(101) != 0 || fake.nameUpdateCount(102) != 1 {
+		t.Fatalf("API Key 匹配账号写回次数异常: 101=%d 102=%d", fake.nameUpdateCount(101), fake.nameUpdateCount(102))
+	}
+	if name, ok := fake.updateOf(102, "name"); !ok || name != "问题渠道【x0.12】" {
+		t.Fatalf("跨 URL 的 API Key 匹配名称异常: %v/%v", name, ok)
 	}
 }
 

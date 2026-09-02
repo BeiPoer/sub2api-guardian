@@ -383,7 +383,7 @@ func groupRatio(group any) (float64, bool) {
 }
 
 // tokenMultipliersForLink 提取完整令牌 Key 对应的用户分组倍率。
-// Sub2API 和 new-api 都使用 URL + API Key 参与渠道池联动。
+// Sub2API 和 new-api 都使用完整 API Key 参与渠道池联动。
 func tokenMultipliersForLink(groups, tokens any, channelType store.UpstreamChannelType) map[string]float64 {
 	return tokenMultiplierLinkCandidates(groups, tokens, channelType).ratios
 }
@@ -425,7 +425,7 @@ func tokenMultiplierLinkCandidates(groups, tokens any, channelType store.Upstrea
 		}
 		key := tokenKey(token)
 		if key == "" {
-			// 脱敏或缺失 Key 无法参与 URL + Key 精确匹配；快照不能宣称完整。
+			// 脱敏或缺失 Key 无法参与精确匹配；快照不能宣称完整。
 			incomplete = true
 			continue
 		}

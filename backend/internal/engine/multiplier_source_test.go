@@ -40,6 +40,10 @@ func TestResolveMultiplierSourceUsesCachedFinalRatio(t *testing.T) {
 	if !ok {
 		t.Fatal("生成指纹失败")
 	}
+	otherURLFingerprint, ok := LinkedCredentialFingerprint("read-token", "not-a-url", "linked-key")
+	if !ok || otherURLFingerprint != fingerprint {
+		t.Fatalf("同一 API Key 的指纹不应依赖 URL: %q/%q", fingerprint, otherURLFingerprint)
+	}
 	result, err := eng.ResolveMultiplierSource("read-token", []string{fingerprint})
 	if err != nil {
 		t.Fatal(err)

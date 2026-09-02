@@ -115,6 +115,16 @@ func TestListAccountCredentialsUsesBatchEndpoint(t *testing.T) {
 	}
 }
 
+func TestAccountCredentialsFromExportOnlyRequiresFullAPIKey(t *testing.T) {
+	credentials, err := accountCredentialsFromExport(exportedAccount{
+		Type:        "apikey",
+		Credentials: map[string]any{"api_key": "secret-key"},
+	})
+	if err != nil || credentials.APIKey != "secret-key" {
+		t.Fatalf("没有 URL 也应接受完整 API Key: %+v, err=%v", credentials, err)
+	}
+}
+
 func TestFetchAccountUpstreamMultiplierUsesNativeProbeForNonOpenAIAPIKey(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/admin/accounts/202/upstream-billing-probe", func(w http.ResponseWriter, _ *http.Request) {

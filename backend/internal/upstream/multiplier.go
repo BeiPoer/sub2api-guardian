@@ -30,7 +30,7 @@ type exportedAccount struct {
 }
 
 // AccountCredentials 是账号连接信息，仅供内部凭据匹配使用。
-// 调用方不得将 APIKey 或 BaseURL 写入日志、缓存或 API 响应。
+// 联动只使用 APIKey；调用方不得将凭据写入日志、缓存或 API 响应。
 type AccountCredentials struct {
 	BaseURL string `json:"-"`
 	APIKey  string `json:"-"`
@@ -121,7 +121,7 @@ func (c *Client) ListAccountCredentials(ctx context.Context) ([]AccountCredentia
 		}
 		credentials, err := accountCredentialsFromExport(account)
 		if err != nil {
-			// 脱敏、缺失凭据或非完整连接信息都只是不可联动，
+			// 脱敏、缺失 Key 或非 API Key 类型都只是不可联动，
 			// 不影响同一批其它账号继续匹配。
 			continue
 		}
@@ -155,9 +155,6 @@ func accountCredentialsFromExport(account exportedAccount) (AccountCredentials, 
 	}
 	if strings.Contains(apiKey, "*") {
 		return AccountCredentials{}, errors.New("渠道 API Key 已脱敏，无法进行精确匹配")
-	}
-	if baseURL == "" {
-		return AccountCredentials{}, errors.New("渠道未配置上游地址，无法进行精确匹配")
 	}
 	return AccountCredentials{BaseURL: baseURL, APIKey: apiKey}, nil
 }
