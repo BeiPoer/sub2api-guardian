@@ -35,3 +35,22 @@ func TestScheduledReportSourceSettingsDefaultAndRoundTrip(t *testing.T) {
 		t.Fatalf("源站配置读取异常: loaded=%+v saved=%+v exists=%v err=%v", loaded, saved, exists, err)
 	}
 }
+
+func TestScheduledReportSourcesReadsLegacySettings(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "guardian.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	if err := st.setJSON(metaScheduledReportSource, ScheduledReportSourceSettings{
+		Mode: ScheduledReportSourceCustom, SourceType: ScheduledReportSourceNewAPI,
+		BaseURL: "https://legacy.example.com/", Credential: "legacy-token", NewAPIUserID: 8,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	catalog, exists, err := st.ScheduledReportSources()
+	if err != nil || !exists || catalog.DefaultSourceID != "source-1" || len(catalog.Sources) != 1 ||
+		catalog.Sources[0].BaseURL != "https://legacy.example.com" || catalog.Sources[0].Credential != "legacy-token" {
+		t.Fatalf("旧源站配置转换异常: catalog=%+v exists=%v err=%v", catalog, exists, err)
+	}
+}

@@ -475,6 +475,74 @@ func TestManagerCustomNewAPIDrivesBothReports(t *testing.T) {
 	}
 }
 
+func TestManagerReportsSelectDifferentSources(t *testing.T) {
+	var usageCalls, dailyCalls atomic.Int64
+	usageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/admin/usage" {
+			t.Fatalf("渠道报告请求了错误接口: %s", r.URL.Path)
+		}
+		usageCalls.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{
+			"items": []any{}, "page": 1, "page_size": 100, "pages": 1,
+		}})
+	}))
+	defer usageServer.Close()
+	dailyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		dailyCalls.Add(1)
+		var data any
+		switch r.URL.Path {
+		case "/api/v1/admin/usage/stats":
+			data = map[string]any{"total_actual_cost": 7, "total_tokens": 11}
+		case "/api/v1/admin/users", "/api/v1/admin/payment/orders":
+			data = map[string]any{"items": []any{}, "page": 1, "page_size": 1000, "pages": 1}
+		default:
+			t.Fatalf("每日报告请求了错误接口: %s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": data})
+	}))
+	defer dailyServer.Close()
+
+	st := openReportStore(t)
+	manager := New(st, upstream.New("https://global.invalid", "global-key", time.Second))
+	usageCatalog, err := manager.SaveSourceSettings(SourceSaveInput{
+		Name: "用量站", SourceType: store.ScheduledReportSourceSub2API,
+		BaseURL: usageServer.URL, Credential: "usage-key",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	usageID := usageCatalog.Items[len(usageCatalog.Items)-1].ID
+	dailyCatalog, err := manager.SaveSourceSettings(SourceSaveInput{
+		Name: "日报站", SourceType: store.ScheduledReportSourceSub2API,
+		BaseURL: dailyServer.URL, Credential: "daily-key",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dailyID := dailyCatalog.Items[len(dailyCatalog.Items)-1].ID
+
+	channelInput := validSaveInput(20)
+	channelInput.SourceID = usageID
+	if _, err := manager.Save(channelInput); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.SaveDaily(DailySaveInput{
+		SourceID: dailyID, Enabled: false, RunHour: 23, Timezone: "UTC",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if run, err := manager.RunNow(context.Background()); err != nil || run.Status != "ok" {
+		t.Fatalf("渠道报告执行异常: run=%+v err=%v", run, err)
+	}
+	dailyRun, err := manager.RunDailyNow(context.Background())
+	summary, ok := dailyRun.Summary.(DailyReportSummary)
+	if err != nil || dailyRun.Status != "ok" || !ok || summary.TotalActualCost != 7 ||
+		usageCalls.Load() != 1 || dailyCalls.Load() != 3 {
+		t.Fatalf("多源站选择未生效: daily=%+v summary=%+v usage=%d daily_calls=%d err=%v",
+			dailyRun, summary, usageCalls.Load(), dailyCalls.Load(), err)
+	}
+}
+
 func validSaveInput(trigger int) SaveInput {
 	return SaveInput{
 		Enabled: false, IntervalMinutes: 60, StartHour: 0, EndHour: 23,

@@ -50,6 +50,8 @@ type NotificationConfig struct {
 }
 
 type SourceConfig struct {
+	ID               string                          `json:"id"`
+	Name             string                          `json:"name"`
 	Mode             store.ScheduledReportSourceMode `json:"mode"`
 	SourceType       store.ScheduledReportSourceType `json:"source_type"`
 	BaseURL          string                          `json:"base_url"`
@@ -60,7 +62,14 @@ type SourceConfig struct {
 	EffectiveBaseURL string                          `json:"effective_base_url"`
 }
 
+type SourceCatalogConfig struct {
+	SourceConfig
+	Items []SourceConfig `json:"items"`
+}
+
 type SourceSaveInput struct {
+	ID           string                          `json:"id"`
+	Name         string                          `json:"name"`
 	Mode         store.ScheduledReportSourceMode `json:"mode"`
 	SourceType   store.ScheduledReportSourceType `json:"source_type"`
 	BaseURL      string                          `json:"base_url"`
@@ -69,6 +78,8 @@ type SourceSaveInput struct {
 }
 
 type SourceSummary struct {
+	ID         string                          `json:"id"`
+	Name       string                          `json:"name"`
 	Mode       store.ScheduledReportSourceMode `json:"mode"`
 	Type       store.ScheduledReportSourceType `json:"type"`
 	Configured bool                            `json:"configured"`
@@ -77,6 +88,7 @@ type SourceSummary struct {
 
 // ChannelUsageConfig 是对外返回的配置与运行状态。
 type ChannelUsageConfig struct {
+	SourceID              string `json:"source_id"`
 	Enabled               bool   `json:"enabled"`
 	IntervalMinutes       int    `json:"interval_minutes"`
 	StartHour             int    `json:"start_hour"`
@@ -93,6 +105,7 @@ type ChannelUsageConfig struct {
 
 // DailyReportConfig 是对外返回的每日报告配置与运行状态。
 type DailyReportConfig struct {
+	SourceID   string `json:"source_id"`
 	Enabled    bool   `json:"enabled"`
 	RunHour    int    `json:"run_hour"`
 	Timezone   string `json:"timezone"`
@@ -111,6 +124,7 @@ type WeComInput struct {
 }
 
 type SaveInput struct {
+	SourceID              string `json:"source_id"`
 	Enabled               bool   `json:"enabled"`
 	IntervalMinutes       int    `json:"interval_minutes"`
 	StartHour             int    `json:"start_hour"`
@@ -122,6 +136,7 @@ type SaveInput struct {
 }
 
 type DailySaveInput struct {
+	SourceID string `json:"source_id"`
 	Enabled  bool   `json:"enabled"`
 	RunHour  int    `json:"run_hour"`
 	Timezone string `json:"timezone"`
@@ -139,6 +154,7 @@ type ConnectionSummary struct {
 type View struct {
 	Config     ChannelUsageConfig        `json:"config"`
 	Source     SourceSummary             `json:"source"`
+	Sources    []SourceSummary           `json:"sources"`
 	Connection ConnectionSummary         `json:"connection"`
 	LatestRun  *store.ScheduledReportRun `json:"latest_run"`
 }
@@ -146,6 +162,7 @@ type View struct {
 type DailyView struct {
 	Config     DailyReportConfig         `json:"config"`
 	Source     SourceSummary             `json:"source"`
+	Sources    []SourceSummary           `json:"sources"`
 	Connection ConnectionSummary         `json:"connection"`
 	LatestRun  *store.ScheduledReportRun `json:"latest_run"`
 }
@@ -184,9 +201,14 @@ type storedWeComConfig struct {
 }
 
 type storedConfig struct {
-	LookbackHours         int   `json:"lookback_hours"`
-	FirstTokenThresholdMS int64 `json:"first_token_threshold_ms"`
-	TriggerCount          int   `json:"trigger_count"`
+	SourceID              string `json:"source_id,omitempty"`
+	LookbackHours         int    `json:"lookback_hours"`
+	FirstTokenThresholdMS int64  `json:"first_token_threshold_ms"`
+	TriggerCount          int    `json:"trigger_count"`
+}
+
+type storedDailyConfig struct {
+	SourceID string `json:"source_id,omitempty"`
 }
 
 type legacyStoredConfig struct {

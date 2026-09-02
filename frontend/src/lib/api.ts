@@ -368,6 +368,8 @@ export const api = {
     request<ReportSourceConfig>('/api/reports/source'),
   saveReportSourceSettings: (payload: ReportSourceSaveInput) =>
     put<ReportSourceConfig>('/api/reports/source', payload),
+  deleteReportSource: (id: string) =>
+    request<ReportSourceConfig>(`/api/reports/source/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   channelUsageReport: () =>
     request<ChannelUsageReportView>('/api/reports/channel-usage'),

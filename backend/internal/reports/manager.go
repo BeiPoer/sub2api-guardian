@@ -116,7 +116,20 @@ func (m *Manager) Save(input SaveInput) (View, error) {
 	if err != nil {
 		return View{}, err
 	}
+	sourceID := input.SourceID
+	if sourceID == "" && exists {
+		current, decodeErr := decodeStoredConfig(report.ConfigJSON)
+		if decodeErr != nil {
+			return View{}, decodeErr
+		}
+		sourceID = current.SourceID
+	}
+	sourceID, err = m.validateSourceID(sourceID)
+	if err != nil {
+		return View{}, err
+	}
 	config := storedConfig{
+		SourceID:              sourceID,
 		LookbackHours:         input.LookbackHours,
 		FirstTokenThresholdMS: input.FirstTokenThresholdMS,
 		TriggerCount:          input.TriggerCount,
@@ -156,13 +169,29 @@ func (m *Manager) SaveDaily(input DailySaveInput) (DailyView, error) {
 	if !exists {
 		report = defaultDailyReport()
 	}
+	sourceID := input.SourceID
+	if sourceID == "" && exists {
+		current, decodeErr := decodeDailyStoredConfig(report.ConfigJSON)
+		if decodeErr != nil {
+			return DailyView{}, decodeErr
+		}
+		sourceID = current.SourceID
+	}
+	sourceID, err = m.validateSourceID(sourceID)
+	if err != nil {
+		return DailyView{}, err
+	}
+	raw, err := json.Marshal(storedDailyConfig{SourceID: sourceID})
+	if err != nil {
+		return DailyView{}, err
+	}
 	report.Type = store.ScheduledReportDaily
 	report.Enabled = input.Enabled
 	report.IntervalMinutes = 24 * 60
 	report.StartHour = input.RunHour
 	report.EndHour = input.RunHour
 	report.Timezone = strings.TrimSpace(input.Timezone)
-	report.ConfigJSON = `{}`
+	report.ConfigJSON = string(raw)
 	saved, err := m.store.SaveScheduledReportConfig(report)
 	if err != nil {
 		return DailyView{}, err
@@ -378,7 +407,7 @@ func (m *Manager) execute(ctx context.Context, report store.ScheduledReport, con
 	}
 	notificationSettings, notificationErr := m.notificationSettings()
 
-	source, queryErr := m.resolveSource()
+	source, queryErr := m.resolveSource(config.SourceID)
 	var records []upstream.UsageRecord
 	if queryErr == nil {
 		queryCtx, cancel := context.WithTimeout(ctx, usageRequestTimeout*time.Second)
@@ -425,6 +454,10 @@ func (m *Manager) execute(ctx context.Context, report store.ScheduledReport, con
 
 func (m *Manager) executeDaily(ctx context.Context, report store.ScheduledReport) (store.ScheduledReportRun, error) {
 	startedAt := time.Now().UTC()
+	config, err := decodeDailyStoredConfig(report.ConfigJSON)
+	if err != nil {
+		return store.ScheduledReportRun{}, err
+	}
 	location, err := time.LoadLocation(report.Timezone)
 	if err != nil {
 		return store.ScheduledReportRun{}, err
@@ -440,7 +473,7 @@ func (m *Manager) executeDaily(ctx context.Context, report store.ScheduledReport
 	}
 	notificationSettings, notificationErr := m.notificationSettings()
 
-	source, queryErr := m.resolveSource()
+	source, queryErr := m.resolveSource(config.SourceID)
 	var stats upstream.DailyReportStats
 	if queryErr == nil {
 		queryCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
@@ -545,13 +578,15 @@ func (m *Manager) viewFor(report store.ScheduledReport, config storedConfig) (Vi
 			latest = &items[0]
 		}
 	}
-	source, err := m.sourceSummary()
+	source, sources, err := m.sourceView(config.SourceID)
 	if err != nil {
 		return View{}, err
 	}
+	config.SourceID = source.ID
 	return View{
 		Config: ChannelUsageConfig{
-			Enabled: report.Enabled, IntervalMinutes: report.IntervalMinutes,
+			SourceID: config.SourceID,
+			Enabled:  report.Enabled, IntervalMinutes: report.IntervalMinutes,
 			StartHour: report.StartHour, EndHour: report.EndHour, Timezone: report.Timezone,
 			LookbackHours: config.LookbackHours, FirstTokenThresholdMS: config.FirstTokenThresholdMS,
 			TriggerCount: config.TriggerCount,
@@ -559,12 +594,17 @@ func (m *Manager) viewFor(report store.ScheduledReport, config storedConfig) (Vi
 			LastError: report.LastError, NextRunAt: report.NextRunAt,
 		},
 		Source:     source,
+		Sources:    sources,
 		Connection: ConnectionSummary{Configured: source.Configured, BaseURL: source.BaseURL},
 		LatestRun:  latest,
 	}, nil
 }
 
 func (m *Manager) dailyViewFor(report store.ScheduledReport) (DailyView, error) {
+	config, err := decodeDailyStoredConfig(report.ConfigJSON)
+	if err != nil {
+		return DailyView{}, err
+	}
 	if !report.Enabled {
 		report.NextRunAt = ""
 	} else if report.LastRunAt != "" {
@@ -586,17 +626,19 @@ func (m *Manager) dailyViewFor(report store.ScheduledReport) (DailyView, error) 
 			latest = &items[0]
 		}
 	}
-	source, err := m.sourceSummary()
+	source, sources, err := m.sourceView(config.SourceID)
 	if err != nil {
 		return DailyView{}, err
 	}
 	return DailyView{
 		Config: DailyReportConfig{
-			Enabled: report.Enabled, RunHour: report.StartHour, Timezone: report.Timezone,
+			SourceID: source.ID,
+			Enabled:  report.Enabled, RunHour: report.StartHour, Timezone: report.Timezone,
 			LastRunAt: report.LastRunAt, LastStatus: report.LastStatus,
 			LastError: report.LastError, NextRunAt: report.NextRunAt,
 		},
 		Source:     source,
+		Sources:    sources,
 		Connection: ConnectionSummary{Configured: source.Configured, BaseURL: source.BaseURL},
 		LatestRun:  latest,
 	}, nil
@@ -686,6 +728,17 @@ func decodeStoredConfig(raw string) (storedConfig, error) {
 	}
 	if config.TriggerCount <= 0 {
 		config.TriggerCount = defaultTriggerCount
+	}
+	return config, nil
+}
+
+func decodeDailyStoredConfig(raw string) (storedDailyConfig, error) {
+	var config storedDailyConfig
+	if strings.TrimSpace(raw) == "" {
+		return config, nil
+	}
+	if err := json.Unmarshal([]byte(raw), &config); err != nil {
+		return storedDailyConfig{}, fmt.Errorf("每日报告配置损坏")
 	}
 	return config, nil
 }

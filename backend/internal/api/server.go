@@ -216,6 +216,7 @@ func (s *Server) protectedRoutes() map[string]http.HandlerFunc {
 		"POST /api/reports/notifications/wecom/test":              s.upstreamNoStore(s.testReportNotificationsWeCom),
 		"GET /api/reports/source":                                 s.upstreamNoStore(s.getReportSource),
 		"PUT /api/reports/source":                                 s.upstreamNoStore(s.saveReportSource),
+		"DELETE /api/reports/source/{id}":                         s.upstreamNoStore(s.deleteReportSource),
 		"GET /api/reports/channel-usage":                          s.upstreamNoStore(s.getChannelUsageReport),
 		"PUT /api/reports/channel-usage":                          s.upstreamNoStore(s.saveChannelUsageReport),
 		"GET /api/reports/channel-usage/runs":                     s.upstreamNoStore(s.channelUsageReportRuns),

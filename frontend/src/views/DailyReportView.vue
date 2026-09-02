@@ -130,18 +130,27 @@
         <div class="card-header flex flex-wrap items-start justify-between gap-3">
           <div>
             <h2 class="text-base font-semibold text-gray-900 dark:text-white">报告源站</h2>
-            <p class="mt-0.5 text-sm text-gray-500 dark:text-dark-400">每日消耗、Token、注册和充值统计都由当前共享源站提供。</p>
+            <p class="mt-0.5 text-sm text-gray-500 dark:text-dark-400">选择本报告读取每日统计的目标源站。</p>
           </div>
           <RouterLink to="/reports/source" class="btn btn-secondary btn-sm">
             <Icon name="globe" size="sm" />
             源站配置
           </RouterLink>
         </div>
-        <div class="grid grid-cols-1 gap-4 p-6 sm:grid-cols-3">
+        <div class="space-y-4 p-6">
+          <label class="block max-w-xl">
+            <span class="input-label">目标源站</span>
+            <select v-model="form.source_id" class="input">
+              <option v-for="item in sources" :key="item.id" :value="item.id">
+                {{ item.name }} · {{ sourceTypeLabel(item.type) }}
+              </option>
+            </select>
+          </label>
+          <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
           <div class="rounded-lg border border-gray-100 bg-gray-50/60 p-4 dark:border-dark-700 dark:bg-dark-900/40">
-            <p class="text-xs text-gray-500 dark:text-dark-400">模式 / 类型</p>
+            <p class="text-xs text-gray-500 dark:text-dark-400">名称 / 类型</p>
             <p class="mt-1 text-sm font-medium text-gray-900 dark:text-white">
-              {{ source.mode === 'global' ? '全局' : '自定义' }} / {{ sourceTypeLabel(source.type) }}
+              {{ source.name }} / {{ sourceTypeLabel(source.type) }}
             </p>
           </div>
           <div class="min-w-0 rounded-lg border border-gray-100 bg-gray-50/60 p-4 dark:border-dark-700 dark:bg-dark-900/40">
@@ -158,6 +167,7 @@
                 前往配置
               </RouterLink>
             </div>
+          </div>
           </div>
         </div>
       </section>
@@ -343,12 +353,14 @@ const pageSize = 20
 const selectedRun = ref<DailyReportRun | null>(null)
 
 const form = ref<DailyReportSaveInput>({
+  source_id: 'global',
   enabled: false,
   run_hour: 23,
   timezone: 'Asia/Shanghai'
 })
 
 const config = computed(() => view.value?.config ?? {
+  source_id: form.value.source_id,
   enabled: form.value.enabled,
   run_hour: form.value.run_hour,
   timezone: form.value.timezone,
@@ -359,7 +371,10 @@ const config = computed(() => view.value?.config ?? {
 })
 const latestRun = computed(() => view.value?.latest_run ?? runs.value[0] ?? null)
 const latestSummary = computed(() => latestRun.value?.summary ?? null)
-const source = computed(() => view.value?.source ?? {
+const sources = computed(() => view.value?.sources ?? [])
+const source = computed(() => sources.value.find(item => item.id === form.value.source_id) ?? view.value?.source ?? {
+  id: form.value.source_id,
+  name: '未选择',
   mode: 'global' as const,
   type: 'sub2api' as const,
   configured: false,
@@ -386,6 +401,7 @@ async function load() {
 
 function applyView(report: DailyReportView) {
   form.value = {
+    source_id: report.config.source_id,
     enabled: report.config.enabled,
     run_hour: report.config.run_hour,
     timezone: report.config.timezone
@@ -418,6 +434,7 @@ async function save() {
   error.value = ''
   try {
     const report = await api.saveDailyReport({
+      source_id: form.value.source_id,
       enabled: form.value.enabled,
       run_hour: Number(form.value.run_hour),
       timezone: form.value.timezone

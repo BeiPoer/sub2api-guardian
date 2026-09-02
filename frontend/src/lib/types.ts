@@ -166,7 +166,9 @@ export interface ReportNotificationConfig {
 export type ReportSourceMode = 'global' | 'custom'
 export type ReportSourceType = 'sub2api' | 'newapi'
 
-export interface ReportSourceConfig {
+export interface ReportSourceItem {
+  id: string
+  name: string
   mode: ReportSourceMode
   source_type: ReportSourceType
   base_url: string
@@ -177,8 +179,13 @@ export interface ReportSourceConfig {
   effective_base_url: string
 }
 
+export interface ReportSourceConfig {
+  items: ReportSourceItem[]
+}
+
 export interface ReportSourceSaveInput {
-  mode: ReportSourceMode
+  id?: string
+  name: string
   source_type: ReportSourceType
   base_url: string
   credential: string
@@ -186,6 +193,8 @@ export interface ReportSourceSaveInput {
 }
 
 export interface ReportSourceSummary {
+  id: string
+  name: string
   mode: ReportSourceMode
   type: ReportSourceType
   configured: boolean
@@ -193,6 +202,7 @@ export interface ReportSourceSummary {
 }
 
 export interface ChannelUsageReportConfig {
+  source_id: string
   enabled: boolean
   interval_minutes: number
   start_hour: number
@@ -234,11 +244,13 @@ export interface ChannelUsageReportRun {
 export interface ChannelUsageReportView {
   config: ChannelUsageReportConfig
   source: ReportSourceSummary
+  sources: ReportSourceSummary[]
   connection: { configured: boolean; base_url: string }
   latest_run?: ChannelUsageReportRun | null
 }
 
 export interface ChannelUsageReportSaveInput {
+  source_id: string
   enabled: boolean
   interval_minutes: number
   start_hour: number
@@ -250,6 +262,7 @@ export interface ChannelUsageReportSaveInput {
 }
 
 export interface DailyReportConfig {
+  source_id: string
   enabled: boolean
   run_hour: number
   timezone: string
@@ -290,11 +303,13 @@ export interface DailyReportRun {
 export interface DailyReportView {
   config: DailyReportConfig
   source: ReportSourceSummary
+  sources: ReportSourceSummary[]
   connection: { configured: boolean; base_url: string }
   latest_run?: DailyReportRun | null
 }
 
 export interface DailyReportSaveInput {
+  source_id: string
   enabled: boolean
   run_hour: number
   timezone: string

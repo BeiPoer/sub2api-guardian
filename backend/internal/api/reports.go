@@ -43,6 +43,15 @@ func (s *Server) saveReportSource(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, config)
 }
 
+func (s *Server) deleteReportSource(w http.ResponseWriter, r *http.Request) {
+	config, err := s.scheduledReports.DeleteSourceSettings(r.PathValue("id"))
+	if err != nil {
+		writeReportError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, config)
+}
+
 func (s *Server) saveReportNotifications(w http.ResponseWriter, r *http.Request) {
 	var payload reports.NotificationSaveInput
 	if err := decodeBody(r, &payload); err != nil {
