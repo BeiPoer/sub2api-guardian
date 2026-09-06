@@ -27,6 +27,9 @@ import type {
   DailyReportRun,
   DailyReportSaveInput,
   DailyReportView,
+  PeriodicReportView,
+  PeriodicReportSaveInput,
+  ReportPeriod,
   ReportNotificationConfig,
   ReportNotificationSaveInput,
   ReportSourceConfig,
@@ -385,6 +388,16 @@ export const api = {
     }>(`/api/reports/channel-usage/runs?page=${page}&page_size=${pageSize}`),
   runChannelUsageReport: () =>
     post<{ run: ChannelUsageReportRun }>('/api/reports/channel-usage/run', undefined, LONG_TIMEOUT_MS),
+
+  periodicReport: () => request<PeriodicReportView>('/api/reports/periodic'),
+  savePeriodicReport: (payload: PeriodicReportSaveInput) =>
+    put<PeriodicReportView>('/api/reports/periodic', payload),
+  periodicReportRuns: (period: ReportPeriod, page = 1, pageSize = 20) =>
+    request<{ items: DailyReportRun[]; total: number; page: number; page_size: number; pages: number }>(
+      `/api/reports/periodic/${period}/runs?page=${page}&page_size=${pageSize}`
+    ),
+  runPeriodicReport: (period: ReportPeriod) =>
+    post<{ run: DailyReportRun }>(`/api/reports/periodic/${period}/run`, undefined, LONG_TIMEOUT_MS),
 
   dailyReport: () =>
     request<DailyReportView>('/api/reports/daily'),

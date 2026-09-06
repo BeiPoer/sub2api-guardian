@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -139,5 +140,88 @@ func TestGetDailyReportStatsRejectsInvalidTimeRange(t *testing.T) {
 	_, err := client.GetDailyReportStats(context.Background(), now, now, "UTC")
 	if err == nil || !strings.Contains(err.Error(), "时间范围无效") {
 		t.Fatalf("非法时间范围错误异常: %v", err)
+	}
+}
+
+func TestWeeklyStatsUseWholeWindowAndDeduplicateRechargeUsers(t *testing.T) {
+	location, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, 8, 31, 0, 0, 0, 0, location)
+	end := time.Date(2026, 9, 6, 9, 0, 0, 0, location)
+	for _, sourceType := range []string{"sub2api", "newapi"} {
+		t.Run(sourceType, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var data any
+				times := []time.Time{end, end.Add(-time.Hour), start.Add(time.Hour), start, start.Add(-time.Second)}
+				switch r.URL.Path {
+				case "/api/v1/admin/usage/stats":
+					q := r.URL.Query()
+					if q.Get("start_date") != "2026-08-31" || q.Get("end_date") != "2026-09-06" || q.Get("timezone") != location.String() {
+						t.Errorf("weekly date query: %s", r.URL.RawQuery)
+					}
+					data = map[string]any{"total_actual_cost": 3, "total_tokens": 300}
+				case "/api/status":
+					data = map[string]any{"quota_per_unit": 100, "quota_display_type": "USD"}
+				case "/api/log/":
+					q := r.URL.Query()
+					if q.Get("start_timestamp") != strconv.FormatInt(start.Unix(), 10) || q.Get("end_timestamp") != strconv.FormatInt(end.Unix(), 10) {
+						t.Errorf("weekly timestamp query: %s", r.URL.RawQuery)
+					}
+					var items []any
+					for _, at := range times {
+						items = append(items, map[string]any{"created_at": at.Unix(), "quota": 100, "prompt_tokens": 60, "completion_tokens": 40})
+					}
+					data = map[string]any{"items": items, "total": len(items), "pages": 1}
+				case "/api/v1/admin/users", "/api/user/":
+					var items []any
+					for _, at := range times {
+						items = append(items, map[string]any{"created_at": at.Unix()})
+					}
+					data = map[string]any{"items": items, "total": len(items), "pages": 1}
+				case "/api/v1/admin/payment/orders", "/api/user/topup":
+					var items []any
+					for i, at := range times {
+						currency, userID := "CNY", 42
+						if i == 3 {
+							currency, userID = "USD", 43
+						}
+						status := "COMPLETED"
+						if sourceType == "newapi" {
+							status = "success"
+						}
+						items = append(items, map[string]any{"status": status, "order_type": "balance", "user_id": userID, "amount": 2, "pay_amount": 2, "currency": currency, "created_at": at.Unix(), "paid_at": at.Unix(), "complete_time": at.Unix()})
+					}
+					data = map[string]any{"items": items, "total": len(items), "pages": 1}
+				default:
+					http.NotFound(w, r)
+					return
+				}
+				if sourceType == "sub2api" {
+					_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": data})
+				} else {
+					_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "data": data})
+				}
+			}))
+			defer server.Close()
+			var stats DailyReportStats
+			var err error
+			if sourceType == "sub2api" {
+				stats, err = New(server.URL, "key", time.Second).GetDailyReportStats(context.Background(), start, end, location.String())
+			} else {
+				stats, err = NewNewAPI(server.URL, "key", 1, time.Second).GetDailyReportStats(context.Background(), start, end, location.String())
+			}
+			if err != nil || stats.TotalActualCost != 3 || stats.TotalTokens != 300 || stats.NewUsers != 3 || stats.RechargeUsers != 2 {
+				t.Fatalf("weekly stats: %+v %v", stats, err)
+			}
+			if sourceType == "sub2api" {
+				if stats.RechargeAmounts["CNY"] != 4 || stats.RechargeAmounts["USD"] != 2 {
+					t.Fatalf("currencies: %+v", stats)
+				}
+			} else if stats.RechargeAmounts["USD"] != 6 {
+				t.Fatalf("converted recharge: %+v", stats)
+			}
+		})
 	}
 }

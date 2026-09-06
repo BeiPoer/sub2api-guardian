@@ -132,6 +132,9 @@
                 placeholder="Asia/Shanghai"
                 hint="必须是 Go 可解析的时区名称。"
               />
+              <div class="sm:col-span-2 lg:col-span-4">
+                <Field v-model="form.wecom_target" label="企微接收人（留空使用全局）" placeholder="@all 或 zhangsan|lisi" />
+              </div>
             </div>
           </div>
         </section>
@@ -321,6 +324,7 @@ const pageSize = 20
 const selectedRun = ref<ChannelUsageReportRun | null>(null)
 
 const form = ref<ReportForm>({
+  wecom_target: '',
   source_id: 'global',
   enabled: false,
   interval_minutes: 60,
@@ -376,6 +380,7 @@ async function load() {
 
 function applyView(report: ChannelUsageReportView) {
   form.value = {
+    wecom_target: report.config.wecom_target,
     source_id: report.config.source_id,
     enabled: report.config.enabled,
     interval_minutes: report.config.interval_minutes,
@@ -414,6 +419,7 @@ async function save() {
   error.value = ''
   try {
     const payload: ChannelUsageReportSaveInput = {
+      wecom_target: form.value.wecom_target,
       source_id: form.value.source_id,
       enabled: form.value.enabled,
       interval_minutes: Number(form.value.interval_minutes),

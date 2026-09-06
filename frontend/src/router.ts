@@ -51,7 +51,12 @@ const router = createRouter({
     {
       path: '/reports/daily',
       name: 'daily-report',
-      component: () => import('@/views/DailyReportView.vue')
+      redirect: '/reports/periodic?period=daily'
+    },
+    {
+      path: '/reports/periodic',
+      name: 'periodic-report',
+      component: () => import('@/views/PeriodicReportView.vue')
     },
     {
       path: '/connection',

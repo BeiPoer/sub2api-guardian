@@ -16,7 +16,7 @@ const (
 	dailyReportMaxPages = 100
 )
 
-// DailyReportStats 是每日报告需要的四项统计。
+// DailyReportStats 是周期报告需要的四项统计。
 // 充值金额按币种分别保存，避免把不同币种直接相加。
 type DailyReportStats struct {
 	TotalActualCost float64            `json:"total_actual_cost"`
@@ -48,17 +48,17 @@ type dailyPaymentOrder struct {
 	CreatedAt any    `json:"created_at"`
 }
 
-// GetDailyReportStats 读取指定时区当天截至 end 的统计数据。
+// GetDailyReportStats 读取指定时区从 start 到 end 的累计统计，支持跨日窗口。
 func (c *Client) GetDailyReportStats(ctx context.Context, start, end time.Time, timezone string) (DailyReportStats, error) {
 	if err := c.Ready(); err != nil {
 		return DailyReportStats{}, err
 	}
 	if start.IsZero() || end.IsZero() || !end.After(start) {
-		return DailyReportStats{}, fmt.Errorf("每日报告查询时间范围无效")
+		return DailyReportStats{}, fmt.Errorf("周期报告查询时间范围无效")
 	}
 	location, err := time.LoadLocation(strings.TrimSpace(timezone))
 	if err != nil {
-		return DailyReportStats{}, fmt.Errorf("每日报告查询时区无效: %w", err)
+		return DailyReportStats{}, fmt.Errorf("周期报告查询时区无效: %w", err)
 	}
 
 	query := dailyDateQuery(start, end, location)

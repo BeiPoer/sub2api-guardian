@@ -304,15 +304,17 @@ func (m *Manager) sourceUsedBy(sourceID string, catalog store.ScheduledReportSou
 			usedBy = append(usedBy, "渠道使用报告")
 		}
 	}
-	if report, exists, err := m.store.ScheduledReport(store.ScheduledReportDaily); err != nil {
-		return nil, err
-	} else if exists {
-		config, err := decodeDailyStoredConfig(report.ConfigJSON)
-		if err != nil {
+	for _, reportType := range []store.ScheduledReportType{store.ScheduledReportDaily, store.ScheduledReportWeekly} {
+		if report, exists, err := m.store.ScheduledReport(reportType); err != nil {
 			return nil, err
-		}
-		if effectiveSourceID(config.SourceID, catalog) == sourceID {
-			usedBy = append(usedBy, "每日报告")
+		} else if exists {
+			config, err := decodeDailyStoredConfig(report.ConfigJSON)
+			if err != nil {
+				return nil, err
+			}
+			if effectiveSourceID(config.SourceID, catalog) == sourceID {
+				usedBy = append(usedBy, periodicTitle(reportType))
+			}
 		}
 	}
 	return usedBy, nil

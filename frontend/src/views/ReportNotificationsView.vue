@@ -35,15 +35,11 @@
       <section class="card">
         <div class="card-header">
           <h2 class="text-base font-semibold text-gray-900 dark:text-white">企业微信应用</h2>
-          <p class="mt-0.5 text-sm text-gray-500 dark:text-dark-400">
-            定时报告告警和查询失败时使用普通文本消息发送，正常运行不会发送静默消息。
-          </p>
         </div>
         <form class="space-y-5 p-6" @submit.prevent="save">
           <SwitchRow
             v-model="form.wecom.enabled"
             label="启用企微通知"
-            description="启用后，满足报告告警条件或报告查询失败时发送通知。"
           />
           <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <Field v-model="form.wecom.corp_id" label="CorpID" placeholder="ww..." />
@@ -57,7 +53,7 @@
             />
             <Field
               v-model="form.wecom.target"
-              label="接收人"
+              label="默认接收人"
               placeholder="@all 或 zhangsan|lisi"
               hint="支持 @all；多个成员 ID 使用 | 分隔。"
             />

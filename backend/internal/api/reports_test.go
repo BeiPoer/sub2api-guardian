@@ -191,3 +191,92 @@ func TestDailyReportAPIRejectsInvalidRunHour(t *testing.T) {
 		t.Fatalf("非法每日执行小时应返回 400: %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestPeriodicReportAPISaveRunHistoryAndLegacy(t *testing.T) {
+	handler, st := setupAPI(t, &fakeUpstream{groupCount: 1})
+	readView := func() reports.PeriodicView {
+		t.Helper()
+		rec := doJSON(t, handler, http.MethodGet, "/api/reports/periodic", nil)
+		var view reports.PeriodicView
+		if err := json.Unmarshal(rec.Body.Bytes(), &view); rec.Code != http.StatusOK || err != nil {
+			t.Fatalf("get periodic: %d %s %v", rec.Code, rec.Body.String(), err)
+		}
+		return view
+	}
+	view := readView()
+	if view.Weekly.Config.Enabled || view.Weekly.Config.Weekday != 1 || view.Weekly.Config.RunHour != 9 {
+		t.Fatalf("weekly defaults: %+v", view)
+	}
+	payload := map[string]any{
+		"source_id": "global",
+		"daily":     map[string]any{"enabled": true, "run_hour": 23, "timezone": "UTC", "wecom_target": " daily-user "},
+		"weekly":    map[string]any{"enabled": true, "run_hour": 9, "weekday": 7, "timezone": "Asia/Shanghai", "wecom_target": "weekly-user"},
+	}
+	rec := doJSON(t, handler, http.MethodPut, "/api/reports/periodic", payload)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save periodic: %d %s", rec.Code, rec.Body.String())
+	}
+	view = readView()
+	if view.Daily.Config.WeComTarget != "daily-user" || !view.Daily.Config.Enabled || !view.Weekly.Config.Enabled || view.Weekly.Config.Weekday != 7 {
+		t.Fatalf("roundtrip: %+v", view)
+	}
+	for _, period := range []string{"daily", "weekly"} {
+		rec = doJSON(t, handler, http.MethodPost, "/api/reports/periodic/"+period+"/run", nil)
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"status":"ok"`) {
+			t.Fatalf("%s run: %d %s", period, rec.Code, rec.Body.String())
+		}
+		rec = doJSON(t, handler, http.MethodGet, "/api/reports/periodic/"+period+"/runs?page=1&page_size=1", nil)
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"total":1`) {
+			t.Fatalf("%s history: %d %s", period, rec.Code, rec.Body.String())
+		}
+	}
+	view = readView()
+	if view.Daily.LatestRun == nil || view.Weekly.LatestRun == nil || view.Daily.LatestRun.ReportID == view.Weekly.LatestRun.ReportID {
+		t.Fatalf("independent histories: %+v", view)
+	}
+	legacy := doJSON(t, handler, http.MethodGet, "/api/reports/daily/runs", nil)
+	if legacy.Code != http.StatusOK || !strings.Contains(legacy.Body.String(), `"total":1`) {
+		t.Fatalf("legacy history: %s", legacy.Body.String())
+	}
+	rec = doJSON(t, handler, http.MethodPut, "/api/reports/daily", map[string]any{"enabled": true, "run_hour": 22, "timezone": "UTC"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("legacy save: %s", rec.Body.String())
+	}
+	view = readView()
+	if view.Daily.Config.WeComTarget != "daily-user" || view.Weekly.Config.Weekday != 7 || view.Daily.LatestRun == nil {
+		t.Fatalf("legacy overwrote state: %+v", view)
+	}
+	rec = doJSON(t, handler, http.MethodPut, "/api/reports/daily", map[string]any{
+		"enabled": true, "run_hour": 22, "timezone": "UTC", "wecom_target": "",
+	})
+	view = readView()
+	if rec.Code != http.StatusOK || view.Daily.Config.WeComTarget != "" || view.Weekly.Config.WeComTarget != "weekly-user" {
+		t.Fatalf("explicit empty target did not clear daily independently: %d %+v", rec.Code, view)
+	}
+	payload["weekly"].(map[string]any)["weekday"] = 8
+	rec = doJSON(t, handler, http.MethodPut, "/api/reports/periodic", payload)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid weekday: %d %s", rec.Code, rec.Body.String())
+	}
+	payload["weekly"].(map[string]any)["weekday"] = 7
+	payload["weekly"].(map[string]any)["wecom_target"] = "user\nother"
+	rec = doJSON(t, handler, http.MethodPut, "/api/reports/periodic", payload)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid target: %d %s", rec.Code, rec.Body.String())
+	}
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		suffix := "/run"
+		if method == http.MethodGet {
+			suffix = "/runs"
+		}
+		rec = doJSON(t, handler, method, "/api/reports/periodic/monthly"+suffix, nil)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("invalid period: %d %s", rec.Code, rec.Body.String())
+		}
+	}
+	daily, _, _ := st.ScheduledReport(store.ScheduledReportDaily)
+	weekly, _, _ := st.ScheduledReport(store.ScheduledReportWeekly)
+	if daily.LastRunAt == "" || weekly.LastRunAt == "" {
+		t.Fatal("runtime state lost on config save")
+	}
+}

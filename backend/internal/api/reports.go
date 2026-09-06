@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"sub2api-guardian/backend/internal/reports"
+	"sub2api-guardian/backend/internal/store"
 	"sub2api-guardian/backend/internal/upstream"
 	"sub2api-guardian/backend/internal/wecom"
 )
@@ -133,6 +134,56 @@ func (s *Server) getDailyReport(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, view)
+}
+
+func (s *Server) getPeriodicReport(w http.ResponseWriter, _ *http.Request) {
+	view, err := s.scheduledReports.PeriodicView()
+	if err != nil {
+		writeReportError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+func (s *Server) savePeriodicReport(w http.ResponseWriter, r *http.Request) {
+	var payload reports.PeriodicSaveInput
+	if err := decodeBody(r, &payload); err != nil {
+		writeReportError(w, err)
+		return
+	}
+	view, err := s.scheduledReports.SavePeriodic(payload)
+	if err != nil {
+		writeReportError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+func (s *Server) periodicReportRuns(w http.ResponseWriter, r *http.Request) {
+	items, total, page, pageSize, pages, err := s.scheduledReports.PeriodicRuns(
+		store.ScheduledReportType(r.PathValue("period")), queryInt(r, "page", 1), queryInt(r, "page_size", 20))
+	if err != nil {
+		writeReportError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items": items, "total": total, "page": page, "page_size": pageSize, "pages": pages,
+	})
+}
+
+func (s *Server) runPeriodicReport(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+	defer cancel()
+	run, err := s.scheduledReports.RunPeriodicNow(ctx, store.ScheduledReportType(r.PathValue("period")))
+	if err != nil {
+		writeReportError(w, err)
+		return
+	}
+	if reportSourceNotConfigured(run.Status, run.Error) {
+		writeJSON(w, http.StatusPreconditionFailed, map[string]any{"error": run.Error, "run": run})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"run": run})
 }
 
 func (s *Server) saveDailyReport(w http.ResponseWriter, r *http.Request) {

@@ -95,7 +95,7 @@ func TestScheduledReportRunsAndCleanup(t *testing.T) {
 	if err != nil || total != 1 || len(items) != 1 || items[0].Status != "alert" {
 		t.Fatalf("7 天历史查询异常: items=%+v total=%d err=%v", items, total, err)
 	}
-	if err := st.CleanupScheduledReportRuns(time.Now().Add(-7 * 24 * time.Hour)); err != nil {
+	if err := st.CleanupScheduledReportRunsByRetention(time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, _, _, err := st.ScheduledReportRuns(report.ID, 1, 20); err != nil {
@@ -115,5 +115,78 @@ func TestScheduledReportMigrationCreatesTables(t *testing.T) {
 		if err := st.db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&name); err != nil || name != table {
 			t.Fatalf("缺少迁移表 %s: %q %v", table, name, err)
 		}
+	}
+}
+
+func TestPeriodicConfigTransactionRollsBackAndPreservesState(t *testing.T) {
+	st := openTemp(t)
+	daily := ScheduledReport{Type: ScheduledReportDaily, Enabled: true, IntervalMinutes: 1440, StartHour: 23, EndHour: 23, Timezone: "UTC", ConfigJSON: `{"source_id":"old"}`}
+	weekly := daily
+	weekly.Type, weekly.IntervalMinutes = ScheduledReportWeekly, 7*1440
+	if err := st.SaveScheduledReportConfigs(daily, weekly); err != nil {
+		t.Fatal(err)
+	}
+	daily, _, _ = st.ScheduledReport(ScheduledReportDaily)
+	if err := st.UpdateScheduledReportRunState(daily.ID, "2026-09-01T23:00:00Z", "ok", "", "2026-09-02T23:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(`CREATE TRIGGER reject_weekly BEFORE UPDATE ON scheduled_reports WHEN NEW.type = 'weekly' BEGIN SELECT RAISE(ABORT, 'test failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	daily.ConfigJSON, weekly.ConfigJSON = `{"source_id":"new"}`, `{"source_id":"new"}`
+	if err := st.SaveScheduledReportConfigs(daily, weekly); err == nil {
+		t.Fatal("expected transaction failure")
+	}
+	reloaded, _, _ := st.ScheduledReport(ScheduledReportDaily)
+	if reloaded.ConfigJSON != `{"source_id":"old"}` || reloaded.LastRunAt != "2026-09-01T23:00:00Z" {
+		t.Fatalf("partial update: %+v", reloaded)
+	}
+	if _, err := st.db.Exec(`DROP TRIGGER reject_weekly`); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveScheduledReportConfigs(daily, weekly); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, _, _ = st.ScheduledReport(ScheduledReportDaily)
+	if reloaded.ConfigJSON != daily.ConfigJSON || reloaded.LastRunAt != "2026-09-01T23:00:00Z" || reloaded.LastStatus != "ok" {
+		t.Fatalf("runtime state lost: %+v", reloaded)
+	}
+}
+
+func TestScheduledReportRetentionByType(t *testing.T) {
+	st := openTemp(t)
+	now := time.Now().UTC()
+	for _, reportType := range []ScheduledReportType{ScheduledReportChannelUsage, ScheduledReportDaily, ScheduledReportWeekly} {
+		report, err := st.SaveScheduledReportConfig(ScheduledReport{Type: reportType, IntervalMinutes: 1440, StartHour: 9, EndHour: 9, Timezone: "UTC", ConfigJSON: `{}`})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, age := range []int{1, 8, 29, 31} {
+			stamp := now.Add(-time.Duration(age) * 24 * time.Hour).Format(time.RFC3339Nano)
+			if _, err := st.AddScheduledReportRun(ScheduledReportRun{ReportID: report.ID, Status: "ok", StartedAt: stamp, FinishedAt: stamp, WindowStart: stamp, WindowEnd: stamp}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		_, total, _, _, err := st.ScheduledReportRuns(report.ID, 1, 20)
+		want := int64(1)
+		if reportType == ScheduledReportWeekly {
+			want = 3
+		}
+		if err != nil || total != want {
+			t.Fatalf("%s query total=%d want=%d err=%v", reportType, total, want, err)
+		}
+	}
+	if err := st.CleanupUpstreamHistory(now.Add(-7 * 24 * time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	var total int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM scheduled_report_runs`).Scan(&total); err != nil || total != 12 {
+		t.Fatalf("upstream cleanup removed reports: %d %v", total, err)
+	}
+	if err := st.CleanupScheduledReportRunsByRetention(now); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM scheduled_report_runs`).Scan(&total); err != nil || total != 5 {
+		t.Fatalf("retention cleanup total=%d err=%v", total, err)
 	}
 }

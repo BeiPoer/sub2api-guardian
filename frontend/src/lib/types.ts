@@ -202,6 +202,7 @@ export interface ReportSourceSummary {
 }
 
 export interface ChannelUsageReportConfig {
+  wecom_target: string
   source_id: string
   enabled: boolean
   interval_minutes: number
@@ -250,6 +251,7 @@ export interface ChannelUsageReportView {
 }
 
 export interface ChannelUsageReportSaveInput {
+  wecom_target: string
   source_id: string
   enabled: boolean
   interval_minutes: number
@@ -262,6 +264,8 @@ export interface ChannelUsageReportSaveInput {
 }
 
 export interface DailyReportConfig {
+  wecom_target: string
+  weekday?: number
   source_id: string
   enabled: boolean
   run_hour: number
@@ -309,10 +313,35 @@ export interface DailyReportView {
 }
 
 export interface DailyReportSaveInput {
+  wecom_target?: string
   source_id: string
   enabled: boolean
   run_hour: number
   timezone: string
+}
+
+export type ReportPeriod = 'daily' | 'weekly'
+
+export interface PeriodicScheduleInput {
+  enabled: boolean
+  run_hour: number
+  timezone: string
+  wecom_target: string
+  weekday?: number
+}
+
+export interface PeriodicReportSaveInput {
+  source_id: string
+  daily: PeriodicScheduleInput
+  weekly: PeriodicScheduleInput
+}
+
+export interface PeriodicReportView {
+  source_id: string
+  source: ReportSourceSummary
+  sources: ReportSourceSummary[]
+  daily: { config: DailyReportConfig; latest_run: DailyReportRun | null }
+  weekly: { config: DailyReportConfig; latest_run: DailyReportRun | null }
 }
 
 export interface ReportNotificationSaveInput {

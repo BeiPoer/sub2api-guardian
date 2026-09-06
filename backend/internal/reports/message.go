@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"sub2api-guardian/backend/internal/store"
 )
 
 const maxWeComTextBytes = 3500
@@ -50,20 +52,28 @@ func buildFailureText(title string, startedAt time.Time, location *time.Location
 	return limitText(fmt.Sprintf("%s执行失败\n执行时间：%s\n错误：%s\n", title, formatReportTime(startedAt, location), textCell(message)))
 }
 
-func buildDailyText(summary DailyReportSummary, startedAt, windowStart time.Time, location *time.Location) string {
+func buildPeriodicText(reportType store.ScheduledReportType, summary DailyReportSummary, startedAt, windowStart time.Time, location *time.Location) string {
 	var builder strings.Builder
-	builder.WriteString("每日报告\n")
+	builder.WriteString(periodicTitle(reportType) + "\n")
+	prefix := "今日"
+	if reportType == store.ScheduledReportWeekly {
+		prefix = "本周"
+	}
 	fmt.Fprintf(&builder, "执行时间：%s\n", formatReportTime(startedAt, location))
-	fmt.Fprintf(&builder, "统计日期：%s\n", textCell(summary.Date))
+	dateLabel := "统计日期"
+	if reportType == store.ScheduledReportWeekly {
+		dateLabel = "统计范围"
+	}
+	fmt.Fprintf(&builder, "%s：%s\n", dateLabel, textCell(summary.Date))
 	fmt.Fprintf(&builder, "统计窗口：%s 至 %s\n", formatReportTime(windowStart, location), formatReportTime(startedAt, location))
 	quotaUnit := ""
 	if strings.TrimSpace(summary.QuotaUnit) != "" {
 		quotaUnit = " " + textCell(summary.QuotaUnit)
 	}
-	fmt.Fprintf(&builder, "今日消耗额度：%.2f%s\n", summary.TotalActualCost, quotaUnit)
-	fmt.Fprintf(&builder, "今日总 Token：%s\n", formatTokenCount(summary.TotalTokens))
-	fmt.Fprintf(&builder, "今日注册人数：%d 人\n", summary.NewUsers)
-	builder.WriteString("今日充值量：")
+	fmt.Fprintf(&builder, "%s消耗额度：%.2f%s\n", prefix, summary.TotalActualCost, quotaUnit)
+	fmt.Fprintf(&builder, "%s总 Token：%s\n", prefix, formatTokenCount(summary.TotalTokens))
+	fmt.Fprintf(&builder, "%s注册人数：%d 人\n", prefix, summary.NewUsers)
+	builder.WriteString(prefix + "充值量：")
 	if len(summary.RechargeAmounts) == 0 {
 		builder.WriteString("0\n")
 	} else {
@@ -77,7 +87,7 @@ func buildDailyText(summary DailyReportSummary, startedAt, windowStart time.Time
 			fmt.Fprintf(&builder, "  %s：%.2f\n", textCell(currency), summary.RechargeAmounts[currency])
 		}
 	}
-	fmt.Fprintf(&builder, "今日充值人数：%d 人\n", summary.RechargeUsers)
+	fmt.Fprintf(&builder, "%s充值人数：%d 人\n", prefix, summary.RechargeUsers)
 	return limitText(builder.String())
 }
 

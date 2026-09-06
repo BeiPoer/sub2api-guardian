@@ -15,10 +15,18 @@ type ScheduledReportType string
 const (
 	ScheduledReportChannelUsage ScheduledReportType = "channel_usage"
 	ScheduledReportDaily        ScheduledReportType = "daily"
+	ScheduledReportWeekly       ScheduledReportType = "weekly"
 )
 
 func (t ScheduledReportType) Valid() bool {
-	return t == ScheduledReportChannelUsage || t == ScheduledReportDaily
+	return t == ScheduledReportChannelUsage || t == ScheduledReportDaily || t == ScheduledReportWeekly
+}
+
+func (t ScheduledReportType) Retention() time.Duration {
+	if t == ScheduledReportWeekly {
+		return 30 * 24 * time.Hour
+	}
+	return 7 * 24 * time.Hour
 }
 
 type ScheduledReport struct {
@@ -95,26 +103,56 @@ func (s *Store) ScheduledReport(reportType ScheduledReportType) (ScheduledReport
 
 // SaveScheduledReportConfig updates only configuration fields and preserves runtime state.
 func (s *Store) SaveScheduledReportConfig(report ScheduledReport) (ScheduledReport, error) {
+	if err := s.SaveScheduledReportConfigs(report); err != nil {
+		return ScheduledReport{}, err
+	}
+	saved, exists, err := s.ScheduledReport(report.Type)
+	if err != nil {
+		return ScheduledReport{}, err
+	}
+	if !exists {
+		return ScheduledReport{}, ErrScheduledReportNotFound
+	}
+	return saved, nil
+}
+
+func validateScheduledReport(report ScheduledReport) error {
 	if !report.Type.Valid() {
-		return ScheduledReport{}, fmt.Errorf("定时报告类型无效: %s", report.Type)
+		return fmt.Errorf("定时报告类型无效: %s", report.Type)
 	}
 	if report.IntervalMinutes <= 0 || report.StartHour < 0 || report.StartHour > 23 ||
 		report.EndHour < 0 || report.EndHour > 23 || report.StartHour > report.EndHour {
-		return ScheduledReport{}, errors.New("定时报告调度参数无效")
+		return errors.New("定时报告调度参数无效")
 	}
 	if report.Timezone == "" {
-		return ScheduledReport{}, errors.New("定时报告时区不能为空")
+		return errors.New("定时报告时区不能为空")
 	}
 	if _, err := time.LoadLocation(report.Timezone); err != nil {
-		return ScheduledReport{}, errors.New("定时报告时区无效")
+		return errors.New("定时报告时区无效")
 	}
 	if !json.Valid([]byte(report.ConfigJSON)) {
-		return ScheduledReport{}, errors.New("定时报告配置不是有效 JSON")
+		return errors.New("定时报告配置不是有效 JSON")
 	}
+	return nil
+}
 
-	now := nowString()
+// SaveScheduledReportConfigs 同时更新日报和周报，避免共享源站只更新了一半。
+func (s *Store) SaveScheduledReportConfigs(reports ...ScheduledReport) error {
+	for _, report := range reports {
+		if err := validateScheduledReport(report); err != nil {
+			return err
+		}
+	}
 	s.mu.Lock()
-	_, err := s.db.Exec(`INSERT INTO scheduled_reports(
+	defer s.mu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	now := nowString()
+	for _, report := range reports {
+		_, err = tx.Exec(`INSERT INTO scheduled_reports(
 		type, enabled, interval_minutes, start_hour, end_hour, timezone, config_json,
 		last_status, created_at, updated_at
 	) VALUES (?, ?, ?, ?, ?, ?, ?, 'never', ?, ?)
@@ -126,20 +164,13 @@ func (s *Store) SaveScheduledReportConfig(report ScheduledReport) (ScheduledRepo
 		timezone = excluded.timezone,
 		config_json = excluded.config_json,
 		updated_at = excluded.updated_at`,
-		string(report.Type), boolInt(report.Enabled), report.IntervalMinutes, report.StartHour,
-		report.EndHour, report.Timezone, report.ConfigJSON, now, now)
-	s.mu.Unlock()
-	if err != nil {
-		return ScheduledReport{}, err
+			string(report.Type), boolInt(report.Enabled), report.IntervalMinutes, report.StartHour,
+			report.EndHour, report.Timezone, report.ConfigJSON, now, now)
+		if err != nil {
+			return err
+		}
 	}
-	saved, exists, err := s.ScheduledReport(report.Type)
-	if err != nil {
-		return ScheduledReport{}, err
-	}
-	if !exists {
-		return ScheduledReport{}, ErrScheduledReportNotFound
-	}
-	return saved, nil
+	return tx.Commit()
 }
 
 func (s *Store) UpdateScheduledReportRunState(reportID int64, lastRunAt, status, lastError, nextRunAt string) error {
@@ -209,7 +240,11 @@ func (s *Store) ScheduledReportRuns(reportID int64, page, pageSize int) ([]Sched
 	if pageSize < 1 || pageSize > 100 {
 		pageSize = 20
 	}
-	cutoff := time.Now().Add(-7 * 24 * time.Hour).Format(time.RFC3339Nano)
+	var reportType ScheduledReportType
+	if err := s.db.QueryRow(`SELECT type FROM scheduled_reports WHERE id = ?`, reportID).Scan(&reportType); err != nil {
+		return nil, 0, 0, 0, err
+	}
+	cutoff := time.Now().Add(-reportType.Retention()).UTC().Format(time.RFC3339Nano)
 	var total int64
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM scheduled_report_runs WHERE report_id = ? AND started_at >= ?`, reportID, cutoff).Scan(&total); err != nil {
 		return nil, 0, 0, 0, err
@@ -241,9 +276,14 @@ func (s *Store) ScheduledReportRuns(reportID int64, page, pageSize int) ([]Sched
 	return items, total, page, pageSize, rows.Err()
 }
 
-func (s *Store) CleanupScheduledReportRuns(before time.Time) error {
+// CleanupScheduledReportRunsByRetention 按各报告类型的完整保留周期清理运行记录。
+func (s *Store) CleanupScheduledReportRunsByRetention(now time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`DELETE FROM scheduled_report_runs WHERE started_at < ?`, before.Format(time.RFC3339Nano))
+	_, err := s.db.Exec(`DELETE FROM scheduled_report_runs WHERE
+		(report_id IN (SELECT id FROM scheduled_reports WHERE type = 'weekly') AND started_at < ?)
+		OR (report_id IN (SELECT id FROM scheduled_reports WHERE type != 'weekly') AND started_at < ?)`,
+		now.Add(-ScheduledReportWeekly.Retention()).UTC().Format(time.RFC3339Nano),
+		now.Add(-ScheduledReportDaily.Retention()).UTC().Format(time.RFC3339Nano))
 	return err
 }

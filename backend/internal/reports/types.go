@@ -8,17 +8,16 @@ import (
 )
 
 const (
-	defaultIntervalMinutes   = 60
-	defaultStartHour         = 9
-	defaultEndHour           = 22
-	defaultTimezone          = "Asia/Shanghai"
-	defaultLookbackHours     = 1
-	defaultFirstTokenMS      = 30_000
-	defaultTriggerCount      = 20
-	maxLookbackHours         = 168
-	maxIntervalMinutes       = 1440
-	usageRequestTimeout      = 45
-	runHistoryRetentionHours = 7 * 24
+	defaultIntervalMinutes = 60
+	defaultStartHour       = 9
+	defaultEndHour         = 22
+	defaultTimezone        = "Asia/Shanghai"
+	defaultLookbackHours   = 1
+	defaultFirstTokenMS    = 30_000
+	defaultTriggerCount    = 20
+	maxLookbackHours       = 168
+	maxIntervalMinutes     = 1440
+	usageRequestTimeout    = 45
 )
 
 var (
@@ -88,6 +87,7 @@ type SourceSummary struct {
 
 // ChannelUsageConfig 是对外返回的配置与运行状态。
 type ChannelUsageConfig struct {
+	WeComTarget           string `json:"wecom_target"`
 	SourceID              string `json:"source_id"`
 	Enabled               bool   `json:"enabled"`
 	IntervalMinutes       int    `json:"interval_minutes"`
@@ -105,14 +105,16 @@ type ChannelUsageConfig struct {
 
 // DailyReportConfig 是对外返回的每日报告配置与运行状态。
 type DailyReportConfig struct {
-	SourceID   string `json:"source_id"`
-	Enabled    bool   `json:"enabled"`
-	RunHour    int    `json:"run_hour"`
-	Timezone   string `json:"timezone"`
-	LastRunAt  string `json:"last_run_at"`
-	LastStatus string `json:"last_status"`
-	LastError  string `json:"last_error"`
-	NextRunAt  string `json:"next_run_at"`
+	WeComTarget string `json:"wecom_target"`
+	Weekday     int    `json:"weekday,omitempty"`
+	SourceID    string `json:"source_id"`
+	Enabled     bool   `json:"enabled"`
+	RunHour     int    `json:"run_hour"`
+	Timezone    string `json:"timezone"`
+	LastRunAt   string `json:"last_run_at"`
+	LastStatus  string `json:"last_status"`
+	LastError   string `json:"last_error"`
+	NextRunAt   string `json:"next_run_at"`
 }
 
 type WeComInput struct {
@@ -124,6 +126,7 @@ type WeComInput struct {
 }
 
 type SaveInput struct {
+	WeComTarget           string `json:"wecom_target"`
 	SourceID              string `json:"source_id"`
 	Enabled               bool   `json:"enabled"`
 	IntervalMinutes       int    `json:"interval_minutes"`
@@ -136,10 +139,38 @@ type SaveInput struct {
 }
 
 type DailySaveInput struct {
-	SourceID string `json:"source_id"`
-	Enabled  bool   `json:"enabled"`
-	RunHour  int    `json:"run_hour"`
-	Timezone string `json:"timezone"`
+	WeComTarget *string `json:"wecom_target"`
+	SourceID    string  `json:"source_id"`
+	Enabled     bool    `json:"enabled"`
+	RunHour     int     `json:"run_hour"`
+	Timezone    string  `json:"timezone"`
+}
+
+type PeriodicScheduleInput struct {
+	Enabled     bool   `json:"enabled"`
+	RunHour     int    `json:"run_hour"`
+	Timezone    string `json:"timezone"`
+	WeComTarget string `json:"wecom_target"`
+	Weekday     int    `json:"weekday,omitempty"`
+}
+
+type PeriodicSaveInput struct {
+	SourceID string                `json:"source_id"`
+	Daily    PeriodicScheduleInput `json:"daily"`
+	Weekly   PeriodicScheduleInput `json:"weekly"`
+}
+
+type PeriodicReportState struct {
+	Config    DailyReportConfig         `json:"config"`
+	LatestRun *store.ScheduledReportRun `json:"latest_run"`
+}
+
+type PeriodicView struct {
+	SourceID string              `json:"source_id"`
+	Source   SourceSummary       `json:"source"`
+	Sources  []SourceSummary     `json:"sources"`
+	Daily    PeriodicReportState `json:"daily"`
+	Weekly   PeriodicReportState `json:"weekly"`
 }
 
 type NotificationSaveInput struct {
@@ -201,6 +232,7 @@ type storedWeComConfig struct {
 }
 
 type storedConfig struct {
+	WeComTarget           string `json:"wecom_target,omitempty"`
 	SourceID              string `json:"source_id,omitempty"`
 	LookbackHours         int    `json:"lookback_hours"`
 	FirstTokenThresholdMS int64  `json:"first_token_threshold_ms"`
@@ -208,7 +240,9 @@ type storedConfig struct {
 }
 
 type storedDailyConfig struct {
-	SourceID string `json:"source_id,omitempty"`
+	SourceID    string `json:"source_id,omitempty"`
+	WeComTarget string `json:"wecom_target,omitempty"`
+	Weekday     int    `json:"weekday,omitempty"`
 }
 
 type legacyStoredConfig struct {

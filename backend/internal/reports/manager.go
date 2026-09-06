@@ -19,7 +19,8 @@ type Manager struct {
 	client *upstream.Client
 	wecom  *wecom.Client
 
-	runMu sync.Mutex
+	runMu    sync.Mutex
+	configMu sync.Mutex
 
 	stop      chan struct{}
 	done      chan struct{}
@@ -61,7 +62,7 @@ func (m *Manager) Stop() {
 
 func (m *Manager) loop() {
 	defer close(m.done)
-	_ = m.store.CleanupScheduledReportRuns(time.Now().Add(-runHistoryRetentionHours * time.Hour))
+	_ = m.store.CleanupScheduledReportRunsByRetention(time.Now())
 	m.runDue(context.Background())
 	ticker := time.NewTicker(time.Minute)
 	cleanup := time.NewTicker(24 * time.Hour)
@@ -74,7 +75,7 @@ func (m *Manager) loop() {
 		case <-ticker.C:
 			m.runDue(context.Background())
 		case <-cleanup.C:
-			_ = m.store.CleanupScheduledReportRuns(time.Now().Add(-runHistoryRetentionHours * time.Hour))
+			_ = m.store.CleanupScheduledReportRunsByRetention(time.Now())
 		}
 	}
 }
@@ -129,6 +130,7 @@ func (m *Manager) Save(input SaveInput) (View, error) {
 		return View{}, err
 	}
 	config := storedConfig{
+		WeComTarget:           strings.TrimSpace(input.WeComTarget),
 		SourceID:              sourceID,
 		LookbackHours:         input.LookbackHours,
 		FirstTokenThresholdMS: input.FirstTokenThresholdMS,
@@ -156,47 +158,10 @@ func (m *Manager) Save(input SaveInput) (View, error) {
 }
 
 func (m *Manager) SaveDaily(input DailySaveInput) (DailyView, error) {
-	if err := validateDailySaveInput(input); err != nil {
+	if err := m.saveLegacyDaily(input); err != nil {
 		return DailyView{}, err
 	}
-	if _, err := m.notificationSettings(); err != nil {
-		return DailyView{}, err
-	}
-	report, exists, err := m.store.ScheduledReport(store.ScheduledReportDaily)
-	if err != nil {
-		return DailyView{}, err
-	}
-	if !exists {
-		report = defaultDailyReport()
-	}
-	sourceID := input.SourceID
-	if sourceID == "" && exists {
-		current, decodeErr := decodeDailyStoredConfig(report.ConfigJSON)
-		if decodeErr != nil {
-			return DailyView{}, decodeErr
-		}
-		sourceID = current.SourceID
-	}
-	sourceID, err = m.validateSourceID(sourceID)
-	if err != nil {
-		return DailyView{}, err
-	}
-	raw, err := json.Marshal(storedDailyConfig{SourceID: sourceID})
-	if err != nil {
-		return DailyView{}, err
-	}
-	report.Type = store.ScheduledReportDaily
-	report.Enabled = input.Enabled
-	report.IntervalMinutes = 24 * 60
-	report.StartHour = input.RunHour
-	report.EndHour = input.RunHour
-	report.Timezone = strings.TrimSpace(input.Timezone)
-	report.ConfigJSON = string(raw)
-	saved, err := m.store.SaveScheduledReportConfig(report)
-	if err != nil {
-		return DailyView{}, err
-	}
-	return m.dailyViewFor(saved)
+	return m.DailyView()
 }
 
 func (m *Manager) NotificationSettings() (NotificationConfig, error) {
@@ -291,24 +256,7 @@ func (m *Manager) RunNow(ctx context.Context) (store.ScheduledReportRun, error) 
 }
 
 func (m *Manager) RunDailyNow(ctx context.Context) (store.ScheduledReportRun, error) {
-	if !m.runMu.TryLock() {
-		return store.ScheduledReportRun{}, ErrAlreadyRunning
-	}
-	defer m.runMu.Unlock()
-
-	report, exists, err := m.store.ScheduledReport(store.ScheduledReportDaily)
-	if err != nil {
-		return store.ScheduledReportRun{}, err
-	}
-	if !exists {
-		report = defaultDailyReport()
-		saved, saveErr := m.store.SaveScheduledReportConfig(report)
-		if saveErr != nil {
-			return store.ScheduledReportRun{}, saveErr
-		}
-		report = saved
-	}
-	return m.executeDaily(ctx, report)
+	return m.RunPeriodicNow(ctx, store.ScheduledReportDaily)
 }
 
 func (m *Manager) TestNotification(ctx context.Context) (string, error) {
@@ -329,7 +277,8 @@ func (m *Manager) TestNotification(ctx context.Context) (string, error) {
 
 func (m *Manager) runDue(ctx context.Context) {
 	m.runChannelUsageDue(ctx)
-	m.runDailyDue(ctx)
+	m.runPeriodicDue(ctx, store.ScheduledReportDaily)
+	m.runPeriodicDue(ctx, store.ScheduledReportWeekly)
 }
 
 func (m *Manager) runChannelUsageDue(ctx context.Context) {
@@ -363,30 +312,23 @@ func (m *Manager) runChannelUsageDue(ctx context.Context) {
 	_, _ = m.execute(ctx, report, config)
 }
 
-func (m *Manager) runDailyDue(ctx context.Context) {
-	report, exists, err := m.store.ScheduledReport(store.ScheduledReportDaily)
-	if err != nil || !exists || !report.Enabled {
-		return
-	}
-	location, err := time.LoadLocation(report.Timezone)
-	if err != nil {
-		return
-	}
-	now := time.Now()
-	localNow := now.In(location)
-	if !withinWindow(localNow, report.StartHour, report.EndHour) {
-		return
-	}
-	if report.LastRunAt != "" {
-		last, parseErr := time.Parse(time.RFC3339Nano, report.LastRunAt)
-		if parseErr == nil && now.Sub(last) < 24*time.Hour {
-			return
-		}
-	}
+func (m *Manager) runPeriodicDue(ctx context.Context, reportType store.ScheduledReportType) {
 	if !m.runMu.TryLock() {
 		return
 	}
 	defer m.runMu.Unlock()
+	report, exists, err := m.store.ScheduledReport(reportType)
+	if err != nil || !exists || !report.Enabled {
+		return
+	}
+	config, err := decodeDailyStoredConfig(report.ConfigJSON)
+	if err != nil {
+		return
+	}
+	now := time.Now()
+	if next := nextPeriodicRun(report, config, now); next.IsZero() || !next.Equal(now) {
+		return
+	}
 	_, _ = m.executeDaily(ctx, report)
 }
 
@@ -405,7 +347,7 @@ func (m *Manager) execute(ctx context.Context, report store.ScheduledReport, con
 		WindowEnd:          formatUTC(windowEnd),
 		NotificationStatus: "not_needed",
 	}
-	notificationSettings, notificationErr := m.notificationSettings()
+	notificationSettings, notificationErr := m.reportNotificationSettings(config.WeComTarget)
 
 	source, queryErr := m.resolveSource(config.SourceID)
 	var records []upstream.UsageRecord
@@ -463,7 +405,12 @@ func (m *Manager) executeDaily(ctx context.Context, report store.ScheduledReport
 		return store.ScheduledReportRun{}, err
 	}
 	localNow := startedAt.In(location)
-	windowStart := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, location)
+	windowStart := periodicWindowStart(report.Type, localNow)
+	title := periodicTitle(report.Type)
+	queryFailureMessage, completedMessage := "查询每日统计失败", "每日统计完成"
+	if report.Type == store.ScheduledReportWeekly {
+		queryFailureMessage, completedMessage = "查询每周统计失败", "每周统计完成"
+	}
 	run := store.ScheduledReportRun{
 		ReportID:           report.ID,
 		StartedAt:          formatUTC(startedAt),
@@ -471,7 +418,7 @@ func (m *Manager) executeDaily(ctx context.Context, report store.ScheduledReport
 		WindowEnd:          formatUTC(startedAt),
 		NotificationStatus: "not_needed",
 	}
-	notificationSettings, notificationErr := m.notificationSettings()
+	notificationSettings, notificationErr := m.reportNotificationSettings(config.WeComTarget)
 
 	source, queryErr := m.resolveSource(config.SourceID)
 	var stats upstream.DailyReportStats
@@ -483,8 +430,8 @@ func (m *Manager) executeDaily(ctx context.Context, report store.ScheduledReport
 	if queryErr != nil {
 		run.Status = "error"
 		run.Error = safeError(queryErr)
-		run.Message = "查询每日统计失败"
-		m.sendFailure("每日报告", notificationSettings, notificationErr, location, startedAt, queryErr, &run)
+		run.Message = queryFailureMessage
+		m.sendFailure(title, notificationSettings, notificationErr, location, startedAt, queryErr, &run)
 		return m.finish(report, run, startedAt)
 	}
 
@@ -498,19 +445,22 @@ func (m *Manager) executeDaily(ctx context.Context, report store.ScheduledReport
 		RechargeAmounts: stats.RechargeAmounts,
 		RechargeUsers:   stats.RechargeUsers,
 	}
+	if report.Type == store.ScheduledReportWeekly {
+		summary.Date = windowStart.Format("2006-01-02") + " 至 " + summary.Date
+	}
 	run.Status = "ok"
-	run.Message = "每日统计完成"
+	run.Message = completedMessage
 	run.Summary = summary
 	if notificationErr != nil {
 		run.NotificationStatus = "failed"
 		run.NotificationError = safeError(notificationErr)
-		run.Message = "每日统计完成，但通知配置读取失败"
+		run.Message = completedMessage + "，但通知配置读取失败"
 	} else if settings, ok := completeWeComSettings(notificationSettings); ok {
-		_, sendErr := m.wecom.Send(ctx, settings, wecom.Text, buildDailyText(summary, startedAt, windowStart, location))
+		_, sendErr := m.wecom.Send(ctx, settings, wecom.Text, buildPeriodicText(report.Type, summary, startedAt, windowStart, location))
 		if sendErr != nil {
 			run.NotificationStatus = "failed"
 			run.NotificationError = safeError(sendErr)
-			run.Message = "每日统计完成，但企微投递失败"
+			run.Message = completedMessage + "，但企微投递失败"
 		} else {
 			run.NotificationStatus = "sent"
 		}
@@ -550,6 +500,12 @@ func (m *Manager) finish(report store.ScheduledReport, run store.ScheduledReport
 		lastError = run.NotificationError
 	}
 	nextRunAt := nextScheduledAt(report, startedAt)
+	if isPeriodicType(report.Type) {
+		report.LastRunAt = run.StartedAt
+		if config, err := decodeDailyStoredConfig(report.ConfigJSON); err == nil {
+			nextRunAt = periodicNextRunAt(report, config, startedAt)
+		}
+	}
 	if err := m.store.UpdateScheduledReportRunState(report.ID, run.StartedAt, run.Status, lastError, nextRunAt); err != nil {
 		return store.ScheduledReportRun{}, err
 	}
@@ -585,8 +541,9 @@ func (m *Manager) viewFor(report store.ScheduledReport, config storedConfig) (Vi
 	config.SourceID = source.ID
 	return View{
 		Config: ChannelUsageConfig{
-			SourceID: config.SourceID,
-			Enabled:  report.Enabled, IntervalMinutes: report.IntervalMinutes,
+			WeComTarget: config.WeComTarget,
+			SourceID:    config.SourceID,
+			Enabled:     report.Enabled, IntervalMinutes: report.IntervalMinutes,
 			StartHour: report.StartHour, EndHour: report.EndHour, Timezone: report.Timezone,
 			LookbackHours: config.LookbackHours, FirstTokenThresholdMS: config.FirstTokenThresholdMS,
 			TriggerCount: config.TriggerCount,
@@ -605,17 +562,7 @@ func (m *Manager) dailyViewFor(report store.ScheduledReport) (DailyView, error) 
 	if err != nil {
 		return DailyView{}, err
 	}
-	if !report.Enabled {
-		report.NextRunAt = ""
-	} else if report.LastRunAt != "" {
-		if lastRunAt, err := time.Parse(time.RFC3339Nano, report.LastRunAt); err == nil {
-			report.NextRunAt = nextScheduledAt(report, lastRunAt)
-		} else {
-			report.NextRunAt = firstEligibleRunAt(time.Now(), report.StartHour, report.EndHour, report.Timezone)
-		}
-	} else {
-		report.NextRunAt = firstEligibleRunAt(time.Now(), report.StartHour, report.EndHour, report.Timezone)
-	}
+	report.NextRunAt = periodicNextRunAt(report, config, time.Now())
 	latest := (*store.ScheduledReportRun)(nil)
 	if report.ID > 0 {
 		items, _, _, _, err := m.store.ScheduledReportRuns(report.ID, 1, 1)
@@ -632,6 +579,7 @@ func (m *Manager) dailyViewFor(report store.ScheduledReport) (DailyView, error) 
 	}
 	return DailyView{
 		Config: DailyReportConfig{
+			WeComTarget: config.WeComTarget, Weekday: config.Weekday,
 			SourceID: source.ID,
 			Enabled:  report.Enabled, RunHour: report.StartHour, Timezone: report.Timezone,
 			LastRunAt: report.LastRunAt, LastStatus: report.LastStatus,
@@ -645,6 +593,9 @@ func (m *Manager) dailyViewFor(report store.ScheduledReport) (DailyView, error) 
 }
 
 func validateSaveInput(input SaveInput) error {
+	if err := validateReportTarget(input.WeComTarget); err != nil {
+		return err
+	}
 	if input.IntervalMinutes < 1 || input.IntervalMinutes > maxIntervalMinutes {
 		return invalid("运行间隔必须是 1–1440 分钟")
 	}
@@ -671,7 +622,7 @@ func validateSaveInput(input SaveInput) error {
 
 func validateDailySaveInput(input DailySaveInput) error {
 	if input.RunHour < 0 || input.RunHour > 23 {
-		return invalid("每日执行小时必须在 0–23")
+		return invalid("执行小时必须在 0–23")
 	}
 	if strings.TrimSpace(input.Timezone) == "" {
 		return invalid("时区不能为空")
@@ -738,7 +689,7 @@ func decodeDailyStoredConfig(raw string) (storedDailyConfig, error) {
 		return config, nil
 	}
 	if err := json.Unmarshal([]byte(raw), &config); err != nil {
-		return storedDailyConfig{}, fmt.Errorf("每日报告配置损坏")
+		return storedDailyConfig{}, fmt.Errorf("周期报告配置损坏")
 	}
 	return config, nil
 }
