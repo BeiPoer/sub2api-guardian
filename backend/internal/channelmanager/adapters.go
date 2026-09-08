@@ -414,6 +414,9 @@ func usableSub2APIAccess(channel store.UpstreamChannel) bool {
 }
 
 func (m *Manager) ensureSub2APIAccess(ctx context.Context, channel store.UpstreamChannel, force bool) (store.UpstreamChannel, error) {
+	if channel.Sub2APIManualAccessToken != "" {
+		return channel, nil
+	}
 	if !force && usableSub2APIAccess(channel) {
 		return channel, nil
 	}
@@ -432,9 +435,16 @@ func (m *Manager) sub2APIRequest(ctx context.Context, channel store.UpstreamChan
 		return nil, err
 	}
 	headers := make(http.Header)
-	headers.Set("Authorization", "Bearer "+authed.Sub2APIAccessToken)
+	accessToken := authed.Sub2APIAccessToken
+	if authed.Sub2APIManualAccessToken != "" {
+		accessToken = authed.Sub2APIManualAccessToken
+	}
+	headers.Set("Authorization", "Bearer "+accessToken)
 	payload, _, err := m.requestJSON(ctx, method, sub2APIURL(authed, path), body, headers)
 	if err != nil && retry && isUpstreamStatus(err, http.StatusUnauthorized) {
+		if authed.Sub2APIManualAccessToken != "" {
+			return nil, err
+		}
 		refreshed, refreshErr := m.ensureSub2APIAccess(ctx, authed, true)
 		if refreshErr != nil {
 			return nil, refreshErr
@@ -743,15 +753,21 @@ func (m *Manager) LoginURL(ctx context.Context, channelID int64) (string, error)
 			return err
 		}
 		values := make(url.Values)
-		values.Set("access_token", authed.Sub2APIAccessToken)
+		accessToken := authed.Sub2APIAccessToken
+		if authed.Sub2APIManualAccessToken != "" {
+			accessToken = authed.Sub2APIManualAccessToken
+		}
+		values.Set("access_token", accessToken)
 		values.Set("token_type", "Bearer")
 		values.Set("redirect", "/dashboard")
-		if authed.Sub2APIRefreshToken != "" {
-			values.Set("refresh_token", authed.Sub2APIRefreshToken)
-		}
-		if expiresAt, err := time.Parse(time.RFC3339Nano, authed.Sub2APITokenExpiresAt); err == nil {
-			seconds := max(1, int(time.Until(expiresAt).Seconds()))
-			values.Set("expires_in", strconv.Itoa(seconds))
+		if authed.Sub2APIManualAccessToken == "" {
+			if authed.Sub2APIRefreshToken != "" {
+				values.Set("refresh_token", authed.Sub2APIRefreshToken)
+			}
+			if expiresAt, err := time.Parse(time.RFC3339Nano, authed.Sub2APITokenExpiresAt); err == nil {
+				seconds := max(1, int(time.Until(expiresAt).Seconds()))
+				values.Set("expires_in", strconv.Itoa(seconds))
+			}
 		}
 		result = strings.TrimRight(authed.BaseURL, "/") + "/auth/oauth/callback#" + values.Encode()
 		return nil

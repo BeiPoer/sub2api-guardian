@@ -6,7 +6,24 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"sub2api-guardian/backend/internal/store"
 )
+
+func TestSub2APIManualAccessTokenCanReplaceCredentials(t *testing.T) {
+	typeName := store.UpstreamChannelSub2API
+	baseURL := "example.com"
+	token := "  manual-token  "
+	input, err := normalizeUpstreamChannelPayload(upstreamChannelPayload{
+		Type: &typeName, BaseURL: &baseURL, Sub2APIManualAccessToken: &token,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if input.Sub2APIManualAccessToken != "manual-token" || input.Username != "" || input.Password != "" {
+		t.Fatalf("手动 access token 输入异常: %+v", input)
+	}
+}
 
 func TestOtherUpstreamChannelCRUDKeepsCredentials(t *testing.T) {
 	handler, _ := setupAPI(t, &fakeUpstream{groupCount: 1})

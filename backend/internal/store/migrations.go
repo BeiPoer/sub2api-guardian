@@ -18,7 +18,7 @@ const (
 	metaPolicy              = "policy_global"
 	metaUpstreamMultipliers = "upstream_multipliers"
 
-	currentSchemaVersion = "9"
+	currentSchemaVersion = "10"
 )
 
 var schemaStatements = []string{
@@ -166,6 +166,7 @@ var schemaStatements = []string{
 		newapi_access_token TEXT NOT NULL DEFAULT '',
 		newapi_user_id TEXT NOT NULL DEFAULT '',
 		sub2api_access_token TEXT NOT NULL DEFAULT '',
+		sub2api_manual_access_token TEXT NOT NULL DEFAULT '',
 		sub2api_refresh_token TEXT NOT NULL DEFAULT '',
 		sub2api_token_expires_at TEXT,
 		recharge_ratio REAL NOT NULL DEFAULT 1,
@@ -525,6 +526,7 @@ func (s *Store) addMissingColumns() error {
 		{"upstream_channels", "recharge_ratio", `ALTER TABLE upstream_channels ADD COLUMN recharge_ratio REAL NOT NULL DEFAULT 1`},
 		{"upstream_channels", "recharge_methods", `ALTER TABLE upstream_channels ADD COLUMN recharge_methods TEXT NOT NULL DEFAULT '[]'`},
 		{"upstream_channels", "recharge_fee", `ALTER TABLE upstream_channels ADD COLUMN recharge_fee TEXT NOT NULL DEFAULT ''`},
+		{"upstream_channels", "sub2api_manual_access_token", `ALTER TABLE upstream_channels ADD COLUMN sub2api_manual_access_token TEXT NOT NULL DEFAULT ''`},
 		{"upstream_alert_events", "wecom_sent", `ALTER TABLE upstream_alert_events ADD COLUMN wecom_sent INTEGER NOT NULL DEFAULT 0`},
 		{"upstream_alert_events", "wecom_error", `ALTER TABLE upstream_alert_events ADD COLUMN wecom_error TEXT NOT NULL DEFAULT ''`},
 		{"sessions", "scope", `ALTER TABLE sessions ADD COLUMN scope TEXT NOT NULL DEFAULT 'admin'`},

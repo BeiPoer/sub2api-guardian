@@ -46,6 +46,7 @@ export interface UpstreamChannel {
   recharge_ratio: number
   recharge_methods: UpstreamRechargeMethod[]
   recharge_fee: string
+  has_sub2api_manual_access_token: boolean
   ignored: boolean
   status: UpstreamChannelStatus
   last_sync_at: string

@@ -218,6 +218,55 @@ func TestUpstream401MapsToBadGateway(t *testing.T) {
 	}
 }
 
+func TestSub2APIManualAccessTokenSkipsLogin(t *testing.T) {
+	var loginCalls atomic.Int64
+	var meCalls atomic.Int64
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/auth/login", func(w http.ResponseWriter, r *http.Request) {
+		loginCalls.Add(1)
+		http.Error(w, "login must not be called", http.StatusInternalServerError)
+	})
+	mux.HandleFunc("/api/v1/auth/me", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer manual-token" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if meCalls.Add(1) > 1 {
+			http.Error(w, "token expired", http.StatusUnauthorized)
+			return
+		}
+		writeTestJSON(w, map[string]any{"code": 0, "data": map[string]any{"id": 7, "balance": 42.5}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	manager, st := testManager(t)
+	channel, err := st.CreateUpstreamChannel(store.UpstreamChannelInput{
+		Name: "sub", Type: store.UpstreamChannelSub2API, BaseURL: server.URL,
+		Sub2APIManualAccessToken: "manual-token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.sub2APIRequest(context.Background(), channel, "/auth/me", http.MethodGet, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.sub2APIRequest(context.Background(), channel, "/auth/me", http.MethodGet, nil, true); err == nil {
+		t.Fatal("手动 access token 失效时应直接返回错误")
+	}
+	if loginCalls.Load() != 0 {
+		t.Fatalf("手动 access token 不应触发登录，实际登录 %d 次", loginCalls.Load())
+	}
+	stored, err := st.UpstreamChannel(channel.ID)
+	if err != nil || !stored.HasSub2APIManualAccessToken {
+		t.Fatalf("手动 access token 配置标志异常: %+v err=%v", stored, err)
+	}
+	raw, _ := json.Marshal(stored)
+	if strings.Contains(string(raw), "manual-token") {
+		t.Fatalf("手动 access token 不应序列化: %s", raw)
+	}
+}
+
 type countingTransport struct{ calls atomic.Int64 }
 
 func (t *countingTransport) RoundTrip(*http.Request) (*http.Response, error) {

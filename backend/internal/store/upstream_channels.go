@@ -37,40 +37,43 @@ func (t UpstreamChannelType) Valid() bool {
 // UpstreamChannel 包含用户明确要求可在已登录面板中查看的上游凭据。
 // access / refresh 会话令牌只供服务端刷新使用，永不序列化给前端。
 type UpstreamChannel struct {
-	ID                    int64                    `json:"id"`
-	Name                  string                   `json:"name"`
-	Type                  UpstreamChannelType      `json:"type"`
-	BaseURL               string                   `json:"base_url"`
-	Username              string                   `json:"username"`
-	Password              string                   `json:"password"`
-	NewAPIAccessToken     string                   `json:"newapi_access_token"`
-	NewAPIUserID          string                   `json:"newapi_user_id"`
-	RechargeRatio         float64                  `json:"recharge_ratio"`
-	RechargeMethods       []UpstreamRechargeMethod `json:"recharge_methods"`
-	RechargeFee           string                   `json:"recharge_fee"`
-	Sub2APIAccessToken    string                   `json:"-"`
-	Sub2APIRefreshToken   string                   `json:"-"`
-	Sub2APITokenExpiresAt string                   `json:"-"`
-	Ignored               bool                     `json:"ignored"`
-	Status                string                   `json:"status"`
-	LastSyncAt            string                   `json:"last_sync_at"`
-	LastError             string                   `json:"last_error"`
-	CreatedAt             string                   `json:"created_at"`
-	UpdatedAt             string                   `json:"updated_at"`
+	ID                          int64                    `json:"id"`
+	Name                        string                   `json:"name"`
+	Type                        UpstreamChannelType      `json:"type"`
+	BaseURL                     string                   `json:"base_url"`
+	Username                    string                   `json:"username"`
+	Password                    string                   `json:"password"`
+	NewAPIAccessToken           string                   `json:"newapi_access_token"`
+	NewAPIUserID                string                   `json:"newapi_user_id"`
+	RechargeRatio               float64                  `json:"recharge_ratio"`
+	RechargeMethods             []UpstreamRechargeMethod `json:"recharge_methods"`
+	RechargeFee                 string                   `json:"recharge_fee"`
+	Sub2APIAccessToken          string                   `json:"-"`
+	Sub2APIManualAccessToken    string                   `json:"-"`
+	HasSub2APIManualAccessToken bool                     `json:"has_sub2api_manual_access_token"`
+	Sub2APIRefreshToken         string                   `json:"-"`
+	Sub2APITokenExpiresAt       string                   `json:"-"`
+	Ignored                     bool                     `json:"ignored"`
+	Status                      string                   `json:"status"`
+	LastSyncAt                  string                   `json:"last_sync_at"`
+	LastError                   string                   `json:"last_error"`
+	CreatedAt                   string                   `json:"created_at"`
+	UpdatedAt                   string                   `json:"updated_at"`
 }
 
 type UpstreamChannelInput struct {
-	Name              string
-	Type              UpstreamChannelType
-	BaseURL           string
-	Username          string
-	Password          string
-	NewAPIAccessToken string
-	NewAPIUserID      string
-	RechargeRatio     float64
-	RechargeMethods   []UpstreamRechargeMethod
-	RechargeFee       string
-	Ignored           bool
+	Name                     string
+	Type                     UpstreamChannelType
+	BaseURL                  string
+	Username                 string
+	Password                 string
+	NewAPIAccessToken        string
+	NewAPIUserID             string
+	RechargeRatio            float64
+	RechargeMethods          []UpstreamRechargeMethod
+	RechargeFee              string
+	Sub2APIManualAccessToken string
+	Ignored                  bool
 }
 
 var (
@@ -79,7 +82,7 @@ var (
 )
 
 const upstreamChannelColumns = `id, name, type, base_url, username, password,
-	newapi_access_token, newapi_user_id, sub2api_access_token, sub2api_refresh_token,
+	newapi_access_token, newapi_user_id, sub2api_access_token, sub2api_manual_access_token, sub2api_refresh_token,
 	sub2api_token_expires_at, recharge_ratio, recharge_methods, recharge_fee,
 	ignored, status, last_sync_at, last_error, created_at, updated_at`
 
@@ -98,7 +101,7 @@ func scanUpstreamChannel(row upstreamScanner) (UpstreamChannel, error) {
 	)
 	err := row.Scan(
 		&channel.ID, &channel.Name, &typeName, &channel.BaseURL, &channel.Username, &channel.Password,
-		&channel.NewAPIAccessToken, &channel.NewAPIUserID, &channel.Sub2APIAccessToken, &channel.Sub2APIRefreshToken,
+		&channel.NewAPIAccessToken, &channel.NewAPIUserID, &channel.Sub2APIAccessToken, &channel.Sub2APIManualAccessToken, &channel.Sub2APIRefreshToken,
 		&expiresAt, &channel.RechargeRatio, &rechargeMethodsJSON, &channel.RechargeFee,
 		&ignored, &channel.Status, &lastSyncAt, &channel.LastError, &channel.CreatedAt, &channel.UpdatedAt,
 	)
@@ -116,6 +119,7 @@ func scanUpstreamChannel(row upstreamScanner) (UpstreamChannel, error) {
 	}
 	channel.RechargeMethods = normalizeUpstreamRechargeMethods(channel.RechargeMethods)
 	channel.Ignored = ignored != 0
+	channel.HasSub2APIManualAccessToken = strings.TrimSpace(channel.Sub2APIManualAccessToken) != ""
 	if expiresAt.Valid {
 		channel.Sub2APITokenExpiresAt = expiresAt.String
 	}
@@ -174,10 +178,10 @@ func (s *Store) CreateUpstreamChannel(input UpstreamChannelInput) (UpstreamChann
 	s.mu.Lock()
 	result, err := s.db.Exec(`INSERT INTO upstream_channels (
 		name, type, base_url, username, password, newapi_access_token, newapi_user_id,
-		recharge_ratio, recharge_methods, recharge_fee, ignored, status, created_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sub2api_manual_access_token, recharge_ratio, recharge_methods, recharge_fee, ignored, status, created_at, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		input.Name, string(input.Type), input.BaseURL, input.Username, input.Password,
-		input.NewAPIAccessToken, input.NewAPIUserID, input.RechargeRatio, rechargeMethodsJSON, input.RechargeFee,
+		input.NewAPIAccessToken, input.NewAPIUserID, input.Sub2APIManualAccessToken, input.RechargeRatio, rechargeMethodsJSON, input.RechargeFee,
 		boolInt(input.Ignored), status, now, now)
 	s.mu.Unlock()
 	if err != nil {
@@ -204,10 +208,10 @@ func (s *Store) UpdateUpstreamChannel(id int64, input UpstreamChannelInput) (Ups
 	s.mu.Lock()
 	result, err := s.db.Exec(`UPDATE upstream_channels SET
 		name = ?, base_url = ?, username = ?, password = ?, newapi_access_token = ?,
-		newapi_user_id = ?, recharge_ratio = ?, recharge_methods = ?, recharge_fee = ?,
+		newapi_user_id = ?, sub2api_manual_access_token = ?, recharge_ratio = ?, recharge_methods = ?, recharge_fee = ?,
 		ignored = ?, updated_at = ? WHERE id = ?`,
 		input.Name, input.BaseURL, input.Username, input.Password, input.NewAPIAccessToken,
-		input.NewAPIUserID, input.RechargeRatio, rechargeMethodsJSON, input.RechargeFee,
+		input.NewAPIUserID, input.Sub2APIManualAccessToken, input.RechargeRatio, rechargeMethodsJSON, input.RechargeFee,
 		boolInt(input.Ignored), now, id)
 	s.mu.Unlock()
 	if err != nil {

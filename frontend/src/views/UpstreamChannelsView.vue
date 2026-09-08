@@ -455,6 +455,7 @@
           <label class="block"><span class="input-label">类型</span><select v-model="channelEditor.type" class="input" :disabled="Boolean(channelEditor.id)"><option value="sub2api">Sub2API</option><option value="newapi">New API</option><option value="other">其它</option></select></label>
         </div>
         <Field v-model="channelEditor.baseURL" label="站点地址" placeholder="https://example.com" />
+        <Field v-if="channelEditor.type === 'sub2api'" v-model="channelEditor.sub2APIManualAccessToken" label="Access Token" type="password" :placeholder="channelEditor.id && channelEditor.hasManualAccessToken ? '已配置，留空保持不变' : '如果上游登录有Cloudflare Turnstile验证，建议手动登录后在此处输入access token绕过验证'" />
         <div class="grid grid-cols-1 gap-4 sm:grid-cols-2"><Field v-model="channelEditor.username" label="账号 / 邮箱" /><Field v-model="channelEditor.password" label="密码" type="password" :placeholder="channelEditor.id ? '留空保持不变' : ''" /></div>
         <div v-if="channelEditor.type === 'newapi'" class="grid grid-cols-1 gap-4 sm:grid-cols-2"><Field v-model="channelEditor.newAPIUserID" label="用户 ID" /><Field v-model="channelEditor.newAPIAccessToken" label="系统访问令牌" type="password" :placeholder="channelEditor.id ? '留空保持不变' : ''" /></div>
         <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -701,7 +702,7 @@ const rechargeMethodOptions: Array<{ value: UpstreamRechargeMethod; label: strin
   { value: 'wechat', label: '微信' },
   { value: 'card', label: '卡网' }
 ]
-const channelEditor = reactive({ open: false, id: 0, name: '', type: 'sub2api' as UpstreamChannelType, baseURL: '', username: '', password: '', newAPIAccessToken: '', newAPIUserID: '', rechargeRatio: 1, rechargeMethods: [] as UpstreamRechargeMethod[], rechargeFee: '', ignored: false, sync: true })
+const channelEditor = reactive({ open: false, id: 0, name: '', type: 'sub2api' as UpstreamChannelType, baseURL: '', username: '', password: '', sub2APIManualAccessToken: '', hasManualAccessToken: false, newAPIAccessToken: '', newAPIUserID: '', rechargeRatio: 1, rechargeMethods: [] as UpstreamRechargeMethod[], rechargeFee: '', ignored: false, sync: true })
 const emailEditor = reactive({ open: false, host: '', port: 587, secure: false, user: '', password: '', from: '', subjectPrefix: '', recipients: '', testRecipient: '', interval: 30, hasPassword: false })
 const wecomEditor = reactive({ open: false, corpID: '', agentID: '', secret: '', target: '', hasSecret: false })
 const taskTypes: UpstreamTaskType[] = ['low_balance', 'burn_rate', 'group_added', 'group_removed', 'group_ratio_changed']
@@ -890,6 +891,8 @@ function openChannelEditor(channel?: UpstreamChannel) {
   channelEditor.baseURL = channel?.base_url ?? ''
   channelEditor.username = channel?.username ?? ''
   channelEditor.password = channel?.password ?? ''
+  channelEditor.sub2APIManualAccessToken = ''
+  channelEditor.hasManualAccessToken = channel?.has_sub2api_manual_access_token ?? false
   channelEditor.newAPIAccessToken = channel?.newapi_access_token ?? ''
   channelEditor.newAPIUserID = channel?.newapi_user_id ?? ''
   channelEditor.rechargeRatio = channel?.recharge_ratio || 1
@@ -912,6 +915,7 @@ async function saveChannel() {
   }
   payload.username = channelEditor.username
   payload.password = channelEditor.password
+  if (channelEditor.type === 'sub2api' && channelEditor.sub2APIManualAccessToken) payload.sub2api_manual_access_token = channelEditor.sub2APIManualAccessToken
   if (channelEditor.type === 'newapi') {
     payload.newapi_access_token = channelEditor.newAPIAccessToken
     payload.newapi_user_id = channelEditor.newAPIUserID
