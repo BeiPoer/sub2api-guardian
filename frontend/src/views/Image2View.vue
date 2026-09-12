@@ -151,7 +151,6 @@
         <Field
           v-model="upstreamForm.apiKey"
           label="上游 API Key"
-          type="password"
           :placeholder="editingID ? '已配置，留空则不修改' : '必填'"
         />
         <Field
@@ -291,7 +290,7 @@ function openEdit(upstream: Image2Upstream) {
     name: upstream.name,
     slug: upstream.slug,
     baseURL: upstream.base_url,
-    apiKey: '',
+    apiKey: upstream.api_key,
     modelMapping: upstream.model_mapping,
     blockedParams: upstream.blocked_params,
     proxyImageURLs: upstream.proxy_image_urls

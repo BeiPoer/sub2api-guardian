@@ -13,6 +13,7 @@ export interface Image2Upstream {
   name: string
   slug: string
   base_url: string
+  api_key: string
   has_api_key: boolean
   model_mapping: string
   blocked_params: string

@@ -27,7 +27,7 @@ type Image2Upstream struct {
 	Name           string `json:"name"`
 	Slug           string `json:"slug"`
 	BaseURL        string `json:"base_url"`
-	APIKey         string `json:"-"`
+	APIKey         string `json:"api_key"`
 	HasAPIKey      bool   `json:"has_api_key"`
 	ModelMapping   string `json:"model_mapping"`
 	BlockedParams  string `json:"blocked_params"`

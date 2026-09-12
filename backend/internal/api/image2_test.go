@@ -23,6 +23,30 @@ import (
 	"sub2api-guardian/backend/internal/upstream"
 )
 
+func TestImage2ConfigReturnsUpstreamAPIKey(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "guardian.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := st.CreateImage2Upstream(store.Image2Upstream{
+		Name: "test", Slug: "test", BaseURL: "https://example.com", APIKey: "upstream-secret",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	(&Server{store: st}).getImage2(response, httptest.NewRequest(http.MethodGet, "/api/image2", nil))
+	var config struct {
+		Upstreams []store.Image2Upstream `json:"upstreams"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &config); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusOK || len(config.Upstreams) != 1 || config.Upstreams[0].APIKey != "upstream-secret" {
+		t.Fatal("image2 配置未返回完整上游 API Key")
+	}
+}
+
 func TestImage2ProxyConvertsBase64ToURL(t *testing.T) {
 	image := []byte("\x89PNG\r\n\x1a\nimage2-test")
 	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
