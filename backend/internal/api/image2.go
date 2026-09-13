@@ -697,6 +697,29 @@ func (s *Server) convertImage2Response(ctx context.Context, raw []byte, imageBas
 			if !proxyImageURLs {
 				continue
 			}
+			if strings.HasPrefix(strings.ToLower(imageURL), "data:") {
+				if imageBaseURL == "" {
+					rollback()
+					return nil, &image2ProxyError{
+						status: http.StatusServiceUnavailable, message: "image_domain is not configured.",
+						errorType: "configuration_error", code: "image_domain_missing",
+					}
+				}
+				content, err := decodeImage2DataURL(imageURL)
+				if err != nil {
+					rollback()
+					return nil, image2InvalidURL()
+				}
+				filePath, err := s.writeImage2File(content)
+				if err != nil {
+					rollback()
+					return nil, image2InvalidURL()
+				}
+				saved = append(saved, filePath)
+				item["url"] = strings.TrimRight(imageBaseURL, "/") + "/" + url.PathEscape(filepath.Base(filePath))
+				convertedAny = true
+				continue
+			}
 			proxyURL, err := s.image2ProxyURL(imageBaseURL, imageURL)
 			if err != nil {
 				rollback()
@@ -769,6 +792,19 @@ func parseImage2RemoteURL(value string) (*url.URL, error) {
 	return parsed, nil
 }
 
+func decodeImage2DataURL(value string) ([]byte, error) {
+	header, encoded, found := strings.Cut(value, ",")
+	if !found || !strings.HasPrefix(strings.ToLower(header), "data:image/") ||
+		!strings.HasSuffix(strings.ToLower(header), ";base64") {
+		return nil, errors.New("invalid image data URL")
+	}
+	content, err := base64.StdEncoding.Strict().DecodeString(encoded)
+	if err != nil || len(content) == 0 || !strings.HasPrefix(http.DetectContentType(content), "image/") {
+		return nil, errors.New("invalid image data URL")
+	}
+	return content, nil
+}
+
 func image2ProxyExtension(urlPath string) string {
 	switch strings.ToLower(path.Ext(urlPath)) {
 	case ".jpg", ".jpeg":
@@ -808,6 +844,9 @@ func (s *Server) decryptImage2URL(token string) (string, error) {
 }
 
 func (s *Server) readImage2URL(ctx context.Context, value string) ([]byte, error) {
+	if strings.HasPrefix(strings.ToLower(value), "data:") {
+		return decodeImage2DataURL(value)
+	}
 	if _, err := parseImage2RemoteURL(value); err != nil {
 		return nil, err
 	}

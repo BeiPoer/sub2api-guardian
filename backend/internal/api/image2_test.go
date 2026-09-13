@@ -213,6 +213,34 @@ func TestImage2Base64ResponseRequiresImageDomain(t *testing.T) {
 	}
 }
 
+func TestImage2ProxyConvertsDataURLToFileURL(t *testing.T) {
+	image := []byte("\x89PNG\r\n\x1a\nimage2-data-url")
+	encoded := base64.StdEncoding.EncodeToString(image)
+	dir := t.TempDir()
+	server := &Server{image2Dir: dir}
+	converted, proxyErr := server.convertImage2Response(context.Background(),
+		[]byte(`{"data":[{"url":"data:image/png;base64,`+encoded+`"}]}`),
+		"https://images.example.com/images", "url", true)
+	if proxyErr != nil {
+		t.Fatalf("Data URL 转换失败: %#v", proxyErr)
+	}
+	var payload struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(converted, &payload); err != nil || len(payload.Data) != 1 {
+		t.Fatalf("转换响应无效: %v %s", err, converted)
+	}
+	imageURL, _ := payload.Data[0]["url"].(string)
+	if !strings.HasPrefix(imageURL, "https://images.example.com/images/") || !strings.HasSuffix(imageURL, ".png") {
+		t.Fatalf("转换后的图片 URL = %q", imageURL)
+	}
+	name := filepath.Base(imageURL)
+	content, err := os.ReadFile(filepath.Join(dir, name))
+	if err != nil || !bytes.Equal(content, image) {
+		t.Fatalf("落盘图片错误: %v 内容一致=%v", err, bytes.Equal(content, image))
+	}
+}
+
 func TestImage2PublicBaseURLFallsBackToRequestHost(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
 	request.Host = "guardian.example.com:8787"
