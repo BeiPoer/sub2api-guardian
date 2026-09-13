@@ -293,7 +293,8 @@ func hardenHTTP(next http.Handler) http.Handler {
 		w.Header().Set("Permissions-Policy", "camera=(), geolocation=(), microphone=()")
 
 		origin := strings.TrimSpace(r.Header.Get("Origin"))
-		if origin != "" && (isStateChanging(r.Method) || r.Method == http.MethodOptions) && !allowedOrigin(origin, r) {
+		image2ProxyPath := isImage2ProxyPath(r)
+		if origin != "" && (isStateChanging(r.Method) || r.Method == http.MethodOptions) && !image2ProxyPath && !allowedOrigin(origin, r) {
 			writeErrorMessage(w, http.StatusForbidden, "拒绝跨站请求")
 			return
 		}
@@ -315,8 +316,12 @@ func hardenHTTP(next http.Handler) http.Handler {
 }
 
 func isImage2ProxyRequest(r *http.Request) bool {
+	return r.Method == http.MethodPost && isImage2ProxyPath(r)
+}
+
+func isImage2ProxyPath(r *http.Request) bool {
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/"), "/")
-	return r.Method == http.MethodPost && len(parts) == 4 && parts[0] != "" &&
+	return len(parts) == 4 && parts[0] != "" &&
 		parts[1] == "v1" && parts[2] == "images" &&
 		(parts[3] == "generations" || parts[3] == "edits")
 }
@@ -353,10 +358,13 @@ func allowedOrigin(origin string, r *http.Request) bool {
 func cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		if origin != "" && devOrigins[origin] {
+		if origin != "" && (devOrigins[origin] || isImage2ProxyPath(r)) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			if devOrigins[origin] {
+				w.Header().Set("Access-Control-Allow-Credentials", "true")
+			}
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			w.Header().Add("Access-Control-Allow-Headers", "Authorization")
 			w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
 			// 响应随 Origin 变化，必须告诉缓存别把某一个源的响应复用给别人。
 			w.Header().Add("Vary", "Origin")

@@ -204,6 +204,26 @@ func TestHardenHTTPPreservesImage2RequestRules(t *testing.T) {
 	}
 }
 
+func TestHardenHTTPAllowsCrossOriginImage2Proxy(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	request := httptest.NewRequest(http.MethodPost, "/primary/v1/images/generations", nil)
+	request.Header.Set("Origin", "https://static.example.com")
+	response := httptest.NewRecorder()
+	hardenHTTP(cors(next)).ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent || response.Header().Get("Access-Control-Allow-Origin") != "https://static.example.com" {
+		t.Fatalf("跨域 image2 请求被拒绝: status=%d allow-origin=%q", response.Code, response.Header().Get("Access-Control-Allow-Origin"))
+	}
+
+	preflight := httptest.NewRequest(http.MethodOptions, "/primary/v1/images/generations", nil)
+	preflight.Header.Set("Origin", "https://static.example.com")
+	preflight.Header.Set("Access-Control-Request-Method", "POST")
+	preflightResponse := httptest.NewRecorder()
+	hardenHTTP(cors(next)).ServeHTTP(preflightResponse, preflight)
+	if preflightResponse.Code != http.StatusNoContent || preflightResponse.Header().Get("Access-Control-Allow-Origin") != "https://static.example.com" {
+		t.Fatalf("跨域 image2 预检失败: status=%d allow-origin=%q", preflightResponse.Code, preflightResponse.Header().Get("Access-Control-Allow-Origin"))
+	}
+}
+
 func TestImage2Base64ResponseRequiresImageDomain(t *testing.T) {
 	encoded := base64.StdEncoding.EncodeToString([]byte("not-an-image"))
 	_, proxyErr := (&Server{}).convertImage2Response(context.Background(),
