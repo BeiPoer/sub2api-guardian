@@ -1326,8 +1326,8 @@ function firstNumeric(row: Row | undefined, keys: string[]) {
   }
   return null
 }
-function taskLabel(type: UpstreamTaskType) { return ({ low_balance: '低余额', burn_rate: '消耗速率', group_added: '新增分组', group_removed: '移除分组', group_ratio_changed: '分组倍率变化' } as Record<UpstreamTaskType, string>)[type] }
-function taskTone(type: UpstreamTaskType) { return type === 'low_balance' || type === 'burn_rate' ? 'warning' : 'primary' }
+function taskLabel(type: UpstreamAlert['type']) { if (type === 'auth_failed') return 'Token 鉴权失败'; return ({ low_balance: '低余额', burn_rate: '消耗速率', group_added: '新增分组', group_removed: '移除分组', group_ratio_changed: '分组倍率变化' } as Record<UpstreamTaskType, string>)[type] }
+function taskTone(type: UpstreamAlert['type']) { if (type === 'auth_failed') return 'danger'; return type === 'low_balance' || type === 'burn_rate' ? 'warning' : 'primary' }
 function formatNumber(value: number | null | undefined) {
   if (value == null || !Number.isFinite(value)) return '—'
   return Number.isInteger(value) ? String(value) : value.toFixed(4).replace(/0+$/, '').replace(/\.$/, '')

@@ -2,6 +2,7 @@ package channelmanager
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -12,11 +13,13 @@ import (
 )
 
 const upstreamGroupStateKey = "groups"
+const upstreamAuthFailedAlert = "auth_failed"
 
 type EvaluationResult struct {
-	Triggered bool   `json:"triggered"`
-	Message   string `json:"message"`
-	Snapshot  any    `json:"snapshot,omitempty"`
+	authFailed bool
+	Triggered  bool   `json:"triggered"`
+	Message    string `json:"message"`
+	Snapshot   any    `json:"snapshot,omitempty"`
 }
 
 func EvaluateBalanceTask(task store.UpstreamAutomationTask, snapshots []store.UpstreamBalanceSnapshot, channelName string) EvaluationResult {
@@ -183,10 +186,20 @@ func (m *Manager) runChannelTasks(ctx context.Context, channel store.UpstreamCha
 			maxLookback = max(maxLookback, task.LookbackMinutes)
 		}
 		if hasGroupTask {
-			if err := m.syncLocked(ctx, channel.ID); err != nil {
-				return err
+			err = m.syncLocked(ctx, channel.ID)
+		} else {
+			_, err = m.balanceLocked(ctx, channel.ID)
+		}
+		if err != nil {
+			if isManualTokenAuthError(channel, err) {
+				evaluation := EvaluationResult{
+					Triggered: true, authFailed: true,
+					Message: fmt.Sprintf("%s（渠道 #%d）自动化监控失败：手动配置的 Token 已失效或无访问权限。请管理员在渠道管理中检查并替换 Token；New API 渠道还需确认 User ID 与 Token 所属用户一致。", channel.Name, channel.ID),
+				}
+				for _, task := range tasks {
+					err = errors.Join(err, m.recordAlert(ctx, channel, task, evaluation, now))
+				}
 			}
-		} else if _, err := m.balanceLocked(ctx, channel.ID); err != nil {
 			return err
 		}
 
@@ -255,9 +268,14 @@ func (m *Manager) recordAlert(ctx context.Context, channel store.UpstreamChannel
 	if !evaluation.Triggered || minutesSince(task.LastAlertAt, now) < float64(task.CooldownMinutes) {
 		return nil
 	}
+	alertType := string(task.Type)
 	subject := "AI 渠道余额预警"
 	if task.Type.IsGroupTask() {
 		subject = "AI 渠道分组预警"
+	}
+	if evaluation.authFailed {
+		alertType = upstreamAuthFailedAlert
+		subject = "AI 渠道 Token 鉴权失败告警"
 	}
 	emailSent := false
 	emailError := ""
@@ -274,7 +292,7 @@ func (m *Manager) recordAlert(ctx context.Context, channel store.UpstreamChannel
 		wecomSent = true
 	}
 	if err := m.store.AddUpstreamAlertEvent(store.UpstreamAlertEvent{
-		ChannelID: channel.ID, TaskID: &task.ID, Type: string(task.Type), Message: evaluation.Message,
+		ChannelID: channel.ID, TaskID: &task.ID, Type: alertType, Message: evaluation.Message,
 		Snapshot: evaluation.Snapshot, EmailSent: emailSent, EmailError: emailError,
 		WeComSent: wecomSent, WeComError: wecomError, CreatedAt: now.Format(time.RFC3339Nano),
 	}); err != nil {

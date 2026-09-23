@@ -288,6 +288,6 @@ func (m *Manager) UpdateTokenGroup(ctx context.Context, channelID, tokenID int64
 }
 
 func (m *Manager) runDue(ctx context.Context) {
-	// 自动任务失败只更新渠道/任务状态，不能终止下一渠道的检查。
+	// 单个渠道的自动任务失败，不能终止下一渠道的检查。
 	_ = m.runDueTasks(ctx)
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"sub2api-guardian/backend/internal/store"
 )
@@ -34,6 +35,39 @@ func upstreamError(status int, message string, details any) error {
 		status = http.StatusBadGateway
 	}
 	return &Error{Status: status, UpstreamCode: status, Message: message, Details: details}
+}
+
+// isManualTokenAuthError 只识别手动凭据渠道的鉴权错误，兼容 HTTP 200 的业务错误。
+func isManualTokenAuthError(channel store.UpstreamChannel, err error) bool {
+	if !((channel.Type == store.UpstreamChannelSub2API && channel.Sub2APIManualAccessToken != "") ||
+		(channel.Type == store.UpstreamChannelNewAPI && channel.NewAPIAccessToken != "")) {
+		return false
+	}
+	if isUpstreamStatus(err, http.StatusUnauthorized, http.StatusForbidden) {
+		return true
+	}
+	var target *Error
+	if !errors.As(err, &target) || target.UpstreamCode != 0 {
+		return false
+	}
+	details, ok := asObject(target.Details)
+	if !ok {
+		return false
+	}
+	switch strings.ToUpper(stringValue(details["code"])) {
+	case "401", "403", "TOKEN_EXPIRED", "INVALID_TOKEN", "TOKEN_REVOKED",
+		"AUTH_TOKEN_EXPIRED", "AUTH_UNAUTHORIZED", "AUTH_SESSION_REVOKED":
+		return true
+	}
+	message := strings.ToLower(target.Message)
+	for _, text := range []string{"invalid access token", "access token 无效", "access token 無效",
+		"invalid token", "token expired", "token has expired", "token has been revoked",
+		"token已失效", "token 已失效", "token已过期", "token 已过期", "令牌已过期", "令牌无效"} {
+		if strings.Contains(message, text) {
+			return true
+		}
+	}
+	return false
 }
 
 func channelError(err error) error {

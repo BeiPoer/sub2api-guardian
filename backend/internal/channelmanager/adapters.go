@@ -287,6 +287,9 @@ func (m *Manager) syncSub2API(ctx context.Context, channel store.UpstreamChannel
 	}
 	rates, err := m.sub2APIRequest(ctx, channel, "/groups/rates", http.MethodGet, nil, true)
 	if err != nil {
+		if isManualTokenAuthError(channel, err) {
+			return syncResult{}, err
+		}
 		rates = map[string]any{}
 	}
 	groups := applyGroupRates(normalizeCollection(groupsPayload), rates)

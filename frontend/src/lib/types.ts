@@ -122,7 +122,7 @@ export interface UpstreamAlert {
   channel_id: number
   channel_name?: string
   task_id?: number
-  type: UpstreamTaskType
+  type: UpstreamTaskType | 'auth_failed'
   message: string
   snapshot?: unknown
   email_sent: boolean
