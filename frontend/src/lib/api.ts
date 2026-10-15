@@ -1,4 +1,9 @@
 import type {
+  ModelCheckTarget,
+  ModelCheckSettings,
+  ModelCheckRun,
+  ModelCheckView,
+  ModelCheckTimeline,
   Action,
   Channel,
   Connection,
@@ -137,6 +142,12 @@ function put<T>(path: string, body: unknown, timeoutMs?: number): Promise<T> {
 }
 
 export const api = {
+  modelCheck: () => request<ModelCheckView>('/api/model-check'),
+  modelCheckTimelines: () => request<{ items: ModelCheckTimeline[] }>('/api/model-check/timelines'),
+  saveModelCheck: (settings: ModelCheckSettings) => put<ModelCheckView>('/api/model-check', settings),
+  runModelCheck: (target: ModelCheckTarget) => post<{ ok: boolean }>('/api/model-check/run', target),
+  modelCheckRuns: (params: Record<string, string> = {}) =>
+    request<{ items: ModelCheckRun[] }>(`/api/model-check/runs?${new URLSearchParams(params)}`),
   // —— 鉴权与初始化 ——
   setupStatus: () => request<{ needs_setup: boolean; has_users: boolean }>('/api/setup'),
   setup: (payload: {

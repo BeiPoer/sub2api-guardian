@@ -20,6 +20,7 @@ import (
 
 	"sub2api-guardian/backend/internal/channelmanager"
 	"sub2api-guardian/backend/internal/engine"
+	"sub2api-guardian/backend/internal/modelcheck"
 	"sub2api-guardian/backend/internal/reports"
 	"sub2api-guardian/backend/internal/store"
 	"sub2api-guardian/backend/internal/upstream"
@@ -36,6 +37,7 @@ type Server struct {
 	assets           http.Handler
 	upstreamChannels *channelmanager.Manager
 	scheduledReports *reports.Manager
+	modelChecks      *modelcheck.Manager
 
 	// lastRenew 给会话滑动续期做限流，避免每个请求都写一次库。
 	renewMu   sync.Mutex
@@ -77,6 +79,7 @@ func NewServer(st *store.Store, client *upstream.Client, eng *engine.Engine, ass
 		authRates:        make(map[string]authRateEntry, 64),
 		upstreamChannels: channelmanager.New(st),
 		scheduledReports: reports.New(st, client),
+		modelChecks:      modelcheck.New(st, client),
 		image2Dir:        image2Dir,
 		image2Client: &http.Client{
 			Transport:     image2Transport,
@@ -117,11 +120,13 @@ func NewServer(st *store.Store, client *upstream.Client, eng *engine.Engine, ass
 func (s *Server) StartBackgroundJobs() {
 	s.upstreamChannels.Start()
 	s.scheduledReports.Start()
+	s.modelChecks.Start()
 }
 
 // Close 释放 SSE 资源。
 func (s *Server) Close() {
 	s.closeOnce.Do(func() {
+		s.modelChecks.Stop()
 		s.scheduledReports.Stop()
 		s.upstreamChannels.Stop()
 		close(s.image2Stop)
@@ -137,6 +142,11 @@ func (s *Server) Close() {
 // 新增接口时往表里加一行，漏加会被测试抓住。
 func (s *Server) protectedRoutes() map[string]http.HandlerFunc {
 	return map[string]http.HandlerFunc{
+		"GET /api/model-check":                                    s.getModelCheck,
+		"PUT /api/model-check":                                    s.saveModelCheck,
+		"GET /api/model-check/runs":                               s.modelCheckRuns,
+		"GET /api/model-check/timelines":                          s.modelCheckTimelines,
+		"POST /api/model-check/run":                               s.runModelCheck,
 		"GET /api/overview":                                       s.overview,
 		"GET /api/groups":                                         s.listGroups,
 		"PUT /api/groups/{id}/policy":                             s.saveGroupPolicy,

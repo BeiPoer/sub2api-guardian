@@ -26,6 +26,14 @@ var schemaStatements = []string{
 	`PRAGMA busy_timeout=5000`,
 	// upstream_channels 的外键只作用于新增表；开启外键不会改变现有缓存表的行为。
 	`PRAGMA foreign_keys=ON`,
+	`CREATE TABLE IF NOT EXISTS model_check_runs (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		account_id INTEGER NOT NULL,
+		model TEXT NOT NULL,
+		status TEXT NOT NULL,
+		json TEXT NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_model_check_target ON model_check_runs(account_id, model, id DESC)`,
 	`CREATE TABLE IF NOT EXISTS meta (
 		key TEXT PRIMARY KEY,
 		value TEXT NOT NULL,

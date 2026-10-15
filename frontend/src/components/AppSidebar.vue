@@ -189,6 +189,7 @@ const scheduledReportsNav = [
 ]
 
 const toolsNav = [
+  { to: '/tools/model-check', label: '降智检测', icon: 'beaker' as const },
   { to: '/tools/image2', label: 'image2路由', icon: 'beaker' as const },
   { to: '/tools/memos', label: '备忘录', icon: 'clipboard' as const }
 ]

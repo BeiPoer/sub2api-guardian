@@ -69,6 +69,11 @@ const router = createRouter({
       component: () => import('@/views/Image2View.vue')
     },
     {
+      path: '/tools/model-check',
+      name: 'model-check',
+      component: () => import('@/views/ModelCheckView.vue')
+    },
+    {
       path: '/tools/memos',
       name: 'memos',
       component: () => import('@/views/MemosView.vue')

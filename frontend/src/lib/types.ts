@@ -844,3 +844,46 @@ export interface MemoArchive {
   source_revision: number
   created_at: string
 }
+export interface ModelCheckTarget {
+  account_id: number
+  group_id: number
+  model: string
+  expected_model: string
+}
+
+export interface ModelCheckSettings {
+  enabled: boolean
+  interval_minutes: number
+  quiet_enabled: boolean
+  quiet_start: string
+  quiet_end: string
+  timezone: string
+  targets: ModelCheckTarget[]
+}
+
+export interface ModelCheckRun extends ModelCheckTarget {
+  id: number
+  account_name: string
+  started_at: string
+  finished_at?: string
+  status: 'running' | 'consistent' | 'suspected' | 'inconclusive' | 'unverified' | 'error' | 'interrupted'
+  message: string
+  prediction: string
+  probability: number
+  valid_outputs: number
+  number_counts: number[]
+  candidates: { model: string; probability: number }[]
+  bank_version: string
+}
+
+export interface ModelCheckView {
+  settings: ModelCheckSettings
+  models: string[]
+  running: boolean
+}
+
+export interface ModelCheckTimeline {
+  account_id: number
+  model: string
+  runs: ModelCheckRun[]
+}
