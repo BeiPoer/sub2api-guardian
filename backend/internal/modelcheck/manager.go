@@ -351,22 +351,39 @@ func (m *Manager) run(target store.ModelCheckTarget, scheduled bool) error {
 		run.Candidates = analyze(outputs)
 		run.Prediction = run.Candidates[0].Model
 		run.Probability = run.Candidates[0].Probability
-		run.Status, run.Message = classify(target.ExpectedModel, run.Prediction, run.Probability)
+		run.Status, run.Message = classify(target.ExpectedModel, run.Candidates)
 	}
 	finished := time.Now().UTC()
 	run.FinishedAt = &finished
 	return m.store.FinishModelCheckRun(run)
 }
 
-func classify(expected, prediction string, probability float64) (string, string) {
+// Reclassify applies the current verdict to stored successful attribution without another probe.
+func Reclassify(run *store.ModelCheckRun) {
+	switch run.Status {
+	case "consistent", "suspected", "inconclusive", "unverified":
+		if run.ValidOutputs >= 3 && len(run.Candidates) > 0 {
+			run.Status, run.Message = classify(run.ExpectedModel, run.Candidates)
+		}
+	}
+}
+
+func classify(expected string, candidates []store.ModelCheckCandidate) (string, string) {
 	if expected == "" {
 		return "unverified", "未指定库内预期模型，仅展示候选归因，不判断降智"
 	}
-	if probability < 0.8 {
-		return "inconclusive", "最高候选概率低于 80%，证据不足"
+	for _, candidate := range candidates {
+		if candidate.Model != expected {
+			continue
+		}
+		switch {
+		case candidate.Probability >= 0.8:
+			return "consistent", "预期模型的候选库内概率达到 80%，指纹与预期一致（仅供参考）"
+		case candidate.Probability <= 0.2:
+			return "suspected", "预期模型的候选库内概率不高于 20%，疑似与预期不符；具体替代模型仍可能不确定，建议复测"
+		default:
+			return "inconclusive", "预期模型的候选库内概率介于 20% 与 80% 之间，尚不足以判断是否符合预期"
+		}
 	}
-	if expected == prediction {
-		return "consistent", "指纹与预期模型一致（仅供参考）"
-	}
-	return "suspected", "指纹与预期模型不一致，疑似替换或降智，建议复测"
+	return "unverified", "本次候选结果未包含预期模型，仅展示归因，不判断是否符合预期"
 }

@@ -43,6 +43,9 @@ func (s *Server) modelCheckRuns(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	for i := range items {
+		modelcheck.Reclassify(&items[i])
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
@@ -51,6 +54,11 @@ func (s *Server) modelCheckTimelines(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, err)
 		return
+	}
+	for i := range items {
+		for j := range items[i].Runs {
+			modelcheck.Reclassify(&items[i].Runs[j])
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }

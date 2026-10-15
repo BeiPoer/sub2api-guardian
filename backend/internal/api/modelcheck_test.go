@@ -69,3 +69,40 @@ func TestModelCheckSettingsAPI(t *testing.T) {
 		t.Fatalf("timelines response: %s", res.Body.String())
 	}
 }
+
+func TestModelCheckHistoryReclassifiesExpectedModelWithoutNewProbe(t *testing.T) {
+	handler, st := setupAPI(t, &fakeUpstream{groupCount: 1})
+	legacy := store.ModelCheckRun{
+		ModelCheckTarget: store.ModelCheckTarget{AccountID: 101, Model: "gpt-5.6-sol", ExpectedModel: "gpt-5.6-sol"},
+		Status:           "inconclusive", Message: "最高候选概率低于 80%，证据不足", ValidOutputs: 3,
+		Prediction: "gpt-5.6-luna", Probability: 0.627,
+		Candidates: []store.ModelCheckCandidate{{Model: "gpt-5.6-luna", Probability: 0.627}, {Model: "gpt-6-luna", Probability: 0.372999}, {Model: "gpt-5.6-sol", Probability: 0.000001}},
+	}
+	if _, err := st.CreateModelCheckRun(legacy); err != nil {
+		t.Fatal(err)
+	}
+	res := doJSON(t, handler, http.MethodGet, "/api/model-check/runs?account_id=101&model=gpt-5.6-sol", nil)
+	var history struct {
+		Items []store.ModelCheckRun `json:"items"`
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &history); err != nil {
+		t.Fatal(err)
+	}
+	if res.Code != http.StatusOK || len(history.Items) != 1 || history.Items[0].Status != "suspected" {
+		t.Fatalf("wrong history verdict: %s", res.Body.String())
+	}
+	res = doJSON(t, handler, http.MethodGet, "/api/model-check/timelines", nil)
+	var timelines struct {
+		Items []store.ModelCheckTimeline `json:"items"`
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &timelines); err != nil {
+		t.Fatal(err)
+	}
+	if res.Code != http.StatusOK || len(timelines.Items) != 1 || len(timelines.Items[0].Runs) != 1 || timelines.Items[0].Runs[0].Status != "suspected" {
+		t.Fatalf("wrong timeline verdict: %s", res.Body.String())
+	}
+	stored, err := st.ModelCheckRuns(101, "gpt-5.6-sol", 0, 30)
+	if err != nil || len(stored) != 1 || stored[0].Status != legacy.Status || stored[0].Message != legacy.Message {
+		t.Fatalf("read changed stored history: %+v %v", stored, err)
+	}
+}

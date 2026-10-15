@@ -53,7 +53,7 @@
               </div>
               <div v-else class="flex h-8 items-center rounded border border-dashed border-gray-200 px-3 text-xs text-gray-400 dark:border-dark-600">暂无记录，等待计划执行或立即检测</div>
               <div v-if="row.runs.length" class="mt-1.5 flex justify-between gap-2 text-[11px] text-gray-400"><time>{{ shortTimestamp(row.runs[0]!.started_at) }}</time><time>最新 {{ shortTimestamp(row.latest!.started_at) }}</time></div>
-              <p v-if="row.latest" class="mt-2 truncate text-xs text-gray-500" :title="row.latest.message">{{ row.latest.prediction ? `最近识别：${row.latest.prediction} · ${percent(row.latest.probability)}` : row.latest.message || '正在检测…' }}</p>
+              <p v-if="row.latest" class="mt-2 truncate text-xs text-gray-500" :title="row.latest.message">{{ row.latest.prediction ? `最近候选：${row.latest.prediction} · ${percent(row.latest.probability)}` : row.latest.message || '正在检测…' }}</p>
             </div>
             <div class="flex gap-2 lg:flex-col">
               <button class="btn btn-secondary btn-sm" @click="showTimeline(row.target)">查看记录</button>
@@ -173,7 +173,8 @@
             </div>
             <p class="mt-2 break-all text-sm font-medium text-gray-900 dark:text-white">{{ run.account_name || `渠道 #${run.account_id}` }} · {{ run.model }}</p>
             <p class="mt-1 text-sm text-gray-600 dark:text-dark-300">{{ run.message || '正在发送挑战并分析指纹…' }}</p>
-            <p v-if="run.prediction" class="mt-2 break-all text-sm">预期：{{ run.expected_model || '未指定' }} → 识别：<strong>{{ run.prediction }}</strong> <span class="text-gray-500">（候选库内概率 {{ percent(run.probability) }}）</span></p>
+            <p v-if="run.prediction" class="mt-2 break-all text-sm">预期：<strong>{{ run.expected_model || '未指定' }}</strong><span v-if="expectedProbability(run) !== undefined" class="text-gray-500">（候选库内概率 {{ percent(expectedProbability(run)!) }}）</span></p>
+            <p v-if="run.prediction" class="mt-1 break-all text-sm">最相似候选：<strong>{{ run.prediction }}</strong> <span class="text-gray-500">（候选库内概率 {{ percent(run.probability) }}）</span></p>
             <details v-if="run.status !== 'running'" :open="run.id === selectedRunID" class="mt-2 text-xs text-gray-500">
               <summary class="cursor-pointer">查看检测详情</summary>
               <p class="mt-2">有效回答 {{ run.valid_outputs }}/3 · 提取数字数量 {{ run.number_counts.join(' / ') || '无' }} · 指纹库 {{ run.bank_version }}</p>
@@ -400,7 +401,8 @@ function timestamp(value: string) {
   try { return new Intl.DateTimeFormat('zh-CN', { timeZone: savedSettings.value.timezone, dateStyle: 'medium', timeStyle: 'medium', hour12: false }).format(new Date(value)) }
   catch { return new Date(value).toLocaleString('zh-CN') }
 }
-const percent = (value: number) => `${(value * 100).toFixed(1)}%`
+const percent = (value: number) => value > 0 && value < 0.001 ? '<0.1%' : `${(value * 100).toFixed(1)}%`
+const expectedProbability = (run: ModelCheckRun) => run.candidates.find(candidate => candidate.model === run.expected_model)?.probability
 const statusLabel = (status: ModelCheckRun['status']) => ({ running: '检测中', consistent: '指纹一致', suspected: '疑似异常', inconclusive: '证据不足', unverified: '仅归因', error: '检测失败', interrupted: '检测中断' })[status]
 const statusTone = (status: ModelCheckRun['status']) => status === 'consistent' ? 'success' : status === 'suspected' ? 'danger' : status === 'running' ? 'primary' : ['error', 'interrupted', 'inconclusive'].includes(status) ? 'warning' : 'gray'
 const statusBorder = (status: ModelCheckRun['status']) => status === 'consistent' ? 'border-emerald-400' : status === 'suspected' ? 'border-red-400' : status === 'running' ? 'border-blue-400' : 'border-gray-300 dark:border-dark-600'
