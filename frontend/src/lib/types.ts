@@ -880,6 +880,7 @@ export interface ModelCheckView {
   settings: ModelCheckSettings
   models: string[]
   running: boolean
+  running_targets: ModelCheckTarget[]
 }
 
 export interface ModelCheckTimeline {

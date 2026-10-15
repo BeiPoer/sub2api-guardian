@@ -18,7 +18,7 @@ import (
 	"sub2api-guardian/backend/internal/upstream"
 )
 
-var ErrRunning = errors.New("已有降智检测正在运行")
+var ErrRunning = errors.New("此渠道模型已有降智检测正在运行")
 
 var errSchedulePaused = errors.New("进入免检时段或检测配置已停用，本轮停止")
 
@@ -29,15 +29,20 @@ type Manager struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 	mu      sync.Mutex
-	running bool
+	running map[targetKey]store.ModelCheckTarget
 	started bool
 	closed  bool
 	wg      sync.WaitGroup
 }
 
+type targetKey struct {
+	accountID int64
+	model     string
+}
+
 func New(st *store.Store, client *upstream.Client) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Manager{store: st, client: client, ctx: ctx, cancel: cancel, http: &http.Client{
+	return &Manager{store: st, client: client, ctx: ctx, cancel: cancel, running: make(map[targetKey]store.ModelCheckTarget), http: &http.Client{
 		Timeout:       3 * time.Minute,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
 	}}
@@ -80,10 +85,14 @@ func (m *Manager) Stop() {
 	m.wg.Wait()
 }
 
-func (m *Manager) Running() bool {
+func (m *Manager) RunningTargets() []store.ModelCheckTarget {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.running
+	targets := make([]store.ModelCheckTarget, 0, len(m.running))
+	for _, target := range m.running {
+		targets = append(targets, target)
+	}
+	return targets
 }
 
 func (m *Manager) Save(settings store.ModelCheckSettings) error {
@@ -177,10 +186,6 @@ func (m *Manager) runDue() error {
 	if !settings.Enabled || quietAt(settings, time.Now()) {
 		return nil
 	}
-	if err := m.begin(); err != nil {
-		return nil
-	}
-	defer m.end()
 	for _, target := range settings.Targets {
 		if m.ctx.Err() != nil {
 			return nil
@@ -195,39 +200,50 @@ func (m *Manager) runDue() error {
 		if !slices.Contains(current.Targets, target) {
 			continue
 		}
-		runs, err := m.store.ModelCheckRuns(target.AccountID, target.Model, 0, 1)
-		if err != nil {
-			return err
-		}
-		if len(runs) > 0 && time.Now().Before(runs[0].StartedAt.Add(time.Duration(current.IntervalMinutes)*time.Minute)) {
-			continue
-		}
-		// A single worker bounds upstream load and prevents manual/scheduled overlap.
-		err = m.run(target, true)
-		if err != nil {
+		if err := m.runDueTarget(target, current.IntervalMinutes); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (m *Manager) begin() error {
+func (m *Manager) runDueTarget(target store.ModelCheckTarget, intervalMinutes int) error {
+	if err := m.begin(target); err != nil {
+		if errors.Is(err, ErrRunning) {
+			return nil
+		}
+		return err
+	}
+	defer m.end(target)
+	// Reserve the target before reading its last run so a manual run cannot slip in between.
+	runs, err := m.store.ModelCheckRuns(target.AccountID, target.Model, 0, 1)
+	if err != nil {
+		return err
+	}
+	if len(runs) > 0 && time.Now().Before(runs[0].StartedAt.Add(time.Duration(intervalMinutes)*time.Minute)) {
+		return nil
+	}
+	return m.run(target, true)
+}
+
+func (m *Manager) begin(target store.ModelCheckTarget) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
 		return errors.New("检测服务已停止")
 	}
-	if m.running {
+	key := targetKey{target.AccountID, target.Model}
+	if _, exists := m.running[key]; exists {
 		return ErrRunning
 	}
-	m.running = true
+	m.running[key] = target
 	m.wg.Add(1)
 	return nil
 }
 
-func (m *Manager) end() {
+func (m *Manager) end(target store.ModelCheckTarget) {
 	m.mu.Lock()
-	m.running = false
+	delete(m.running, targetKey{target.AccountID, target.Model})
 	m.mu.Unlock()
 	m.wg.Done()
 }
@@ -243,11 +259,11 @@ func (m *Manager) RunNow(target store.ModelCheckTarget) error {
 	if err := m.validateTarget(target); err != nil {
 		return err
 	}
-	if err := m.begin(); err != nil {
+	if err := m.begin(target); err != nil {
 		return err
 	}
 	go func() {
-		defer m.end()
+		defer m.end(target)
 		if err := m.run(target, false); err != nil {
 			log.Printf("保存降智检测结果失败: %v", err)
 		}

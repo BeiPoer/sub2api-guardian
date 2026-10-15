@@ -57,7 +57,7 @@
             </div>
             <div class="flex gap-2 lg:flex-col">
               <button class="btn btn-secondary btn-sm" @click="showTimeline(row.target)">查看记录</button>
-              <button v-if="row.configured" class="btn btn-ghost btn-sm" :disabled="running || starting || dirty" :title="dirty ? '请先保存配置' : '立即发送三次挑战'" @click="runNow(row.target)">立即检测</button>
+              <button v-if="row.configured" class="btn btn-ghost btn-sm" :disabled="targetBusy(row.target) || dirty" :title="dirty ? '请先保存配置' : '立即发送三次挑战'" @click="runNow(row.target)">{{ targetBusy(row.target) ? '检测中…' : '立即检测' }}</button>
             </div>
           </div>
         </section>
@@ -101,6 +101,11 @@
             <select v-model.number="groupID" class="input w-auto" aria-label="渠道池分组">
               <option :value="0">全部渠道池分组</option>
               <option v-for="group in groups" :key="group.id" :value="group.id">{{ group.name }}</option>
+            </select>
+            <select v-model="schedulableFilter" class="input w-auto" aria-label="是否启用调度">
+              <option value="all">全部调度状态</option>
+              <option value="enabled">已启用调度</option>
+              <option value="disabled">未启用调度</option>
             </select>
             <input v-model="search" class="input w-auto" placeholder="搜索渠道名称" aria-label="搜索渠道" />
           </div>
@@ -147,7 +152,7 @@
               <tr v-for="target in settings.targets" :key="targetKey(target)">
                 <td><p class="font-medium">{{ channelName(target.account_id) }}</p><p class="mt-1 break-all text-xs text-gray-500">{{ target.model }}</p></td>
                 <td><select v-model="target.expected_model" class="input" :aria-label="`${target.model} 预期模型`"><option value="">未收录 / 仅归因</option><option v-for="model in bankModels" :key="model" :value="model">{{ model }}</option></select></td>
-                <td><div class="flex justify-end gap-1"><button class="btn btn-ghost btn-sm" @click="showTimeline(target)">时间线</button><button class="btn btn-secondary btn-sm" :disabled="running || starting || dirty" :title="dirty ? '请先保存配置' : '立即发送三次挑战'" @click="runNow(target)">立即检测</button><button class="btn btn-ghost btn-sm text-red-600" @click="removeTarget(target)">移除</button></div></td>
+                <td><div class="flex justify-end gap-1"><button class="btn btn-ghost btn-sm" @click="showTimeline(target)">时间线</button><button class="btn btn-secondary btn-sm" :disabled="targetBusy(target) || dirty" :title="dirty ? '请先保存配置' : '立即发送三次挑战'" @click="runNow(target)">{{ targetBusy(target) ? '检测中…' : '立即检测' }}</button><button class="btn btn-ghost btn-sm text-red-600" @click="removeTarget(target)">移除</button></div></td>
               </tr>
             </tbody>
           </table>
@@ -214,20 +219,27 @@ const bankModels = ref<string[]>([])
 const loading = ref(true)
 const loadError = ref('')
 const saving = ref(false)
-const starting = ref(false)
-const running = ref(false)
+const starting = ref(new Set<string>())
+const runningTargets = ref<ModelCheckTarget[]>([])
+const running = computed(() => starting.value.size > 0 || runningTargets.value.length > 0)
 const groupID = ref(0)
+const schedulableFilter = ref('all')
 const search = ref('')
 const expanded = ref<number | null>(null)
 const models = ref<Record<number, string[]>>({})
 const modelLoading = ref<Record<number, boolean>>({})
 const modelErrors = ref<Record<number, string>>({})
 const customModels = ref<Record<number, string>>({})
-const filteredChannels = computed(() => channels.value.filter(channel => (!groupID.value || channel.groups.some(g => g.id === groupID.value)) && channel.name.toLowerCase().includes(search.value.toLowerCase())))
+const filteredChannels = computed(() => channels.value.filter(channel =>
+  (!groupID.value || channel.groups.some(g => g.id === groupID.value)) &&
+  (schedulableFilter.value === 'all' || channel.schedulable === (schedulableFilter.value === 'enabled')) &&
+  channel.name.toLowerCase().includes(search.value.toLowerCase())
+))
 const supported = (channel: Channel) => ['apikey', 'api_key', 'key'].includes(channel.type.trim().toLowerCase())
 const selected = (id: number, model: string) => settings.value.targets.some(t => t.account_id === id && t.model === model)
 const selectedCount = (id: number) => settings.value.targets.filter(t => t.account_id === id).length
 const targetKey = (t: Pick<ModelCheckTarget, 'account_id' | 'model'>) => `${t.account_id}/${t.model}`
+const targetBusy = (target: ModelCheckTarget) => starting.value.has(targetKey(target)) || runningTargets.value.some(t => targetKey(t) === targetKey(target))
 const channelName = (id: number) => channels.value.find(c => c.id === id)?.name || `渠道 #${id}（已移除）`
 const runs = ref<ModelCheckRun[]>([])
 const historyAccount = ref(0)
@@ -265,6 +277,7 @@ let timer: ReturnType<typeof setTimeout> | undefined
 let disposed = false
 let historySequence = 0
 let historyFilter = ''
+let runRevision = 0
 
 async function load() {
   loading.value = true
@@ -274,7 +287,7 @@ async function load() {
     settings.value = view.settings
     saved.value = JSON.stringify(view.settings)
     bankModels.value = view.models
-    running.value = view.running
+    runningTargets.value = view.running_targets
     channels.value = channelList.items || []
     groups.value = groupList.items || []
     timelines.value = history.items
@@ -326,15 +339,18 @@ function addCustom(id: number) {
 }
 
 async function runNow(target: ModelCheckTarget) {
-  starting.value = true
+  if (targetBusy(target)) return
+  const key = targetKey(target)
+  starting.value.add(key)
+  runRevision++
   try {
     await api.runModelCheck(target)
-    running.value = true
-    ui.notify('success', '检测已在后台开始')
+    runRevision++
+    if (!runningTargets.value.some(t => targetKey(t) === key)) runningTargets.value.push({ ...target })
+    ui.notify('success', `${channelName(target.account_id)} · ${target.model} 已开始检测`)
     await refreshOverview()
-    await showTimeline(target)
   } catch (error) { ui.notify('error', (error as Error).message) }
-  finally { starting.value = false }
+  finally { starting.value.delete(key) }
 }
 
 async function refreshHistory(older = false) {
@@ -370,10 +386,11 @@ function closeHistory() { historyOpen.value = false; historySequence++; historyL
 async function refreshOverview() {
   if (overviewLoading.value) return
   overviewLoading.value = true
+  const revision = runRevision
   try {
     const [view, history] = await Promise.all([api.modelCheck(), api.modelCheckTimelines()])
     if (disposed) return
-    running.value = view.running
+    if (revision === runRevision) runningTargets.value = view.running_targets
     timelines.value = history.items
     overviewError.value = ''
   } catch (error) { overviewError.value = `时间线刷新失败，当前显示上次结果：${(error as Error).message}` }

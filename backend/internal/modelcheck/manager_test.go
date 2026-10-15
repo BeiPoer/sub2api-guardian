@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -91,10 +92,11 @@ func fixtureManager(t *testing.T, outputHandler http.HandlerFunc) (*Manager, *at
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v1/admin/accounts/data" {
-			if r.Header.Get("x-api-key") != "admin-secret" || r.URL.Query().Get("ids") != "1" {
+			id, err := strconv.ParseInt(r.URL.Query().Get("ids"), 10, 64)
+			if r.Header.Get("x-api-key") != "admin-secret" || err != nil || (id != 1 && id != 2) {
 				t.Error("wrong credential export request")
 			}
-			json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"accounts": []any{map[string]any{"id": 1, "type": "apikey", "credentials": map[string]any{"api_key": "channel-secret", "base_url": server.URL + "/v1"}}}}})
+			json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"accounts": []any{map[string]any{"id": id, "type": "apikey", "credentials": map[string]any{"api_key": "channel-secret", "base_url": server.URL + "/v1"}}}}})
 			return
 		}
 		calls.Add(1)
@@ -182,7 +184,7 @@ func TestFailureAndInvalidOutputsAreNotModelMismatch(t *testing.T) {
 	}
 }
 
-func TestStopCancelsRequestAndConcurrentRunIsRejected(t *testing.T) {
+func TestStopCancelsRequestAndDuplicateTargetIsRejected(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	defer close(release)
@@ -224,6 +226,122 @@ func TestStopCancelsRequestAndConcurrentRunIsRejected(t *testing.T) {
 	}
 	if err := m.RunNow(v.Targets[0]); err == nil {
 		t.Fatal("run after Stop accepted")
+	}
+}
+
+func TestDifferentTargetsRunConcurrentlyAndStopCancelsAll(t *testing.T) {
+	entered := make(chan struct{}, 3)
+	release := make(chan struct{})
+	defer close(release)
+	m, _ := fixtureManager(t, func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		entered <- struct{}{}
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	})
+	if err := m.store.UpsertAccount(domain.Account{ID: 2, Name: "Other", Type: "apikey", Platform: "openai", GroupIDs: []int64{7}}); err != nil {
+		t.Fatal(err)
+	}
+	v, _ := m.store.ModelCheckSettings()
+	v.Targets = append(v.Targets, store.ModelCheckTarget{AccountID: 1, GroupID: 7, Model: "gpt-5.5"}, store.ModelCheckTarget{AccountID: 2, GroupID: 7, Model: "gpt-5.4"})
+	if err := m.Save(v); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range v.Targets {
+		if err := m.RunNow(target); err != nil {
+			t.Fatalf("start %+v: %v", target, err)
+		}
+	}
+	for range v.Targets {
+		select {
+		case <-entered:
+		case <-time.After(3 * time.Second):
+			t.Fatal("different targets did not reach upstream concurrently")
+		}
+	}
+	if len(m.RunningTargets()) != 3 {
+		t.Fatal("missing active targets")
+	}
+	for _, target := range v.Targets {
+		if err := m.RunNow(target); !errors.Is(err, ErrRunning) {
+			t.Fatalf("duplicate target accepted: %v", err)
+		}
+	}
+	done := make(chan struct{})
+	go func() { m.Stop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Stop did not cancel all targets")
+	}
+	if len(m.RunningTargets()) != 0 {
+		t.Fatal("active targets not cleared")
+	}
+	for _, target := range v.Targets {
+		runs, err := m.store.ModelCheckRuns(target.AccountID, target.Model, 0, 30)
+		if err != nil || len(runs) != 1 || runs[0].Status != "interrupted" {
+			t.Fatalf("history %+v: %+v %v", target, runs, err)
+		}
+	}
+}
+
+func TestScheduleSkipsRunningTargetAndRunsOtherModel(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	m, calls := fixtureManager(t, func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Error(err)
+			return
+		}
+		if payload.Model == "gpt-5.4" {
+			close(entered)
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	v, _ := m.store.ModelCheckSettings()
+	other := store.ModelCheckTarget{AccountID: 1, GroupID: 7, Model: "gpt-5.5"}
+	v.Targets = append(v.Targets, other)
+	if err := m.Save(v); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.RunNow(v.Targets[0]); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("manual run not started")
+	}
+	if err := m.runDue(); err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("expected one manual and one scheduled request, got %d", calls.Load())
+	}
+	active := m.RunningTargets()
+	if len(active) != 1 || active[0] != v.Targets[0] {
+		t.Fatalf("completion cleared another target: %+v", active)
+	}
+	runs, _ := m.store.ModelCheckRuns(other.AccountID, other.Model, 0, 30)
+	if len(runs) != 1 || runs[0].Status != "error" {
+		t.Fatalf("other target did not finish: %+v", runs)
+	}
+	if err := m.RunNow(other); err != nil {
+		t.Fatalf("failed target stayed locked: %v", err)
+	}
+	if err := m.RunNow(v.Targets[0]); !errors.Is(err, ErrRunning) {
+		t.Fatalf("manual target unlocked: %v", err)
 	}
 }
 

@@ -19,14 +19,19 @@ func TestModelCheckSettingsAPI(t *testing.T) {
 		t.Fatal(res.Body.String())
 	}
 	var view struct {
-		Settings store.ModelCheckSettings `json:"settings"`
-		Models   []string                 `json:"models"`
+		Settings       store.ModelCheckSettings `json:"settings"`
+		Models         []string                 `json:"models"`
+		Running        bool                     `json:"running"`
+		RunningTargets []store.ModelCheckTarget `json:"running_targets"`
 	}
 	if err := json.Unmarshal(res.Body.Bytes(), &view); err != nil {
 		t.Fatal(err)
 	}
 	if len(view.Models) == 0 || view.Settings.IntervalMinutes != 60 || view.Settings.QuietStart != "23:00" {
 		t.Fatalf("wrong defaults %+v", view)
+	}
+	if view.Running || view.RunningTargets == nil || len(view.RunningTargets) != 0 {
+		t.Fatalf("idle running targets: %+v", view)
 	}
 	view.Settings.Targets = []store.ModelCheckTarget{{AccountID: 101, GroupID: 1, Model: "alias", ExpectedModel: view.Models[0]}}
 	res = doJSON(t, handler, http.MethodPut, "/api/model-check", view.Settings)

@@ -14,7 +14,8 @@ func (s *Server) getModelCheck(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"settings": settings, "models": modelcheck.Models(), "running": s.modelChecks.Running()})
+	targets := s.modelChecks.RunningTargets()
+	writeJSON(w, http.StatusOK, map[string]any{"settings": settings, "models": modelcheck.Models(), "running": len(targets) > 0, "running_targets": targets})
 }
 
 func (s *Server) saveModelCheck(w http.ResponseWriter, r *http.Request) {
