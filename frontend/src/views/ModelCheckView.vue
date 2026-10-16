@@ -172,7 +172,7 @@
               <div class="flex flex-wrap items-center gap-2"><Badge :tone="statusTone(run.status)">{{ statusLabel(run.status) }}</Badge><time class="text-xs text-gray-500">{{ timestamp(run.started_at) }}</time><span v-if="run.finished_at" class="text-xs text-gray-400">{{ Math.max(0, Math.round((Date.parse(run.finished_at) - Date.parse(run.started_at)) / 1000)) }} 秒</span></div>
             </div>
             <p class="mt-2 break-all text-sm font-medium text-gray-900 dark:text-white">{{ run.account_name || `渠道 #${run.account_id}` }} · {{ run.model }}</p>
-            <p class="mt-1 text-sm text-gray-600 dark:text-dark-300">{{ run.message || '正在发送挑战并分析指纹…' }}</p>
+            <p class="mt-1 whitespace-pre-wrap break-words text-sm text-gray-600 dark:text-dark-300">{{ run.message || '正在发送挑战并分析指纹…' }}</p>
             <p v-if="run.prediction" class="mt-2 break-all text-sm">预期：<strong>{{ run.expected_model || '未指定' }}</strong><span v-if="expectedProbability(run) !== undefined" class="text-gray-500">（候选库内概率 {{ percent(expectedProbability(run)!) }}）</span></p>
             <p v-if="run.prediction" class="mt-1 break-all text-sm">最相似候选：<strong>{{ run.prediction }}</strong> <span class="text-gray-500">（候选库内概率 {{ percent(run.probability) }}）</span></p>
             <details v-if="run.status !== 'running'" :open="run.id === selectedRunID" class="mt-2 text-xs text-gray-500">

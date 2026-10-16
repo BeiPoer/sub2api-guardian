@@ -78,7 +78,15 @@ func requestOutput(ctx context.Context, client *http.Client, credentials upstrea
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", resp.StatusCode, fmt.Errorf("渠道返回 HTTP %d", resp.StatusCode)
+		prefix := fmt.Sprintf("渠道返回 HTTP %d", resp.StatusCode)
+		detail, readErr := io.ReadAll(io.LimitReader(resp.Body, (64<<10)+1))
+		if readErr != nil {
+			return "", resp.StatusCode, fmt.Errorf("%s；错误正文%s", prefix, responseReadError(readErr))
+		}
+		if len(detail) > 64<<10 {
+			return "", resp.StatusCode, fmt.Errorf("%s；上游错误正文超过 64 KiB，未保存详情", prefix)
+		}
+		return "", resp.StatusCode, upstreamResponseError(prefix, detail, credentials.APIKey)
 	}
 	reader := bufio.NewReader(resp.Body)
 	first, peekErr := reader.Peek(1)
@@ -86,7 +94,7 @@ func requestOutput(ctx context.Context, client *http.Client, credentials upstrea
 		return "", resp.StatusCode, responseReadError(peekErr)
 	}
 	if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") || (len(first) > 0 && (first[0] == 'd' || first[0] == 'e' || first[0] == ':')) {
-		text, streamErr := readStreamOutput(reader, protocol)
+		text, streamErr := readStreamOutput(reader, protocol, credentials.APIKey)
 		return text, resp.StatusCode, streamErr
 	}
 	// Some compatible gateways ignore stream=true and return a complete JSON response.
@@ -117,10 +125,10 @@ func requestOutput(ctx context.Context, client *http.Client, credentials upstrea
 		} `json:"output"`
 	}
 	if err := json.Unmarshal(raw, &response); err != nil {
-		return "", resp.StatusCode, errors.New("渠道未返回有效 JSON")
+		return "", resp.StatusCode, upstreamResponseError("渠道未返回有效 JSON", raw, credentials.APIKey)
 	}
 	if response.Status == "failed" || (len(response.Error) > 0 && string(response.Error) != "null") {
-		return "", resp.StatusCode, errors.New("渠道返回接口错误")
+		return "", resp.StatusCode, upstreamResponseError("渠道返回接口错误", raw, credentials.APIKey)
 	}
 	if response.StopReason == "max_tokens" || response.StopReason == "refusal" || response.Status == "incomplete" ||
 		(len(response.Choices) > 0 && (response.Choices[0].FinishReason == "length" || response.Choices[0].FinishReason == "content_filter")) {

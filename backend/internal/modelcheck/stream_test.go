@@ -104,7 +104,7 @@ func TestStreamFramingAndFailures(t *testing.T) {
 		{"large stream", "responses", strings.Repeat(": ping\n", 400000) + responsesStream, "12, 34, 56\n", false, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			text, err := readStreamOutput(strings.NewReader(test.stream), test.protocol)
+			text, err := readStreamOutput(strings.NewReader(test.stream), test.protocol, "private-key")
 			if (err != nil) != test.failed || errors.Is(err, errInvalidOutput) != test.invalid || text != test.want {
 				t.Fatalf("got %q %v", text, err)
 			}
@@ -117,7 +117,7 @@ func TestStreamFramingAndFailures(t *testing.T) {
 
 func TestStreamAcceptsSingleEventLargerThanTwoMiB(t *testing.T) {
 	largeEvent := `data: {"type":"response.reasoning_summary_text.delta","delta":"` + strings.Repeat("9", 3<<20) + "\"}\n\n"
-	text, err := readStreamOutput(strings.NewReader(largeEvent+responsesStream), "responses")
+	text, err := readStreamOutput(strings.NewReader(largeEvent+responsesStream), "responses", "")
 	if err != nil || strings.TrimSpace(text) != "12, 34, 56" {
 		t.Fatalf("large event rejected: %q %v", text, err)
 	}
@@ -150,7 +150,7 @@ func TestStreamReadErrorsExplainCauseWithoutLeakingDetails(t *testing.T) {
 		{errors.New("network failure https://private-key@upstream"), "网络异常"},
 	} {
 		reader := io.MultiReader(strings.NewReader("data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n"), failingStreamReader{test.err})
-		text, err := readStreamOutput(reader, "chat/completions")
+		text, err := readStreamOutput(reader, "chat/completions", "private-key")
 		if text != "" || err == nil || !strings.Contains(err.Error(), test.message) || strings.Contains(err.Error(), "private-key") || strings.Contains(err.Error(), "MiB") {
 			t.Fatalf("wrong read error: %q %v", text, err)
 		}

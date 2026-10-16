@@ -9,7 +9,7 @@ import (
 )
 
 // readStreamOutput collects only answer text; reasoning and final snapshots must not enter the fingerprint.
-func readStreamOutput(reader io.Reader, protocol string) (string, error) {
+func readStreamOutput(reader io.Reader, protocol, apiKey string) (string, error) {
 	buffer := bufio.NewReader(reader)
 	var text strings.Builder
 	var data []string
@@ -60,7 +60,7 @@ func readStreamOutput(reader io.Reader, protocol string) (string, error) {
 		}
 		if name == "error" || name == "response.failed" || event.Response.Status == "failed" ||
 			(len(event.Error) > 0 && string(event.Error) != "null") || (len(event.Response.Error) > 0 && string(event.Response.Error) != "null") {
-			return false, errors.New("渠道返回流式接口错误")
+			return false, upstreamResponseError("渠道返回流式接口错误", []byte(payload), apiKey)
 		}
 		switch protocol {
 		case "chat/completions":
