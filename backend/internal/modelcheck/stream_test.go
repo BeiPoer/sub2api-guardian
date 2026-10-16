@@ -101,7 +101,7 @@ func TestStreamFramingAndFailures(t *testing.T) {
 		{"anthropic overload", "messages", "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"private-key\"}}\n\n", "", true, false},
 		{"anthropic truncation", "messages", strings.Replace(messagesStream, "end_turn", "max_tokens", 1), "", true, true},
 		{"anthropic missing stop", "messages", strings.Replace(messagesStream, "data: {\"type\":\"message_stop\"}\n\n", "", 1), "", true, false},
-		{"oversized stream", "responses", strings.Repeat(": ping\n", 400000), "", true, false},
+		{"large stream", "responses", strings.Repeat(": ping\n", 400000) + responsesStream, "12, 34, 56\n", false, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			text, err := readStreamOutput(strings.NewReader(test.stream), test.protocol)
@@ -112,6 +112,48 @@ func TestStreamFramingAndFailures(t *testing.T) {
 				t.Fatal("stream error leaked upstream data")
 			}
 		})
+	}
+}
+
+func TestStreamAcceptsSingleEventLargerThanTwoMiB(t *testing.T) {
+	largeEvent := `data: {"type":"response.reasoning_summary_text.delta","delta":"` + strings.Repeat("9", 3<<20) + "\"}\n\n"
+	text, err := readStreamOutput(strings.NewReader(largeEvent+responsesStream), "responses")
+	if err != nil || strings.TrimSpace(text) != "12, 34, 56" {
+		t.Fatalf("large event rejected: %q %v", text, err)
+	}
+}
+
+func TestJSONFallbackAcceptsResponseLargerThanTwoMiB(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"reasoning_content": strings.Repeat("9", 3<<20), "content": "12, 34, 56"}}}})
+	}))
+	defer server.Close()
+	text, _, err := requestOutput(context.Background(), server.Client(), upstream.AccountCredentials{BaseURL: server.URL, APIKey: "test"}, "model", "prompt", "chat/completions")
+	if err != nil || text != "12, 34, 56" {
+		t.Fatalf("large JSON rejected: %q %v", text, err)
+	}
+}
+
+type failingStreamReader struct{ err error }
+
+func (r failingStreamReader) Read([]byte) (int, error) { return 0, r.err }
+
+func TestStreamReadErrorsExplainCauseWithoutLeakingDetails(t *testing.T) {
+	for _, test := range []struct {
+		err     error
+		message string
+	}{
+		{context.DeadlineExceeded, "超时"},
+		{context.Canceled, "已取消"},
+		{io.ErrUnexpectedEOF, "连接提前中断"},
+		{errors.New("network failure https://private-key@upstream"), "网络异常"},
+	} {
+		reader := io.MultiReader(strings.NewReader("data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n"), failingStreamReader{test.err})
+		text, err := readStreamOutput(reader, "chat/completions")
+		if text != "" || err == nil || !strings.Contains(err.Error(), test.message) || strings.Contains(err.Error(), "private-key") || strings.Contains(err.Error(), "MiB") {
+			t.Fatalf("wrong read error: %q %v", text, err)
+		}
 	}
 }
 

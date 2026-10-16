@@ -44,7 +44,7 @@ type targetKey struct {
 func New(st *store.Store, client *upstream.Client) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Manager{store: st, client: client, ctx: ctx, cancel: cancel, waitRetry: waitForRetry, running: make(map[targetKey]store.ModelCheckTarget), http: &http.Client{
-		Timeout:       3 * time.Minute,
+		Timeout:       10 * time.Minute,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
 	}}
 }
@@ -283,7 +283,7 @@ func (m *Manager) run(target store.ModelCheckTarget, scheduled bool) error {
 		err = m.validateTarget(target)
 	}
 	// Allow three challenges, their retries, and protocol fallback to use the per-request timeout.
-	ctx, cancel := context.WithTimeout(m.ctx, 45*time.Minute)
+	ctx, cancel := context.WithTimeout(m.ctx, 150*time.Minute)
 	defer cancel()
 	var credentials upstream.AccountCredentials
 	if err == nil {

@@ -10,9 +10,7 @@ import (
 
 // readStreamOutput collects only answer text; reasoning and final snapshots must not enter the fingerprint.
 func readStreamOutput(reader io.Reader, protocol string) (string, error) {
-	limited := &io.LimitedReader{R: reader, N: (2 << 20) + 1}
-	scanner := bufio.NewScanner(limited)
-	scanner.Buffer(make([]byte, 64*1024), (2<<20)+1)
+	buffer := bufio.NewReader(reader)
 	var text strings.Builder
 	var data []string
 	var eventType string
@@ -135,11 +133,15 @@ func readStreamOutput(reader io.Reader, protocol string) (string, error) {
 		}
 		return false, nil
 	}
-	for scanner.Scan() {
-		if limited.N == 0 {
-			return "", errors.New("检测流超过 2 MiB")
+	for {
+		line, readErr := buffer.ReadString('\n')
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return "", responseReadError(readErr)
 		}
-		line := scanner.Text()
+		if len(line) == 0 && readErr != nil {
+			break
+		}
+		line = strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
 		if line == "" {
 			done, err := consume()
 			if err != nil {
@@ -148,19 +150,19 @@ func readStreamOutput(reader io.Reader, protocol string) (string, error) {
 			if done {
 				return text.String(), nil
 			}
-			continue
+		} else {
+			field, value, _ := strings.Cut(line, ":")
+			value = strings.TrimPrefix(value, " ")
+			switch field {
+			case "data":
+				data = append(data, value)
+			case "event":
+				eventType = value
+			}
 		}
-		field, value, _ := strings.Cut(line, ":")
-		value = strings.TrimPrefix(value, " ")
-		switch field {
-		case "data":
-			data = append(data, value)
-		case "event":
-			eventType = value
+		if readErr != nil {
+			break
 		}
-	}
-	if scanner.Err() != nil || limited.N == 0 {
-		return "", errors.New("检测流读取失败或超过 2 MiB")
 	}
 	if len(data) > 0 {
 		done, err := consume()

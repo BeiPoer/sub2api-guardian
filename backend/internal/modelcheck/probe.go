@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -80,15 +81,18 @@ func requestOutput(ctx context.Context, client *http.Client, credentials upstrea
 		return "", resp.StatusCode, fmt.Errorf("渠道返回 HTTP %d", resp.StatusCode)
 	}
 	reader := bufio.NewReader(resp.Body)
-	first, _ := reader.Peek(1)
+	first, peekErr := reader.Peek(1)
+	if peekErr != nil && !errors.Is(peekErr, io.EOF) {
+		return "", resp.StatusCode, responseReadError(peekErr)
+	}
 	if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") || (len(first) > 0 && (first[0] == 'd' || first[0] == 'e' || first[0] == ':')) {
 		text, streamErr := readStreamOutput(reader, protocol)
 		return text, resp.StatusCode, streamErr
 	}
 	// Some compatible gateways ignore stream=true and return a complete JSON response.
-	raw, err = io.ReadAll(io.LimitReader(reader, (2<<20)+1))
-	if err != nil || len(raw) > 2<<20 {
-		return "", resp.StatusCode, errors.New("检测响应读取失败或超过 2 MiB")
+	raw, err = io.ReadAll(reader)
+	if err != nil {
+		return "", resp.StatusCode, responseReadError(err)
 	}
 	var response struct {
 		Error      json.RawMessage `json:"error"`
@@ -162,4 +166,19 @@ func requestOutput(ctx context.Context, client *http.Client, credentials upstrea
 		}
 	}
 	return text.String(), resp.StatusCode, nil
+}
+
+func responseReadError(err error) error {
+	var networkErr net.Error
+	switch {
+	case errors.Is(err, context.Canceled):
+		return errors.New("检测响应读取已取消")
+	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &networkErr) && networkErr.Timeout():
+		return errors.New("检测响应读取超时")
+	case errors.Is(err, io.ErrUnexpectedEOF):
+		return errors.New("检测响应连接提前中断（unexpected EOF）")
+	default:
+		// Transport errors can contain URLs or credentials; keep the displayed detail sanitized.
+		return errors.New("检测响应读取失败，可能是连接中断或网络异常")
+	}
 }
