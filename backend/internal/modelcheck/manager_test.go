@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -104,6 +105,7 @@ func fixtureManager(t *testing.T, outputHandler http.HandlerFunc) (*Manager, *at
 	}))
 	t.Cleanup(server.Close)
 	m := New(st, upstream.New(server.URL, "admin-secret", time.Second))
+	m.waitRetry = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 	t.Cleanup(m.Stop)
 	v, _ := st.ModelCheckSettings()
 	v.Enabled = true
@@ -326,8 +328,8 @@ func TestScheduleSkipsRunningTargetAndRunsOtherModel(t *testing.T) {
 	if err := m.runDue(); err != nil {
 		t.Fatal(err)
 	}
-	if calls.Load() != 2 {
-		t.Fatalf("expected one manual and one scheduled request, got %d", calls.Load())
+	if calls.Load() != 5 {
+		t.Fatalf("expected one manual request and four scheduled attempts, got %d", calls.Load())
 	}
 	active := m.RunningTargets()
 	if len(active) != 1 || active[0] != v.Targets[0] {
@@ -461,7 +463,7 @@ func TestRedirectDoesNotForwardCredentials(t *testing.T) {
 }
 
 func TestTruncatedOutputIsNotAnalyzed(t *testing.T) {
-	m, _ := fixtureManager(t, func(w http.ResponseWriter, r *http.Request) {
+	m, calls := fixtureManager(t, func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"finish_reason": "length", "message": map[string]any{"content": strings.Repeat("13, 42, 355, ", 110)}}}})
 	})
 	if err := m.runDue(); err != nil {
@@ -470,5 +472,182 @@ func TestTruncatedOutputIsNotAnalyzed(t *testing.T) {
 	runs, _ := m.store.ModelCheckRuns(1, "", 0, 1)
 	if runs[0].Status != "error" || runs[0].Prediction != "" || runs[0].ValidOutputs != 0 {
 		t.Fatalf("truncated output was classified: %+v", runs[0])
+	}
+	if calls.Load() != 1 {
+		t.Fatal("truncation should not be retried as an interface error")
+	}
+}
+
+func TestRequestRetryDelaysAndRunningState(t *testing.T) {
+	for _, failures := range []int{0, 1, 2, 3, 4} {
+		t.Run(fmt.Sprintf("failures_%d", failures), func(t *testing.T) {
+			var attempts atomic.Int32
+			var manager *Manager
+			var prompts []string
+			m, _ := fixtureManager(t, func(w http.ResponseWriter, r *http.Request) {
+				var payload struct {
+					Messages []struct {
+						Content string `json:"content"`
+					} `json:"messages"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					t.Error(err)
+					return
+				}
+				prompts = append(prompts, payload.Messages[0].Content)
+				runs, err := manager.store.ModelCheckRuns(1, "", 0, 30)
+				if err != nil || len(runs) != 1 || runs[0].Status != "running" || runs[0].FinishedAt != nil || len(manager.RunningTargets()) != 1 {
+					t.Errorf("not running during request: %+v %v", runs, err)
+				}
+				if attempts.Add(1) <= int32(failures) {
+					w.WriteHeader(http.StatusBadGateway)
+					return
+				}
+				json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": strings.Repeat("13, 42, 355, ", 110)}}}})
+			})
+			manager = m
+			var delays []time.Duration
+			m.waitRetry = func(ctx context.Context, delay time.Duration) error {
+				delays = append(delays, delay)
+				runs, err := m.store.ModelCheckRuns(1, "", 0, 30)
+				if err != nil || len(runs) != 1 || runs[0].Status != "running" || runs[0].FinishedAt != nil || !strings.Contains(runs[0].Message, fmt.Sprintf("%d 秒后进行第 %d/3 次重试", int(delay/time.Second), len(delays))) {
+					t.Fatalf("not running during wait: %+v %v", runs, err)
+				}
+				active := m.RunningTargets()
+				if len(active) != 1 {
+					t.Fatal("target unlocked while waiting")
+				}
+				if err := m.RunNow(active[0]); !errors.Is(err, ErrRunning) {
+					t.Fatalf("duplicate during retry: %v", err)
+				}
+				return nil
+			}
+			if err := m.runDue(); err != nil {
+				t.Fatal(err)
+			}
+			wantDelays := []time.Duration{3 * time.Second, 10 * time.Second, 30 * time.Second}[:min(failures, 3)]
+			if len(delays) != len(wantDelays) || (len(delays) > 0 && !reflect.DeepEqual(delays, wantDelays)) {
+				t.Fatalf("delays %v want %v", delays, wantDelays)
+			}
+			runs, err := m.store.ModelCheckRuns(1, "", 0, 30)
+			if err != nil || len(runs) != 1 || runs[0].FinishedAt == nil || len(m.RunningTargets()) != 0 {
+				t.Fatalf("final record: %+v %v", runs, err)
+			}
+			if failures == 4 {
+				if attempts.Load() != 4 || runs[0].Status != "error" || !strings.Contains(runs[0].Message, "已重试 3 次") {
+					t.Fatalf("retry exhaustion: calls=%d %+v", attempts.Load(), runs[0])
+				}
+			} else if attempts.Load() != int32(failures+3) || runs[0].ValidOutputs != 3 || runs[0].Prediction == "" {
+				t.Fatalf("recovery: calls=%d %+v", attempts.Load(), runs[0])
+			}
+			for i := 1; i < min(failures+1, 4); i++ {
+				if prompts[i] != prompts[0] {
+					t.Fatal("retry changed challenge prompt")
+				}
+			}
+		})
+	}
+}
+
+func TestRetryKeepsAlreadySuccessfulChallenges(t *testing.T) {
+	var calls atomic.Int32
+	var manager *Manager
+	m, _ := fixtureManager(t, func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 2 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": strings.Repeat("13, 42, 355, ", 110)}}}})
+	})
+	manager = m
+	m.waitRetry = func(ctx context.Context, delay time.Duration) error {
+		runs, err := manager.store.ModelCheckRuns(1, "", 0, 1)
+		if err != nil || runs[0].ValidOutputs != 1 || len(runs[0].NumberCounts) != 1 || !strings.Contains(runs[0].Message, "第 2/3 条挑战") {
+			t.Fatalf("lost first challenge: %+v %v", runs, err)
+		}
+		return nil
+	}
+	if err := m.runDue(); err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 4 {
+		t.Fatalf("successful challenge repeated: %d calls", calls.Load())
+	}
+	runs, _ := m.store.ModelCheckRuns(1, "", 0, 1)
+	if runs[0].ValidOutputs != 3 {
+		t.Fatal("incomplete result after recovery")
+	}
+}
+
+func TestStopCancelsRetryWait(t *testing.T) {
+	waiting := make(chan struct{})
+	m, calls := fixtureManager(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusBadGateway) })
+	m.waitRetry = func(ctx context.Context, delay time.Duration) error {
+		close(waiting)
+		return waitForRetry(ctx, delay)
+	}
+	settings, _ := m.store.ModelCheckSettings()
+	if err := m.RunNow(settings.Targets[0]); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-waiting:
+	case <-time.After(3 * time.Second):
+		t.Fatal("did not reach retry wait")
+	}
+	done := make(chan struct{})
+	go func() { m.Stop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not cancel retry wait")
+	}
+	runs, _ := m.store.ModelCheckRuns(1, "", 0, 30)
+	if calls.Load() != 1 || len(runs) != 1 || runs[0].Status != "interrupted" {
+		t.Fatalf("continued after cancellation: %d %+v", calls.Load(), runs)
+	}
+}
+
+func TestScheduleChangeDuringRetryWaitStopsNextRequest(t *testing.T) {
+	for _, quiet := range []bool{false, true} {
+		t.Run(fmt.Sprintf("quiet_%t", quiet), func(t *testing.T) {
+			m, calls := fixtureManager(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusBadGateway) })
+			m.waitRetry = func(ctx context.Context, delay time.Duration) error {
+				settings, err := m.store.ModelCheckSettings()
+				if err != nil {
+					return err
+				}
+				if quiet {
+					now := time.Now().UTC()
+					settings.QuietEnabled = true
+					settings.Timezone = "UTC"
+					settings.QuietStart = now.Add(-time.Minute).Format("15:04")
+					settings.QuietEnd = now.Add(2 * time.Minute).Format("15:04")
+				} else {
+					settings.Enabled = false
+				}
+				return m.Save(settings)
+			}
+			if err := m.runDue(); err != nil {
+				t.Fatal(err)
+			}
+			runs, _ := m.store.ModelCheckRuns(1, "", 0, 1)
+			if calls.Load() != 1 || runs[0].Status != "interrupted" {
+				t.Fatalf("retry ignored schedule change: %d %+v", calls.Load(), runs)
+			}
+		})
+	}
+}
+
+func TestRetryHandlesSuccessfulHTTPWithErrorPayload(t *testing.T) {
+	for _, body := range []string{`{"error":{"message":"channel-secret"}}`, `{"status":"failed","error":null}`} {
+		m, calls := fixtureManager(t, func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, body) })
+		if err := m.runDue(); err != nil {
+			t.Fatal(err)
+		}
+		runs, _ := m.store.ModelCheckRuns(1, "", 0, 1)
+		if calls.Load() != 4 || runs[0].Status != "error" || strings.Contains(runs[0].Message, "channel-secret") {
+			t.Fatalf("error payload: calls=%d %+v", calls.Load(), runs)
+		}
 	}
 }

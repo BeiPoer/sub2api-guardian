@@ -23,16 +23,17 @@ var ErrRunning = errors.New("此渠道模型已有降智检测正在运行")
 var errSchedulePaused = errors.New("进入免检时段或检测配置已停用，本轮停止")
 
 type Manager struct {
-	store   *store.Store
-	client  *upstream.Client
-	http    *http.Client
-	ctx     context.Context
-	cancel  context.CancelFunc
-	mu      sync.Mutex
-	running map[targetKey]store.ModelCheckTarget
-	started bool
-	closed  bool
-	wg      sync.WaitGroup
+	store     *store.Store
+	client    *upstream.Client
+	http      *http.Client
+	waitRetry func(context.Context, time.Duration) error
+	ctx       context.Context
+	cancel    context.CancelFunc
+	mu        sync.Mutex
+	running   map[targetKey]store.ModelCheckTarget
+	started   bool
+	closed    bool
+	wg        sync.WaitGroup
 }
 
 type targetKey struct {
@@ -42,7 +43,7 @@ type targetKey struct {
 
 func New(st *store.Store, client *upstream.Client) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Manager{store: st, client: client, ctx: ctx, cancel: cancel, running: make(map[targetKey]store.ModelCheckTarget), http: &http.Client{
+	return &Manager{store: st, client: client, ctx: ctx, cancel: cancel, waitRetry: waitForRetry, running: make(map[targetKey]store.ModelCheckTarget), http: &http.Client{
 		Timeout:       3 * time.Minute,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
 	}}
@@ -281,14 +282,19 @@ func (m *Manager) run(target store.ModelCheckTarget, scheduled bool) error {
 	if err == nil {
 		err = m.validateTarget(target)
 	}
-	ctx, cancel := context.WithTimeout(m.ctx, 10*time.Minute)
+	// Allow three challenges, their retries, and protocol fallback to use the per-request timeout.
+	ctx, cancel := context.WithTimeout(m.ctx, 45*time.Minute)
 	defer cancel()
 	var credentials upstream.AccountCredentials
 	if err == nil {
-		credentials, err = m.client.ExportAccountCredentials(ctx, target.AccountID)
-		if err != nil {
-			err = errors.New("无法读取渠道连接信息，请检查 sub2api 管理权限与渠道凭据")
-		}
+		err = m.retryRequest(ctx, &run, scheduled, "读取渠道连接信息", func() error {
+			var exportErr error
+			credentials, exportErr = m.client.ExportAccountCredentials(ctx, target.AccountID)
+			if exportErr != nil {
+				return errors.New("无法读取渠道连接信息，请检查 sub2api 管理权限与渠道凭据")
+			}
+			return nil
+		})
 	}
 	protocol := "chat/completions"
 	if account.Platform == "anthropic" || strings.HasPrefix(target.Model, "claude-") || strings.HasPrefix(target.ExpectedModel, "claude-") {
@@ -297,31 +303,28 @@ func (m *Manager) run(target store.ModelCheckTarget, scheduled bool) error {
 	lengths := rand.Perm(41)[:3]
 	var outputs [][]int
 	for i := 0; i < 3 && err == nil; i++ {
-		// A round already in flight may finish; do not start another challenge in quiet hours.
-		if scheduled {
-			current, readErr := m.store.ModelCheckSettings()
-			if readErr != nil {
-				err = errors.New("无法读取检测配置")
-				break
-			}
-			if !current.Enabled || quietAt(current, time.Now()) || !slices.Contains(current.Targets, target) {
-				err = errSchedulePaused
-				break
-			}
-		}
 		count := 292 + lengths[i]
 		prompt := challenge(count)
 		var output string
 		var status int
-		output, status, err = requestOutput(ctx, m.http, credentials, target.Model, prompt, protocol)
-		if i == 0 && (status == 404 || status == 405) {
-			if protocol == "messages" {
-				protocol = "chat/completions"
-			} else {
-				protocol = "responses"
+		fallbackTried := false
+		err = m.retryRequest(ctx, &run, scheduled, fmt.Sprintf("第 %d/3 条挑战", i+1), func() error {
+			var requestErr error
+			output, status, requestErr = requestOutput(ctx, m.http, credentials, target.Model, prompt, protocol)
+			if i == 0 && !fallbackTried && (status == 404 || status == 405) {
+				fallbackTried = true
+				if protocol == "messages" {
+					protocol = "chat/completions"
+				} else {
+					protocol = "responses"
+				}
+				if checkErr := m.checkRunAllowed(ctx, target, scheduled); checkErr != nil {
+					return checkErr
+				}
+				output, _, requestErr = requestOutput(ctx, m.http, credentials, target.Model, prompt, protocol)
 			}
-			output, _, err = requestOutput(ctx, m.http, credentials, target.Model, prompt, protocol)
-		}
+			return requestErr
+		})
 		if err != nil {
 			break
 		}
@@ -331,6 +334,7 @@ func (m *Manager) run(target store.ModelCheckTarget, scheduled bool) error {
 			continue
 		}
 		outputs = append(outputs, numbers)
+		run.ValidOutputs = len(outputs)
 	}
 	run.ValidOutputs = len(outputs)
 	switch {
@@ -356,6 +360,73 @@ func (m *Manager) run(target store.ModelCheckTarget, scheduled bool) error {
 	finished := time.Now().UTC()
 	run.FinishedAt = &finished
 	return m.store.FinishModelCheckRun(run)
+}
+
+func waitForRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func (m *Manager) checkRunAllowed(ctx context.Context, target store.ModelCheckTarget, scheduled bool) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if !scheduled {
+		return nil
+	}
+	current, err := m.store.ModelCheckSettings()
+	if err != nil {
+		return errors.New("无法读取检测配置")
+	}
+	if !current.Enabled || quietAt(current, time.Now()) || !slices.Contains(current.Targets, target) {
+		return errSchedulePaused
+	}
+	return nil
+}
+
+func (m *Manager) retryRequest(ctx context.Context, run *store.ModelCheckRun, scheduled bool, step string, request func() error) error {
+	delays := [...]time.Duration{3 * time.Second, 10 * time.Second, 30 * time.Second}
+	for attempt := 0; ; attempt++ {
+		if err := m.checkRunAllowed(ctx, run.ModelCheckTarget, scheduled); err != nil {
+			return err
+		}
+		run.Message = "检测中：" + step
+		if attempt > 0 {
+			run.Message += fmt.Sprintf("，正在进行第 %d/3 次重试", attempt)
+		}
+		if err := m.store.FinishModelCheckRun(*run); err != nil {
+			return err
+		}
+		err := request()
+		if err == nil {
+			return nil
+		}
+		if errors.Is(err, errInvalidOutput) || errors.Is(err, errSchedulePaused) {
+			return err
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if attempt == len(delays) {
+			return fmt.Errorf("%s失败（已重试 3 次）：%w", step, err)
+		}
+		if checkErr := m.checkRunAllowed(ctx, run.ModelCheckTarget, scheduled); checkErr != nil {
+			return checkErr
+		}
+		run.Message = fmt.Sprintf("检测中：%s失败（%s），%d 秒后进行第 %d/3 次重试", step, err.Error(), int(delays[attempt]/time.Second), attempt+1)
+		if saveErr := m.store.FinishModelCheckRun(*run); saveErr != nil {
+			return saveErr
+		}
+		if waitErr := m.waitRetry(ctx, delays[attempt]); waitErr != nil {
+			return waitErr
+		}
+	}
 }
 
 // Reclassify applies the current verdict to stored successful attribution without another probe.

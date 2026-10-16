@@ -1,6 +1,7 @@
 package modelcheck
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -14,6 +15,8 @@ import (
 
 	"sub2api-guardian/backend/internal/upstream"
 )
+
+var errInvalidOutput = errors.New("渠道输出被截断、过滤或未完成，本轮无法判断")
 
 func challenge(count int) string {
 	openings := []string{"这是一次独立的数值选择记录", "请完成下面的无语义整数选择任务", "执行一次第一反应取值记录", "生成一组不承载语义的整数选择", "进行一轮快速逐项取值"}
@@ -40,16 +43,13 @@ func requestOutput(ctx context.Context, client *http.Client, credentials upstrea
 	}
 	base.Path = path + "/" + protocol
 	base.RawPath = ""
-	body := map[string]any{"model": model, "stream": false}
+	body := map[string]any{"model": model, "stream": true}
 	if protocol == "responses" {
 		body["input"] = prompt
-		body["max_output_tokens"] = 8192
 	} else {
 		body["messages"] = []map[string]string{{"role": "user", "content": prompt}}
 		if protocol == "messages" {
 			body["max_tokens"] = 4096
-		} else {
-			body["max_completion_tokens"] = 8192
 		}
 	}
 	raw, err := json.Marshal(body)
@@ -61,6 +61,7 @@ func requestOutput(ctx context.Context, client *http.Client, credentials upstrea
 		return "", 0, errors.New("无法创建检测请求")
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
 	if protocol == "messages" {
 		req.Header.Set("x-api-key", credentials.APIKey)
 		req.Header.Set("anthropic-version", "2023-06-01")
@@ -78,13 +79,21 @@ func requestOutput(ctx context.Context, client *http.Client, credentials upstrea
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", resp.StatusCode, fmt.Errorf("渠道返回 HTTP %d", resp.StatusCode)
 	}
-	raw, err = io.ReadAll(io.LimitReader(resp.Body, (2<<20)+1))
+	reader := bufio.NewReader(resp.Body)
+	first, _ := reader.Peek(1)
+	if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") || (len(first) > 0 && (first[0] == 'd' || first[0] == 'e' || first[0] == ':')) {
+		text, streamErr := readStreamOutput(reader, protocol)
+		return text, resp.StatusCode, streamErr
+	}
+	// Some compatible gateways ignore stream=true and return a complete JSON response.
+	raw, err = io.ReadAll(io.LimitReader(reader, (2<<20)+1))
 	if err != nil || len(raw) > 2<<20 {
 		return "", resp.StatusCode, errors.New("检测响应读取失败或超过 2 MiB")
 	}
 	var response struct {
-		Status     string `json:"status"`
-		StopReason string `json:"stop_reason"`
+		Error      json.RawMessage `json:"error"`
+		Status     string          `json:"status"`
+		StopReason string          `json:"stop_reason"`
 		Choices    []struct {
 			FinishReason string `json:"finish_reason"`
 			Message      struct {
@@ -106,9 +115,12 @@ func requestOutput(ctx context.Context, client *http.Client, credentials upstrea
 	if err := json.Unmarshal(raw, &response); err != nil {
 		return "", resp.StatusCode, errors.New("渠道未返回有效 JSON")
 	}
-	if response.StopReason == "max_tokens" || response.StopReason == "refusal" || response.Status == "incomplete" || response.Status == "failed" ||
+	if response.Status == "failed" || (len(response.Error) > 0 && string(response.Error) != "null") {
+		return "", resp.StatusCode, errors.New("渠道返回接口错误")
+	}
+	if response.StopReason == "max_tokens" || response.StopReason == "refusal" || response.Status == "incomplete" ||
 		(len(response.Choices) > 0 && (response.Choices[0].FinishReason == "length" || response.Choices[0].FinishReason == "content_filter")) {
-		return "", resp.StatusCode, errors.New("渠道输出被截断、过滤或未完成，本轮无法判断")
+		return "", resp.StatusCode, errInvalidOutput
 	}
 	var text strings.Builder
 	switch protocol {

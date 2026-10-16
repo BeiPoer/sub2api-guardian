@@ -44,20 +44,20 @@
           <div v-for="row in channel.rows" :key="targetKey(row.target)" class="grid gap-3 border-b border-gray-100 p-4 last:border-0 dark:border-dark-700 lg:grid-cols-[minmax(160px,1fr)_minmax(0,2fr)_auto] lg:items-center lg:gap-5">
             <div class="min-w-0">
               <p class="break-all text-sm font-semibold text-gray-900 dark:text-white">{{ row.target.model }}</p>
-              <p class="mt-1 truncate text-xs text-gray-500" :title="row.target.expected_model">预期：{{ row.target.expected_model || '仅归因' }}<span v-if="!row.configured"> · 已移出计划</span></p>
-              <div class="mt-2"><Badge :tone="row.latest ? statusTone(row.latest.status) : 'gray'">{{ row.latest ? statusLabel(row.latest.status) : '等待首次检测' }}</Badge></div>
+              <p class="mt-1 truncate text-xs text-gray-500" :title="row.target.expected_model">预期：{{ row.target.expected_model || '仅归因' }}</p>
+              <div class="mt-2"><Badge :tone="targetBusy(row.target) ? 'primary' : row.latest ? statusTone(row.latest.status) : 'gray'">{{ targetBusy(row.target) ? '检测中' : row.latest ? statusLabel(row.latest.status) : '等待首次检测' }}</Badge></div>
             </div>
             <div class="min-w-0">
               <div v-if="row.runs.length" class="flex items-center gap-1" :aria-label="`${channel.name} ${row.target.model} 最近检测时间线`">
                 <button v-for="run in row.runs" :key="run.id" type="button" class="h-8 min-w-0 flex-1 rounded transition hover:opacity-75 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500" :class="statusCell(run.status)" :title="runTooltip(run)" :aria-label="runTooltip(run)" @click="showTimeline(row.target, run)" />
               </div>
-              <div v-else class="flex h-8 items-center rounded border border-dashed border-gray-200 px-3 text-xs text-gray-400 dark:border-dark-600">暂无记录，等待计划执行或立即检测</div>
+              <div v-else class="flex h-8 items-center rounded border border-dashed border-gray-200 px-3 text-xs text-gray-400 dark:border-dark-600">{{ targetBusy(row.target) ? '检测中，正在等待首次结果…' : '暂无记录，等待计划执行或立即检测' }}</div>
               <div v-if="row.runs.length" class="mt-1.5 flex justify-between gap-2 text-[11px] text-gray-400"><time>{{ shortTimestamp(row.runs[0]!.started_at) }}</time><time>最新 {{ shortTimestamp(row.latest!.started_at) }}</time></div>
-              <p v-if="row.latest" class="mt-2 truncate text-xs text-gray-500" :title="row.latest.message">{{ row.latest.prediction ? `最近候选：${row.latest.prediction} · ${percent(row.latest.probability)}` : row.latest.message || '正在检测…' }}</p>
+              <p v-if="row.latest || targetBusy(row.target)" class="mt-2 truncate text-xs text-gray-500" :title="row.latest?.message">{{ targetBusy(row.target) && row.latest?.status !== 'running' ? '检测中，正在开始新一轮检测…' : row.latest?.prediction ? `最近候选：${row.latest.prediction} · ${percent(row.latest.probability)}` : row.latest?.message || '正在检测…' }}</p>
             </div>
             <div class="flex gap-2 lg:flex-col">
               <button class="btn btn-secondary btn-sm" @click="showTimeline(row.target)">查看记录</button>
-              <button v-if="row.configured" class="btn btn-ghost btn-sm" :disabled="targetBusy(row.target) || dirty" :title="dirty ? '请先保存配置' : '立即发送三次挑战'" @click="runNow(row.target)">{{ targetBusy(row.target) ? '检测中…' : '立即检测' }}</button>
+              <button class="btn btn-ghost btn-sm" :disabled="targetBusy(row.target) || dirty" :title="dirty ? '请先保存配置' : '立即发送三次挑战'" @click="runNow(row.target)">{{ targetBusy(row.target) ? '检测中…' : '立即检测' }}</button>
             </div>
           </div>
         </section>
@@ -250,21 +250,16 @@ const historyError = ref('')
 const hasMore = ref(false)
 const historyOpen = ref(false)
 const selectedRunID = ref<number | null>(null)
-type TimelineRow = { target: ModelCheckTarget; configured: boolean; runs: ModelCheckRun[]; latest?: ModelCheckRun }
+type TimelineRow = { target: ModelCheckTarget; runs: ModelCheckRun[]; latest?: ModelCheckRun }
 const timelineGroups = computed(() => {
-  const rows = new Map<string, TimelineRow>()
-  for (const timeline of timelines.value) {
-    const latest = timeline.runs[0]
-    if (!latest) continue
-    rows.set(targetKey(timeline), { target: latest, configured: false, runs: [...timeline.runs].reverse(), latest })
-  }
-  for (const target of savedSettings.value.targets) {
-    const row = rows.get(targetKey(target))
-    rows.set(targetKey(target), { target, configured: true, runs: row?.runs || [], latest: row?.latest })
-  }
+  const history = new Map(timelines.value.map(timeline => [targetKey(timeline), timeline.runs]))
+  const rows = savedSettings.value.targets.map<TimelineRow>(target => {
+    const runs = history.get(targetKey(target)) || []
+    return { target, runs: [...runs].reverse(), latest: runs[0] }
+  })
   const result = new Map<number, { id: number; name: string; rows: TimelineRow[] }>()
   const query = overviewSearch.value.trim().toLowerCase()
-  for (const row of rows.values()) {
+  for (const row of rows) {
     const channel = channels.value.find(c => c.id === row.target.account_id)
     const name = channel?.name || row.latest?.account_name || channelName(row.target.account_id)
     if (overviewGroup.value && !channel?.groups.some(g => g.id === overviewGroup.value) && row.target.group_id !== overviewGroup.value) continue
