@@ -11,8 +11,8 @@
         <p class="text-xs text-gray-500"><span v-if="dirty" class="mr-3 text-amber-600">配置有未保存更改</span>{{ running ? '正在检测 · 结果自动刷新' : '结果每 5 秒自动刷新' }}</p>
       </div>
 
-      <div v-show="activeTab === 'overview'" class="space-y-5">
-        <section class="card p-4">
+      <div v-show="activeTab === 'overview'" class="space-y-3">
+        <section class="card p-3">
           <div class="flex flex-wrap items-center justify-between gap-3">
             <div class="flex flex-wrap items-center gap-2 text-sm">
               <Badge :tone="savedSettings.enabled ? 'success' : 'gray'">{{ savedSettings.enabled ? '定期检测已开启' : '定期检测已关闭' }}</Badge>
@@ -22,11 +22,11 @@
             </div>
             <button class="btn btn-secondary btn-sm" :disabled="overviewLoading" @click="refreshOverview()">{{ overviewLoading ? '刷新中…' : '刷新结果' }}</button>
           </div>
-          <div class="mt-4 flex flex-wrap gap-3">
+          <div class="mt-2 flex flex-wrap gap-2">
             <select v-model.number="overviewGroup" class="input w-auto" aria-label="总览渠道池分组"><option :value="0">全部渠道池分组</option><option v-for="group in groups" :key="group.id" :value="group.id">{{ group.name }}</option></select>
             <input v-model="overviewSearch" class="input min-w-0 flex-1 sm:max-w-sm" placeholder="搜索渠道或模型" aria-label="搜索时间线" />
           </div>
-          <div class="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-gray-500">
+          <div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-500">
             <span v-for="status in legendStatuses" :key="status" class="inline-flex items-center gap-1.5"><span class="h-2.5 w-2.5 rounded-sm" :class="statusCell(status)" />{{ statusLabel(status) }}</span>
             <span class="sm:ml-auto">每个模型最近 24 次 · 旧 → 新 · 点击查看详情</span>
           </div>
@@ -36,26 +36,28 @@
           <p class="text-sm text-gray-500">{{ overviewLoading ? '正在读取各模型时间线…' : overviewSearch || overviewGroup ? '没有匹配的渠道或模型' : '还没有检测项，先选择需要监测的渠道和模型。' }}</p>
           <button v-if="!overviewSearch && !overviewGroup" class="btn btn-primary mt-4" @click="activeTab = 'settings'">配置检测项</button>
         </div>
-        <section v-for="channel in timelineGroups" :key="channel.id" class="card">
-          <div class="card-header flex flex-wrap items-center justify-between gap-2">
+        <section v-for="channel in timelineGroups" :key="channel.id" class="card overflow-hidden">
+          <div class="card-header flex flex-wrap items-center justify-between gap-2 px-4 py-2">
             <div class="flex min-w-0 items-center gap-2"><Icon name="server" size="sm" /><h2 class="break-words font-semibold text-gray-900 dark:text-white">{{ channel.name }}</h2><span class="text-xs text-gray-400">#{{ channel.id }}</span></div>
             <span class="text-xs text-gray-500">{{ channel.rows.length }} 个模型</span>
           </div>
-          <div v-for="row in channel.rows" :key="targetKey(row.target)" class="grid gap-3 border-b border-gray-100 p-4 last:border-0 dark:border-dark-700 lg:grid-cols-[minmax(160px,1fr)_minmax(0,2fr)_auto] lg:items-center lg:gap-5">
+          <div v-for="row in channel.rows" :key="targetKey(row.target)" class="grid gap-2 border-b border-gray-100 px-3 py-2 last:border-0 dark:border-dark-700 lg:grid-cols-[minmax(180px,1fr)_minmax(0,2fr)_auto] lg:items-center lg:gap-3">
             <div class="min-w-0">
-              <p class="break-all text-sm font-semibold text-gray-900 dark:text-white">{{ row.target.model }}</p>
-              <p class="mt-1 truncate text-xs text-gray-500" :title="row.target.expected_model">预期：{{ row.target.expected_model || '仅归因' }}</p>
-              <div class="mt-2"><Badge :tone="targetBusy(row.target) ? 'primary' : row.latest ? statusTone(row.latest.status) : 'gray'">{{ targetBusy(row.target) ? '检测中' : row.latest ? statusLabel(row.latest.status) : '等待首次检测' }}</Badge></div>
+              <div class="flex min-w-0 items-center gap-2">
+                <p class="min-w-0 truncate break-all text-sm font-semibold text-gray-900 dark:text-white" :title="row.target.model">{{ row.target.model }}</p>
+                <Badge :tone="targetBusy(row.target) ? 'primary' : row.latest ? statusTone(row.latest.status) : 'gray'">{{ targetBusy(row.target) ? '检测中' : row.latest ? statusLabel(row.latest.status) : '等待首次检测' }}</Badge>
+              </div>
+              <p class="mt-0.5 truncate text-xs text-gray-500" :title="row.target.expected_model">预期：{{ row.target.expected_model || '仅归因' }}</p>
             </div>
             <div class="min-w-0">
               <div v-if="row.runs.length" class="flex items-center gap-1" :aria-label="`${channel.name} ${row.target.model} 最近检测时间线`">
-                <button v-for="run in row.runs" :key="run.id" type="button" class="h-8 min-w-0 flex-1 rounded transition hover:opacity-75 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500" :class="statusCell(run.status)" :title="runTooltip(run)" :aria-label="runTooltip(run)" @click="showTimeline(row.target, run)" />
+                <button v-for="run in row.runs" :key="run.id" type="button" class="h-5 min-w-0 flex-1 rounded-sm transition hover:opacity-75 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500" :class="statusCell(run.status)" :title="runTooltip(run)" :aria-label="runTooltip(run)" @click="showTimeline(row.target, run)" />
               </div>
-              <div v-else class="flex h-8 items-center rounded border border-dashed border-gray-200 px-3 text-xs text-gray-400 dark:border-dark-600">{{ targetBusy(row.target) ? '检测中，正在等待首次结果…' : '暂无记录，等待计划执行或立即检测' }}</div>
-              <div v-if="row.runs.length" class="mt-1.5 flex justify-between gap-2 text-[11px] text-gray-400"><time>{{ shortTimestamp(row.runs[0]!.started_at) }}</time><time>最新 {{ shortTimestamp(row.latest!.started_at) }}</time></div>
-              <p v-if="row.latest || targetBusy(row.target)" class="mt-2 truncate text-xs text-gray-500" :title="row.latest?.message">{{ targetBusy(row.target) && row.latest?.status !== 'running' ? '检测中，正在开始新一轮检测…' : row.latest?.prediction ? `最近候选：${row.latest.prediction} · ${percent(row.latest.probability)}` : row.latest?.message || '正在检测…' }}</p>
+              <div v-else class="flex h-5 items-center rounded border border-dashed border-gray-200 px-2 text-[11px] text-gray-400 dark:border-dark-600">{{ targetBusy(row.target) ? '检测中，等待首次结果…' : '暂无记录' }}</div>
+              <div v-if="row.runs.length" class="mt-0.5 flex justify-between gap-2 text-[10px] text-gray-400"><time>{{ shortTimestamp(row.runs[0]!.started_at) }}</time><time>最新 {{ shortTimestamp(row.latest!.started_at) }}</time></div>
+              <p v-if="row.latest || targetBusy(row.target)" class="mt-1 truncate text-[11px] text-gray-500" :title="row.latest?.message">{{ targetBusy(row.target) && row.latest?.status !== 'running' ? '检测中，正在开始新一轮检测…' : row.latest?.prediction ? `最近候选：${row.latest.prediction} · ${percent(row.latest.probability)}` : row.latest?.message || '正在检测…' }}</p>
             </div>
-            <div class="flex gap-2 lg:flex-col">
+            <div class="flex gap-1 lg:flex-row">
               <button class="btn btn-secondary btn-sm" @click="showTimeline(row.target)">查看记录</button>
               <button class="btn btn-ghost btn-sm" :disabled="targetBusy(row.target) || dirty" :title="dirty ? '请先保存配置' : '立即发送三次挑战'" @click="runNow(row.target)">{{ targetBusy(row.target) ? '检测中…' : '立即检测' }}</button>
             </div>
@@ -94,22 +96,24 @@
         </form>
       </section>
 
-      <section class="card">
-        <div class="card-header flex flex-wrap items-center justify-between gap-3">
+      <div class="grid min-w-0 gap-6 lg:grid-cols-2">
+      <section class="card flex h-[min(72vh,48rem)] min-h-[26rem] min-w-0 flex-col overflow-hidden">
+        <div class="card-header shrink-0 space-y-3">
           <h2 class="font-semibold text-gray-900 dark:text-white">选择渠道与模型</h2>
-          <div class="flex flex-wrap gap-2">
-            <select v-model.number="groupID" class="input w-auto" aria-label="渠道池分组">
+          <div class="grid grid-cols-2 gap-2">
+            <select v-model.number="groupID" class="input min-w-0" aria-label="渠道池分组">
               <option :value="0">全部渠道池分组</option>
               <option v-for="group in groups" :key="group.id" :value="group.id">{{ group.name }}</option>
             </select>
-            <select v-model="schedulableFilter" class="input w-auto" aria-label="是否启用调度">
+            <select v-model="schedulableFilter" class="input min-w-0" aria-label="是否启用调度">
               <option value="all">全部调度状态</option>
               <option value="enabled">已启用调度</option>
               <option value="disabled">未启用调度</option>
             </select>
-            <input v-model="search" class="input w-auto" placeholder="搜索渠道名称" aria-label="搜索渠道" />
+            <input v-model="search" class="input col-span-2 min-w-0" placeholder="搜索渠道名称" aria-label="搜索渠道" />
           </div>
         </div>
+        <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain" role="region" aria-label="可选渠道和模型列表" tabindex="0">
         <p class="px-5 pt-4 text-xs text-gray-500">支持 API Key 渠道的 OpenAI / Anthropic 兼容接口。检测直接请求渠道地址，请使用上游实际模型名，不使用 sub2api 的模型映射与代理。OAuth 等账号暂不支持。</p>
         <div v-if="!filteredChannels.length" class="p-8 text-center text-sm text-gray-500">没有匹配的渠道，请先同步渠道池或调整筛选条件。</div>
         <div v-for="channel in filteredChannels" :key="channel.id" class="border-b border-gray-100 p-5 last:border-0 dark:border-dark-700">
@@ -129,7 +133,7 @@
               <button class="btn btn-ghost btn-sm" @click="removeChannel(channel.id)">取消此渠道全部选择</button>
               <span class="text-xs text-gray-500">{{ models[channel.id]?.length }} 个可用模型</span>
             </div>
-            <div class="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+            <div class="grid gap-2 sm:grid-cols-2 lg:grid-cols-1 2xl:grid-cols-2">
               <label v-for="model in models[channel.id] || []" :key="model" class="flex min-w-0 items-start gap-2 rounded-lg bg-gray-50 p-3 text-sm dark:bg-dark-800">
                 <input class="mt-0.5" type="checkbox" :checked="selected(channel.id, model)" @change="toggleTarget(channel.id, model)" />
                 <span class="break-all">{{ model }}</span>
@@ -141,24 +145,22 @@
             </form>
           </div>
         </div>
+        </div>
       </section>
 
-      <section v-if="settings.targets.length" class="card">
-        <div class="card-header"><h2 class="font-semibold text-gray-900 dark:text-white">已选检测项</h2><p class="mt-1 text-xs text-gray-500">模型别名可手动选择预期模型。立即检测使用已保存配置，忽略定期开关和免检时段。</p></div>
-        <div class="overflow-x-auto">
-          <table class="table min-w-[740px]">
-            <thead><tr><th>渠道 / 请求模型</th><th>预期模型（指纹库）</th><th class="text-right">操作</th></tr></thead>
-            <tbody>
-              <tr v-for="target in settings.targets" :key="targetKey(target)">
-                <td><p class="font-medium">{{ channelName(target.account_id) }}</p><p class="mt-1 break-all text-xs text-gray-500">{{ target.model }}</p></td>
-                <td><select v-model="target.expected_model" class="input" :aria-label="`${target.model} 预期模型`"><option value="">未收录 / 仅归因</option><option v-for="model in bankModels" :key="model" :value="model">{{ model }}</option></select></td>
-                <td><div class="flex justify-end gap-1"><button class="btn btn-ghost btn-sm" @click="showTimeline(target)">时间线</button><button class="btn btn-secondary btn-sm" :disabled="targetBusy(target) || dirty" :title="dirty ? '请先保存配置' : '立即发送三次挑战'" @click="runNow(target)">{{ targetBusy(target) ? '检测中…' : '立即检测' }}</button><button class="btn btn-ghost btn-sm text-red-600" @click="removeTarget(target)">移除</button></div></td>
-              </tr>
-            </tbody>
-          </table>
+      <section class="card flex h-[min(72vh,48rem)] min-h-[26rem] min-w-0 flex-col overflow-hidden">
+        <div class="card-header shrink-0"><div class="flex items-center justify-between gap-2"><h2 class="font-semibold text-gray-900 dark:text-white">已选检测项</h2><Badge>{{ settings.targets.length }} 项</Badge></div><p class="mt-1 text-xs text-gray-500">可直接调整预期模型；立即检测使用已保存配置。</p></div>
+        <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain" role="region" aria-label="已选检测项列表" tabindex="0">
+          <p v-if="!settings.targets.length" class="px-5 py-10 text-center text-sm text-gray-500">尚未选择模型，请在渠道列表中勾选。</p>
+          <div v-for="target in settings.targets" :key="targetKey(target)" class="grid grid-cols-1 items-center gap-2 border-b border-gray-100 px-4 py-2.5 last:border-0 dark:border-dark-700 sm:grid-cols-[minmax(0,1fr)_minmax(10rem,1.2fr)_auto]">
+            <div class="min-w-0"><p class="truncate text-sm font-medium text-gray-900 dark:text-white" :title="`${channelName(target.account_id)} · ${target.model}`">{{ channelName(target.account_id) }}</p><p class="truncate text-xs text-gray-500" :title="target.model">{{ target.model }}</p></div>
+            <select v-model="target.expected_model" class="input min-w-0" :aria-label="`${channelName(target.account_id)} ${target.model} 预期模型`"><option value="">仅归因</option><option v-for="model in bankModels" :key="model" :value="model">{{ model }}</option></select>
+            <div class="flex shrink-0 items-center gap-1"><button class="btn btn-ghost btn-sm px-2" title="查看时间线" @click="showTimeline(target)">时间线</button><button class="btn btn-secondary btn-sm px-2" :disabled="targetBusy(target) || dirty" :title="dirty ? '请先保存配置' : '立即发送三次挑战'" @click="runNow(target)">{{ targetBusy(target) ? '检测中…' : '立即检测' }}</button><button class="btn btn-ghost btn-sm px-2 text-red-600" title="移除检测项" @click="removeTarget(target)">移除</button></div>
+          </div>
         </div>
-        <div class="flex items-center gap-3 border-t border-gray-100 p-4 dark:border-dark-700"><button class="btn btn-primary btn-sm" :disabled="saving || !dirty" @click="save">保存选择</button><span class="text-xs text-gray-500">移除检测项不会删除历史结果。</span></div>
+        <div class="flex shrink-0 flex-wrap items-center gap-3 border-t border-gray-100 p-4 dark:border-dark-700"><button class="btn btn-primary btn-sm" :disabled="saving || !dirty" @click="save">{{ saving ? '保存中…' : '保存选择' }}</button><span v-if="dirty" class="text-xs text-amber-600">有未保存更改</span><span class="text-xs text-gray-500">移除检测项不会删除历史结果。</span></div>
       </section>
+      </div>
 
       </div>
 
@@ -231,11 +233,16 @@ const models = ref<Record<number, string[]>>({})
 const modelLoading = ref<Record<number, boolean>>({})
 const modelErrors = ref<Record<number, string>>({})
 const customModels = ref<Record<number, string>>({})
-const filteredChannels = computed(() => channels.value.filter(channel =>
-  (!groupID.value || channel.groups.some(g => g.id === groupID.value)) &&
-  (schedulableFilter.value === 'all' || channel.schedulable === (schedulableFilter.value === 'enabled')) &&
-  channel.name.toLowerCase().includes(search.value.toLowerCase())
-))
+const filteredChannels = computed(() => channels.value
+  .filter(channel =>
+    (!groupID.value || channel.groups.some(g => g.id === groupID.value)) &&
+    (schedulableFilter.value === 'all' || channel.schedulable === (schedulableFilter.value === 'enabled')) &&
+    channel.name.toLowerCase().includes(search.value.toLowerCase())
+  )
+  .map((channel, index) => ({ channel, index }))
+  .sort((left, right) => selectedCount(right.channel.id) - selectedCount(left.channel.id) || left.index - right.index)
+  .map(item => item.channel)
+)
 const supported = (channel: Channel) => ['apikey', 'api_key', 'key'].includes(channel.type.trim().toLowerCase())
 const selected = (id: number, model: string) => settings.value.targets.some(t => t.account_id === id && t.model === model)
 const selectedCount = (id: number) => settings.value.targets.filter(t => t.account_id === id).length
