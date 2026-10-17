@@ -21,6 +21,7 @@ import (
 var ErrRunning = errors.New("此渠道模型已有降智检测正在运行")
 
 var errSchedulePaused = errors.New("进入免检时段或检测配置已停用，本轮停止")
+var errInsufficientNumbers = errors.New("有效数字不足")
 
 type Manager struct {
 	store     *store.Store
@@ -302,10 +303,12 @@ func (m *Manager) run(target store.ModelCheckTarget, scheduled bool) error {
 	}
 	lengths := rand.Perm(41)[:3]
 	var outputs [][]int
+	var insufficientMessages []string
 	for i := 0; i < 3 && err == nil; i++ {
 		count := 292 + lengths[i]
 		prompt := challenge(count)
 		var output string
+		var numbers []int
 		var status int
 		fallbackTried := false
 		err = m.retryRequest(ctx, &run, scheduled, fmt.Sprintf("第 %d/3 条挑战", i+1), func() error {
@@ -323,15 +326,28 @@ func (m *Manager) run(target store.ModelCheckTarget, scheduled bool) error {
 				}
 				output, _, requestErr = requestOutput(ctx, m.http, credentials, target.Model, prompt, protocol)
 			}
-			return requestErr
+			if requestErr != nil {
+				return requestErr
+			}
+			numbers = parseNumbers(output)
+			if len(run.NumberCounts) == i {
+				run.NumberCounts = append(run.NumberCounts, len(numbers))
+			} else {
+				run.NumberCounts[i] = len(numbers)
+			}
+			minimum := (count*55 + 99) / 100
+			if len(numbers) < minimum {
+				return fmt.Errorf("%w：提取到 %d 个，至少需要 %d 个", errInsufficientNumbers, len(numbers), minimum)
+			}
+			return nil
 		})
+		if errors.Is(err, errInsufficientNumbers) {
+			insufficientMessages = append(insufficientMessages, err.Error())
+			err = nil
+			continue
+		}
 		if err != nil {
 			break
-		}
-		numbers := parseNumbers(output)
-		run.NumberCounts = append(run.NumberCounts, len(numbers))
-		if len(numbers) < (count*55+99)/100 {
-			continue
 		}
 		outputs = append(outputs, numbers)
 		run.ValidOutputs = len(outputs)
@@ -350,7 +366,7 @@ func (m *Manager) run(target store.ModelCheckTarget, scheduled bool) error {
 		}
 	case len(outputs) < 3:
 		run.Status = "inconclusive"
-		run.Message = "未获得三份有效数字序列，可能拒答或输出截断，无法判断"
+		run.Message = "未获得三份有效数字序列，无法判断\n" + strings.Join(insufficientMessages, "\n")
 	default:
 		run.Candidates = analyze(outputs)
 		run.Prediction = run.Candidates[0].Model

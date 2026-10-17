@@ -651,3 +651,74 @@ func TestRetryHandlesSuccessfulHTTPWithErrorPayload(t *testing.T) {
 		}
 	}
 }
+
+func TestInsufficientNumbersRetriesOnlyCurrentChallenge(t *testing.T) {
+	for _, recover := range []bool{true, false} {
+		t.Run(fmt.Sprintf("recover_%t", recover), func(t *testing.T) {
+			var calls atomic.Int32
+			var prompts []string
+			m, _ := fixtureManager(t, func(w http.ResponseWriter, r *http.Request) {
+				var payload struct {
+					Messages []struct {
+						Content string `json:"content"`
+					} `json:"messages"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					t.Error(err)
+					return
+				}
+				prompts = append(prompts, payload.Messages[0].Content)
+				call := calls.Add(1)
+				count := 330
+				if call >= 2 && (call <= 4 || (!recover && call == 5)) {
+					count = 28
+				}
+				json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": strings.Repeat("42, ", count)}}}})
+			})
+			var delays []time.Duration
+			m.waitRetry = func(ctx context.Context, delay time.Duration) error {
+				delays = append(delays, delay)
+				runs, err := m.store.ModelCheckRuns(1, "", 0, 30)
+				if err != nil || len(runs) != 1 || runs[0].Status != "running" || runs[0].FinishedAt != nil || runs[0].ValidOutputs != 1 || !reflect.DeepEqual(runs[0].NumberCounts, []int{330, 28}) {
+					t.Fatalf("lost progress during retry: %+v %v", runs, err)
+				}
+				if !strings.Contains(runs[0].Message, "有效数字不足：提取到 28 个") || !strings.Contains(runs[0].Message, "第 2/3 条挑战") {
+					t.Fatalf("unclear retry message: %s", runs[0].Message)
+				}
+				active := m.RunningTargets()
+				if len(active) != 1 {
+					t.Fatal("target unlocked during wait")
+				}
+				if err := m.RunNow(active[0]); !errors.Is(err, ErrRunning) {
+					t.Fatalf("duplicate accepted: %v", err)
+				}
+				return nil
+			}
+			if err := m.runDue(); err != nil {
+				t.Fatal(err)
+			}
+			if calls.Load() != 6 || !reflect.DeepEqual(delays, []time.Duration{3 * time.Second, 10 * time.Second, 30 * time.Second}) {
+				t.Fatalf("unexpected attempts: %d %v", calls.Load(), delays)
+			}
+			for i := 2; i <= 4; i++ {
+				if prompts[i] != prompts[1] {
+					t.Fatal("retry did not reuse second challenge")
+				}
+			}
+			if prompts[0] == prompts[1] || prompts[5] == prompts[1] {
+				t.Fatal("successful challenge repeated")
+			}
+			runs, err := m.store.ModelCheckRuns(1, "", 0, 30)
+			if err != nil || len(runs) != 1 || runs[0].FinishedAt == nil {
+				t.Fatalf("final result: %+v %v", runs, err)
+			}
+			if recover {
+				if runs[0].ValidOutputs != 3 || runs[0].Prediction == "" || !reflect.DeepEqual(runs[0].NumberCounts, []int{330, 330, 330}) {
+					t.Fatalf("invalid retry output included: %+v", runs[0])
+				}
+			} else if runs[0].Status != "inconclusive" || runs[0].ValidOutputs != 2 || runs[0].Prediction != "" || !reflect.DeepEqual(runs[0].NumberCounts, []int{330, 28, 330}) || !strings.Contains(runs[0].Message, "已重试 3 次") {
+				t.Fatalf("wrong exhausted verdict: %+v", runs[0])
+			}
+		})
+	}
+}
