@@ -262,8 +262,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /images/from/{name}", s.serveImage2URL)
 	mux.HandleFunc("GET /images/{name}", s.serveImage2File)
 	mux.HandleFunc("GET /files/{name}", s.serveImage2File)
-	mux.HandleFunc("POST /{slug}/v1/images/generations", s.generateImage2)
-	mux.HandleFunc("POST /{slug}/v1/images/edits", s.editImage2)
+	mux.HandleFunc("/{slug}/v1/{path...}", s.routeImage2)
 
 	for pattern, handler := range s.protectedRoutes() {
 		mux.HandleFunc(pattern, s.requireAuth(handler))
@@ -272,7 +271,11 @@ func (s *Server) Handler() http.Handler {
 	if s.assets != nil {
 		mux.Handle("/", s.assets)
 	}
-	return hardenHTTP(cors(mux))
+	handler := hardenHTTP(cors(mux))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, r.Pattern = mux.Handler(r)
+		handler.ServeHTTP(w, r)
+	})
 }
 
 // health 只回一个存活标记。
@@ -309,11 +312,10 @@ func hardenHTTP(next http.Handler) http.Handler {
 			return
 		}
 
-		image2ProxyRequest := isImage2ProxyRequest(r)
-		if r.Body != nil && !image2ProxyRequest {
+		if r.Body != nil && !image2ProxyPath {
 			r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 		}
-		if !image2ProxyRequest && isStateChanging(r.Method) && requestHasBody(r) {
+		if !image2ProxyPath && isStateChanging(r.Method) && requestHasBody(r) {
 			mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 			if err != nil || !strings.EqualFold(mediaType, "application/json") {
 				writeErrorMessage(w, http.StatusUnsupportedMediaType, "请求正文必须使用 application/json")
@@ -325,15 +327,9 @@ func hardenHTTP(next http.Handler) http.Handler {
 	})
 }
 
-func isImage2ProxyRequest(r *http.Request) bool {
-	return r.Method == http.MethodPost && isImage2ProxyPath(r)
-}
-
 func isImage2ProxyPath(r *http.Request) bool {
-	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/"), "/")
-	return len(parts) == 4 && parts[0] != "" &&
-		parts[1] == "v1" && parts[2] == "images" &&
-		(parts[3] == "generations" || parts[3] == "edits")
+	// 按实际匹配的路由放行，避免把 Guardian 的 /internal/v1 接口当成代理。
+	return r.Pattern == "/{slug}/v1/{path...}"
 }
 
 func isStateChanging(method string) bool {
@@ -376,10 +372,18 @@ func cors(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 			w.Header().Add("Access-Control-Allow-Headers", "Authorization")
 			w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
+			if isImage2ProxyPath(r) {
+				w.Header().Set("Access-Control-Allow-Methods", "GET,HEAD,POST,PUT,PATCH,DELETE,OPTIONS")
+				if headers := r.Header.Get("Access-Control-Request-Headers"); headers != "" {
+					w.Header().Set("Access-Control-Allow-Headers", headers)
+					w.Header().Add("Vary", "Access-Control-Request-Headers")
+				}
+			}
 			// 响应随 Origin 变化，必须告诉缓存别把某一个源的响应复用给别人。
 			w.Header().Add("Vary", "Origin")
 		}
-		if r.Method == http.MethodOptions {
+		if r.Method == http.MethodOptions && (!isImage2ProxyPath(r) ||
+			(origin != "" && r.Header.Get("Access-Control-Request-Method") != "")) {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}

@@ -105,6 +105,18 @@ G1/G2 使用共享倍率源时，两端需要运行同一协议版本；纯 API 
 企微通知参考 [push-server](https://github.com/qingzhou-dev/push-server) 对企业微信 API 的实现，Guardian 直接调用官方接口：
 在渠道汇总或详情页打开「企微设置」，填写企业 ID、应用 AgentId、应用 Secret 和企微成员 ID（或 `@all`）。
 
+### image2 路由
+
+在「辅助工具 → image2路由」配置上游后，使用页面提供的代理 Base URL
+（`https://你的域名/{URL标识}/v1`）和全局代理 API Key 调用接口。
+
+- `POST /images/generations`、`POST /images/edits`：应用图片格式转换、模型映射和参数屏蔽。
+- 同一 Base URL 下的其他接口（如 `/models`、`/chat/completions`、`/responses`、`/files`）：
+  透传请求方法、查询参数、请求体、响应状态和业务响应头，支持流式响应，不应用图片改写规则。
+
+转发时会移除 URL 标识前缀、使用配置的上游 API Key，并移除 Cookie 和 HTTP 逐跳请求头；
+浏览器的跨域预检由 Guardian 处理。上游 Base URL 可带路径前缀，但不要包含 `/v1`。
+
 ### 策略配置
 
 ![策略配置总览](docs/images/policy-overview.png)

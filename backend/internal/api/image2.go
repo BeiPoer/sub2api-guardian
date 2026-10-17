@@ -19,6 +19,7 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"net/textproto"
 	"net/url"
 	"os"
@@ -333,12 +334,17 @@ type image2ProxyError struct {
 	header    http.Header
 }
 
-func (s *Server) generateImage2(w http.ResponseWriter, r *http.Request) {
-	s.proxyImage2(w, r, "generations")
-}
-
-func (s *Server) editImage2(w http.ResponseWriter, r *http.Request) {
-	s.proxyImage2(w, r, "edits")
+func (s *Server) routeImage2(w http.ResponseWriter, r *http.Request) {
+	operation := ""
+	if r.Method == http.MethodPost {
+		switch r.PathValue("path") {
+		case "images/generations":
+			operation = "generations"
+		case "images/edits":
+			operation = "edits"
+		}
+	}
+	s.proxyImage2(w, r, operation)
 }
 
 func (s *Server) proxyImage2(w http.ResponseWriter, r *http.Request, operation string) {
@@ -357,6 +363,11 @@ func (s *Server) proxyImage2(w http.ResponseWriter, r *http.Request, operation s
 	}
 	if err != nil {
 		writeImage2ProxyError(w, image2InternalError(err))
+		return
+	}
+
+	if operation == "" {
+		s.forwardImage2(w, r, upstream)
 		return
 	}
 
@@ -453,6 +464,49 @@ func (s *Server) proxyImage2(w http.ResponseWriter, r *http.Request, operation s
 	}
 	w.WriteHeader(response.StatusCode)
 	_, _ = w.Write(converted)
+}
+
+func (s *Server) forwardImage2(w http.ResponseWriter, r *http.Request, upstream store.Image2Upstream) {
+	_, suffix, _ := strings.Cut(strings.TrimPrefix(r.URL.EscapedPath(), "/"), "/")
+	target, err := url.Parse(strings.TrimRight(upstream.BaseURL, "/") + "/" + suffix)
+	if err != nil {
+		writeImage2ProxyError(w, image2InternalError(err))
+		return
+	}
+	proxy := httputil.ReverseProxy{
+		Rewrite: func(request *httputil.ProxyRequest) {
+			request.Out.URL.Scheme = target.Scheme
+			request.Out.URL.Host = target.Host
+			request.Out.URL.Path = target.Path
+			request.Out.URL.RawPath = target.RawPath
+			request.Out.URL.RawQuery = request.In.URL.RawQuery
+			request.Out.Host = target.Host
+			request.Out.Header.Set("Authorization", "Bearer "+upstream.APIKey)
+			// 不把 Guardian 的登录 Cookie 发送给上游。
+			request.Out.Header.Del("Cookie")
+		},
+		Transport:     s.image2Client.Transport,
+		FlushInterval: -1,
+		ModifyResponse: func(response *http.Response) error {
+			// 跨域策略由 Guardian 决定，重复的 Allow-Origin 会被浏览器拒绝。
+			if w.Header().Get("Access-Control-Allow-Origin") != "" {
+				response.Header.Del("Access-Control-Allow-Origin")
+				response.Header.Del("Access-Control-Allow-Credentials")
+			}
+			return nil
+		},
+		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+			status, code, message := http.StatusBadGateway, "connection_error", "Could not connect to upstream."
+			var networkError net.Error
+			if errors.As(err, &networkError) && networkError.Timeout() {
+				status, code, message = http.StatusGatewayTimeout, "timeout", "Upstream request timed out."
+			}
+			writeImage2ProxyError(w, &image2ProxyError{
+				status: status, message: message, errorType: "upstream_error", code: code,
+			})
+		},
+	}
+	proxy.ServeHTTP(w, r)
 }
 
 func image2PublicBaseURL(r *http.Request, imageDomain string) string {

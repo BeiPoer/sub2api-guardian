@@ -1,5 +1,5 @@
 <template>
-  <AppLayout title="image2路由" subtitle="管理 OpenAI Images API 上游与 Base64 图片 URL 转换">
+  <AppLayout title="image2路由" subtitle="图片生成与编辑支持格式转换、模型映射和参数屏蔽，其余 /v1 接口原样透传">
     <section class="card">
       <div class="card-header flex flex-wrap items-center justify-between gap-3">
         <div>

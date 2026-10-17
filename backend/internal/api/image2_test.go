@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -196,6 +197,7 @@ func TestHardenHTTPPreservesImage2RequestRules(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	request := httptest.NewRequest(http.MethodPost, "/primary/v1/images/edits", bytes.NewReader(body))
+	request.Pattern = "/{slug}/v1/{path...}"
 	request.Header.Set("Content-Type", "multipart/form-data; boundary=test")
 	response := httptest.NewRecorder()
 	hardenHTTP(next).ServeHTTP(response, request)
@@ -207,6 +209,7 @@ func TestHardenHTTPPreservesImage2RequestRules(t *testing.T) {
 func TestHardenHTTPAllowsCrossOriginImage2Proxy(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	request := httptest.NewRequest(http.MethodPost, "/primary/v1/images/generations", nil)
+	request.Pattern = "/{slug}/v1/{path...}"
 	request.Header.Set("Origin", "https://static.example.com")
 	response := httptest.NewRecorder()
 	hardenHTTP(cors(next)).ServeHTTP(response, request)
@@ -215,12 +218,170 @@ func TestHardenHTTPAllowsCrossOriginImage2Proxy(t *testing.T) {
 	}
 
 	preflight := httptest.NewRequest(http.MethodOptions, "/primary/v1/images/generations", nil)
+	preflight.Pattern = "/{slug}/v1/{path...}"
 	preflight.Header.Set("Origin", "https://static.example.com")
 	preflight.Header.Set("Access-Control-Request-Method", "POST")
 	preflightResponse := httptest.NewRecorder()
 	hardenHTTP(cors(next)).ServeHTTP(preflightResponse, preflight)
 	if preflightResponse.Code != http.StatusNoContent || preflightResponse.Header().Get("Access-Control-Allow-Origin") != "https://static.example.com" {
 		t.Fatalf("跨域 image2 预检失败: status=%d allow-origin=%q", preflightResponse.Code, preflightResponse.Header().Get("Access-Control-Allow-Origin"))
+	}
+}
+
+func TestImage2PassThrough(t *testing.T) {
+	fixture := setupAuthAPI(t)
+	if err := fixture.store.SaveImage2Settings(store.Image2Settings{ProxyAPIKey: "proxy-secret", RetentionHours: 24}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		method, path, contentType, body string
+		status                          int
+	}{
+		{http.MethodGet, "models?tag=a%2Bb&tag=c", "", "", http.StatusOK},
+		{http.MethodPost, "chat/completions", "application/json", `{"model":"alias","stream":true,"quality":"high"}`, http.StatusOK},
+		{http.MethodPost, "responses", "application/json", `{"model":"alias","input":"hello"}`, http.StatusTooManyRequests},
+		{http.MethodPost, "files", "multipart/form-data; boundary=test", "--test\r\nContent-Disposition: form-data; name=\"file\"\r\n\r\ndata\r\n--test--\r\n", http.StatusCreated},
+		{http.MethodPatch, "files/item", "application/octet-stream", strings.Repeat("x", int(maxRequestBodyBytes)+1), http.StatusOK},
+		{http.MethodDelete, "files/a%2Fb?raw=a+b&raw=%2F", "", "", http.StatusAccepted},
+		{http.MethodGet, "images/generations", "", "", http.StatusTemporaryRedirect},
+		{http.MethodHead, "models", "", "", http.StatusOK},
+		{http.MethodOptions, "models", "", "", http.StatusOK},
+	} {
+		t.Run(tc.method+"/"+tc.path, func(t *testing.T) {
+			const responseBody = `{"data":[{"b64_json":"unchanged"}],"model":"alias"}`
+			var calls atomic.Int32
+			upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				if r.Method != tc.method || r.RequestURI != "/gateway%20prefix/v1/"+tc.path {
+					t.Errorf("请求方法/地址被改写: %s %s", r.Method, r.RequestURI)
+				}
+				if r.Header.Get("Authorization") != "Bearer upstream-secret" || r.Header.Get("Cookie") != "" ||
+					r.Header.Get("X-Custom") != "keep" || r.Header.Get("Content-Type") != tc.contentType {
+					t.Error("转发请求头不符合预期")
+				}
+				body, err := io.ReadAll(r.Body)
+				if err != nil || string(body) != tc.body {
+					t.Errorf("请求体被修改或截断: bytes=%d err=%v", len(body), err)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Access-Control-Allow-Origin", "*")
+				w.Header().Set("Access-Control-Allow-Credentials", "true")
+				w.Header().Set("X-Upstream-Custom", "preserved")
+				w.Header().Set("Retry-After", "10")
+				w.Header().Set("Location", "/redirect-target")
+				w.WriteHeader(tc.status)
+				if r.Method != http.MethodHead {
+					_, _ = io.WriteString(w, responseBody)
+				}
+			}))
+			defer upstreamServer.Close()
+			up, err := fixture.store.CreateImage2Upstream(store.Image2Upstream{
+				Name: "透传", Slug: "透传", BaseURL: upstreamServer.URL + "/gateway%20prefix", APIKey: "upstream-secret",
+				ModelMapping: "alias=changed", BlockedParams: "quality", ProxyImageURLs: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer fixture.store.DeleteImage2Upstream(up.ID)
+			request := httptest.NewRequest(tc.method, "/%E9%80%8F%E4%BC%A0/v1/"+tc.path, strings.NewReader(tc.body))
+			request.Header.Set("Authorization", "Bearer proxy-secret")
+			request.Header.Set("Cookie", "guardian_session=private")
+			request.Header.Set("Content-Type", tc.contentType)
+			request.Header.Set("X-Custom", "keep")
+			request.Header.Set("Origin", "https://client.example.com")
+			response := httptest.NewRecorder()
+			fixture.handler.ServeHTTP(response, request)
+			wantBody := responseBody
+			if tc.method == http.MethodHead {
+				wantBody = ""
+			}
+			if response.Code != tc.status || response.Body.String() != wantBody || calls.Load() != 1 {
+				t.Fatalf("透传失败: status=%d calls=%d body=%s", response.Code, calls.Load(), response.Body.String())
+			}
+			if response.Header().Get("X-Upstream-Custom") != "preserved" || response.Header().Get("Retry-After") != "10" ||
+				response.Header().Get("Location") != "/redirect-target" || response.Header().Get("Access-Control-Allow-Origin") != "https://client.example.com" ||
+				len(response.Header().Values("Access-Control-Allow-Origin")) != 1 || response.Header().Get("Access-Control-Allow-Credentials") != "" {
+				t.Fatalf("响应头未保留: %v", response.Header())
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		path, key string
+		status    int
+	}{
+		{"/missing/v1/models", "wrong", http.StatusUnauthorized},
+		{"/missing/v1/models", "proxy-secret", http.StatusNotFound},
+		{"/api/image2", "proxy-secret", http.StatusUnauthorized},
+	} {
+		request := httptest.NewRequest(http.MethodGet, tc.path, nil)
+		request.Header.Set("Authorization", "Bearer "+tc.key)
+		response := httptest.NewRecorder()
+		fixture.handler.ServeHTTP(response, request)
+		if response.Code != tc.status {
+			t.Errorf("%s: status=%d want=%d", tc.path, response.Code, tc.status)
+		}
+	}
+	preflight := httptest.NewRequest(http.MethodOptions, "/primary/v1/files", nil)
+	preflight.Header.Set("Origin", "https://client.example.com")
+	preflight.Header.Set("Access-Control-Request-Method", "PATCH")
+	preflight.Header.Set("Access-Control-Request-Headers", "authorization,content-type,x-custom")
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, preflight)
+	if response.Code != http.StatusNoContent || !strings.Contains(response.Header().Get("Access-Control-Allow-Methods"), "PATCH") ||
+		response.Header().Get("Access-Control-Allow-Headers") != "authorization,content-type,x-custom" {
+		t.Fatalf("透传接口预检失败: status=%d headers=%v", response.Code, response.Header())
+	}
+	internal := httptest.NewRequest(http.MethodPost, "/internal/v1/multiplier-source/resolve", strings.NewReader("{}"))
+	internal.Header.Set("Origin", "https://client.example.com")
+	internal.Header.Set("Content-Type", "application/json")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, internal)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("Guardian 内部接口错误绕过跨域保护: %d", response.Code)
+	}
+}
+
+func TestImage2PassThroughStreamsBeforeUpstreamFinishes(t *testing.T) {
+	fixture := setupAuthAPI(t)
+	release := make(chan struct{})
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: first\n\n")
+		w.(http.Flusher).Flush()
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer upstreamServer.Close()
+	defer close(release)
+	if err := fixture.store.SaveImage2Settings(store.Image2Settings{ProxyAPIKey: "proxy-secret", RetentionHours: 24}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.store.CreateImage2Upstream(store.Image2Upstream{
+		Name: "stream", Slug: "stream", BaseURL: upstreamServer.URL, APIKey: "upstream-secret",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	proxyServer := httptest.NewServer(fixture.handler)
+	defer proxyServer.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, proxyServer.URL+"/stream/v1/responses", strings.NewReader(`{"stream":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer proxy-secret")
+	request.Header.Set("Content-Type", "application/json")
+	response, err := proxyServer.Client().Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	line, err := bufio.NewReader(response.Body).ReadString('\n')
+	if err != nil || line != "data: first\n" {
+		t.Fatalf("上游结束前未收到流式数据: line=%q err=%v", line, err)
 	}
 }
 
