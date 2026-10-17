@@ -224,6 +224,8 @@ export const api = {
     }>(`/api/channels/${id}/sync-upstream-multiplier`),
   channelModels: (id: number) =>
     request<{ models: string[] }>(`/api/channels/${id}/models`, undefined, LONG_TIMEOUT_MS),
+  channelConfiguredModels: (id: number) =>
+    request<{ models: string[] }>(`/api/channels/${id}/models?source=sub2api`, undefined, LONG_TIMEOUT_MS),
   setChannelTestModel: (id: number, modelID: string) =>
     put<{ ok: boolean }>(`/api/channels/${id}/test-model`, { model_id: modelID }),
   events: (params: Record<string, string> = {}) => {

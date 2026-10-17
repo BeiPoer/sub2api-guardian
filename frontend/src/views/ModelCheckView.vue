@@ -39,7 +39,23 @@
         <section v-for="channel in timelineGroups" :key="channel.id" class="card overflow-hidden">
           <div class="card-header flex flex-wrap items-center justify-between gap-2 px-4 py-2">
             <div class="flex min-w-0 items-center gap-2"><Icon name="server" size="sm" /><h2 class="break-words font-semibold text-gray-900 dark:text-white">{{ channel.name }}</h2><span class="text-xs text-gray-400">#{{ channel.id }}</span></div>
-            <span class="text-xs text-gray-500">{{ channel.rows.length }} 个模型</span>
+            <div class="flex items-center gap-2">
+              <span class="text-xs text-gray-500">{{ channel.rows.length }} 个检测模型</span>
+              <span v-if="modelCatalogs[channel.id]?.items" class="text-xs text-gray-500">{{ modelCatalogs[channel.id]!.items!.length }} 个开放模型</span>
+            </div>
+          </div>
+          <div class="border-b border-gray-100 bg-gray-50/60 px-3 py-1.5 dark:border-dark-700 dark:bg-dark-900/30">
+            <ul class="flex max-h-40 flex-wrap items-center gap-1 overflow-y-auto overscroll-contain" :aria-label="`${channel.name} sub2api 开放模型列表`" tabindex="0">
+              <li class="flex shrink-0"><button type="button" class="btn btn-ghost h-6 w-6 p-1" :disabled="modelCatalogs[channel.id]?.loading" :aria-label="`刷新 ${channel.name} 的开放模型`" :title="modelCatalogs[channel.id]?.loading ? '读取中…' : '刷新模型'" @click="loadCatalog(channel.id)"><Icon name="refresh" size="sm" :class="modelCatalogs[channel.id]?.loading && 'animate-spin'" /></button></li>
+              <li v-if="modelCatalogs[channel.id]?.error" role="alert" class="break-words text-xs text-red-600">{{ modelCatalogs[channel.id]?.error }}<span v-if="modelCatalogs[channel.id]?.items">（保留上次列表）</span></li>
+              <li v-else-if="modelCatalogs[channel.id]?.loading && !modelCatalogs[channel.id]?.items" class="text-xs text-gray-500">读取中…</li>
+              <li v-else-if="!modelCatalogs[channel.id]?.loading && !modelCatalogs[channel.id]?.items?.length" class="text-xs text-gray-500">暂无可用模型</li>
+              <li v-for="model in modelCatalogs[channel.id]?.items" :key="model" class="flex max-w-full items-center gap-1 rounded border border-gray-200 bg-white px-1.5 py-0.5 text-xs dark:border-dark-600 dark:bg-dark-800">
+                <span class="min-w-0 break-all">{{ model }}</span>
+                <span v-if="savedSelected(channel.id, model)" class="shrink-0 text-primary-600 dark:text-primary-400">已加入检测</span>
+                <button v-else type="button" class="shrink-0 rounded px-1 text-primary-600 hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary-500 disabled:opacity-50 dark:text-primary-400 dark:hover:bg-dark-700" :disabled="saving" :aria-label="`加入 ${channel.name} 的 ${model} 检测`" @click="saveCatalogTarget(channel.id, model, true)">{{ quickSavingKey === targetKey({ account_id: channel.id, model }) ? '保存中…' : '加入' }}</button>
+              </li>
+            </ul>
           </div>
           <div v-for="row in channel.rows" :key="targetKey(row.target)" class="grid gap-2 border-b border-gray-100 px-3 py-2 last:border-0 dark:border-dark-700 lg:grid-cols-[minmax(180px,1fr)_minmax(0,2fr)_auto] lg:items-center lg:gap-3">
             <div class="min-w-0">
@@ -60,6 +76,7 @@
             <div class="flex gap-1 lg:flex-row">
               <button class="btn btn-secondary btn-sm" @click="showTimeline(row.target)">查看记录</button>
               <button class="btn btn-ghost btn-sm" :disabled="targetBusy(row.target) || dirty" :title="dirty ? '请先保存配置' : '立即发送三次挑战'" @click="runNow(row.target)">{{ targetBusy(row.target) ? '检测中…' : '立即检测' }}</button>
+              <button class="btn btn-ghost btn-sm text-red-600" :disabled="saving" :aria-label="`移除 ${channel.name} 的 ${row.target.model} 检测`" @click="saveCatalogTarget(channel.id, row.target.model, false)">{{ quickSavingKey === targetKey(row.target) ? '保存中…' : '移除' }}</button>
             </div>
           </div>
         </section>
@@ -192,7 +209,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AppLayout from '@/components/AppLayout.vue'
 import Badge from '@/components/Badge.vue'
 import Field from '@/components/Field.vue'
@@ -222,6 +239,7 @@ const bankModels = ref<string[]>([])
 const loading = ref(true)
 const loadError = ref('')
 const saving = ref(false)
+const quickSavingKey = ref<string | null>(null)
 const starting = ref(new Set<string>())
 const runningTargets = ref<ModelCheckTarget[]>([])
 const running = computed(() => starting.value.size > 0 || runningTargets.value.length > 0)
@@ -233,6 +251,7 @@ const models = ref<Record<number, string[]>>({})
 const modelLoading = ref<Record<number, boolean>>({})
 const modelErrors = ref<Record<number, string>>({})
 const customModels = ref<Record<number, string>>({})
+const modelCatalogs = ref<Record<number, { items?: string[]; loading: boolean; error: string }>>({})
 const filteredChannels = computed(() => channels.value
   .filter(channel =>
     (!groupID.value || channel.groups.some(g => g.id === groupID.value)) &&
@@ -245,6 +264,7 @@ const filteredChannels = computed(() => channels.value
 )
 const supported = (channel: Channel) => ['apikey', 'api_key', 'key'].includes(channel.type.trim().toLowerCase())
 const selected = (id: number, model: string) => settings.value.targets.some(t => t.account_id === id && t.model === model)
+const savedSelected = (id: number, model: string) => savedSettings.value.targets.some(t => t.account_id === id && t.model === model)
 const selectedCount = (id: number) => settings.value.targets.filter(t => t.account_id === id).length
 const targetKey = (t: Pick<ModelCheckTarget, 'account_id' | 'model'>) => `${t.account_id}/${t.model}`
 const targetBusy = (target: ModelCheckTarget) => starting.value.has(targetKey(target)) || runningTargets.value.some(t => targetKey(t) === targetKey(target))
@@ -282,6 +302,13 @@ let historySequence = 0
 let historyFilter = ''
 let runRevision = 0
 
+watch(() => [...new Set(savedSettings.value.targets.map(target => target.account_id))], ids => {
+  if (disposed) return
+  for (const id of ids) {
+    if (!modelCatalogs.value[id]) void loadCatalog(id)
+  }
+}, { immediate: true })
+
 async function load() {
   loading.value = true
   loadError.value = ''
@@ -299,6 +326,7 @@ async function load() {
 }
 
 async function save() {
+  if (saving.value) return
   saving.value = true
   const snapshot = JSON.stringify(settings.value)
   try {
@@ -310,6 +338,31 @@ async function save() {
   finally { saving.value = false }
 }
 
+async function saveCatalogTarget(id: number, model: string, include: boolean) {
+  if (saving.value || savedSelected(id, model) === include) return
+  const previous = savedSettings.value
+  const next: ModelCheckSettings = JSON.parse(saved.value)
+  const matches = (target: ModelCheckTarget) => target.account_id === id && target.model === model
+  next.targets = next.targets.filter(target => !matches(target))
+  if (include) {
+    const draft = settings.value.targets.find(matches)
+    next.targets.push(draft ? { ...draft } : { account_id: id, group_id: overviewGroup.value, model, expected_model: bankModels.value.includes(model) ? model : '' })
+  }
+  if (!next.targets.length) next.enabled = false
+  saving.value = true
+  quickSavingKey.value = targetKey({ account_id: id, model })
+  try {
+    const result = await api.saveModelCheck(next)
+    saved.value = JSON.stringify(result.settings)
+    settings.value.targets = settings.value.targets.filter(target => !matches(target))
+    const storedTarget = result.settings.targets.find(matches)
+    if (storedTarget) settings.value.targets.push({ ...storedTarget })
+    if (settings.value.enabled === previous.enabled || !result.settings.targets.length) settings.value.enabled = result.settings.enabled
+    ui.notify('success', include ? `${model} 已加入检测并保存` : !result.settings.targets.length ? '已移除最后一个检测项，定期检测已关闭' : `${model} 已移除检测并保存`)
+  } catch (error) { ui.notify('error', (error as Error).message) }
+  finally { saving.value = false; quickSavingKey.value = null }
+}
+
 async function toggleModels(id: number) {
   if (expanded.value === id) { expanded.value = null; return }
   expanded.value = id
@@ -319,6 +372,16 @@ async function toggleModels(id: number) {
   try { models.value[id] = [...new Set((await api.channelModels(id)).models || [])] }
   catch (error) { modelErrors.value[id] = `${(error as Error).message}，可手动输入模型名。` }
   finally { modelLoading.value[id] = false }
+}
+
+async function loadCatalog(id: number) {
+  if (modelCatalogs.value[id]?.loading) return
+  modelCatalogs.value[id] = { items: modelCatalogs.value[id]?.items, loading: true, error: '' }
+  try {
+    const result = await api.channelConfiguredModels(id)
+    modelCatalogs.value[id]!.items = [...new Set(result.models || [])]
+  } catch (error) { modelCatalogs.value[id]!.error = (error as Error).message }
+  finally { modelCatalogs.value[id]!.loading = false }
 }
 
 function addTarget(id: number, model: string) {

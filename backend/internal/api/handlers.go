@@ -765,7 +765,12 @@ func (s *Server) channelModels(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
 	defer cancel()
 
-	models, err := s.engine.AccountModels(ctx, id)
+	var models []string
+	if r.URL.Query().Get("source") == "sub2api" {
+		models, err = s.client.Models(ctx, id)
+	} else {
+		models, err = s.engine.AccountModels(ctx, id)
+	}
 	if err != nil {
 		writeError(w, err)
 		return
