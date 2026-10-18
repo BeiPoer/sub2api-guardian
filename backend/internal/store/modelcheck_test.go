@@ -66,7 +66,7 @@ func TestModelCheckTimelinesKeepEachChannelModelHistory(t *testing.T) {
 		t.Fatalf("empty timelines: %v %v", items, err)
 	}
 	for _, target := range []ModelCheckTarget{{AccountID: 1, Model: "gpt"}, {AccountID: 1, Model: "claude"}, {AccountID: 2, Model: "gpt"}} {
-		for i := 0; i < 35; i++ {
+		for i := 0; i < 105; i++ {
 			if _, err := s.CreateModelCheckRun(ModelCheckRun{ModelCheckTarget: target, Status: "consistent"}); err != nil {
 				t.Fatal(err)
 			}
@@ -77,7 +77,7 @@ func TestModelCheckTimelinesKeepEachChannelModelHistory(t *testing.T) {
 		t.Fatalf("timelines: %d %v", len(items), err)
 	}
 	for _, item := range items {
-		if len(item.Runs) != 24 {
+		if len(item.Runs) != 100 {
 			t.Fatalf("%d/%s has %d entries", item.AccountID, item.Model, len(item.Runs))
 		}
 		for i, run := range item.Runs {

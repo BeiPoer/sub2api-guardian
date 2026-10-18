@@ -70,7 +70,7 @@ func (s *Store) ModelCheckTimelines() ([]ModelCheckTimeline, error) {
 		return nil, err
 	}
 	for i := range items {
-		items[i].Runs, err = s.ModelCheckRuns(items[i].AccountID, items[i].Model, 0, 24)
+		items[i].Runs, err = s.ModelCheckRuns(items[i].AccountID, items[i].Model, 0, 100)
 		if err != nil {
 			return nil, err
 		}

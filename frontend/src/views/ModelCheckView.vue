@@ -28,7 +28,7 @@
           </div>
           <div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-500">
             <span v-for="status in legendStatuses" :key="status" class="inline-flex items-center gap-1.5"><span class="h-2.5 w-2.5 rounded-sm" :class="statusCell(status)" />{{ statusLabel(status) }}</span>
-            <span class="sm:ml-auto">每个模型最近 24 次 · 旧 → 新 · 点击查看详情</span>
+            <span class="sm:ml-auto">每个模型最近 100 次 · 旧 → 新 · 点击查看详情</span>
           </div>
         </section>
         <p v-if="overviewError" role="alert" class="text-sm text-red-600">{{ overviewError }}</p>
@@ -66,8 +66,8 @@
               <p class="mt-0.5 truncate text-xs text-gray-500" :title="row.target.expected_model">预期：{{ row.target.expected_model || '仅归因' }}</p>
             </div>
             <div class="min-w-0">
-              <div v-if="row.runs.length" class="flex items-center gap-1" :aria-label="`${channel.name} ${row.target.model} 最近检测时间线`">
-                <button v-for="run in row.runs" :key="run.id" type="button" class="h-5 min-w-0 flex-1 rounded-sm transition hover:opacity-75 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500" :class="statusCell(run.status)" :title="runTooltip(run)" :aria-label="runTooltip(run)" @click="showTimeline(row.target, run)" />
+              <div v-if="row.runs.length" class="flex items-center gap-0.5 overflow-x-auto" :aria-label="`${channel.name} ${row.target.model} 最近检测时间线`">
+                <button v-for="run in row.runs" :key="run.id" type="button" class="h-5 min-w-[4px] flex-1 rounded-sm transition hover:opacity-75 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500" :class="statusCell(run.status)" :title="runTooltip(run)" :aria-label="runTooltip(run)" @click="showTimeline(row.target, run)" />
               </div>
               <div v-else class="flex h-5 items-center rounded border border-dashed border-gray-200 px-2 text-[11px] text-gray-400 dark:border-dark-600">{{ targetBusy(row.target) ? '检测中，等待首次结果…' : '暂无记录' }}</div>
               <div v-if="row.runs.length" class="mt-0.5 flex justify-between gap-2 text-[10px] text-gray-400"><time>{{ shortTimestamp(row.runs[0]!.started_at) }}</time><time>最新 {{ shortTimestamp(row.latest!.started_at) }}</time></div>
@@ -445,8 +445,11 @@ async function showTimeline(target: ModelCheckTarget, selectedRun?: ModelCheckRu
   hasMore.value = false
   historyOpen.value = true
   await refreshHistory()
+  while (selectedRun && historyOpen.value && selectedRunID.value === selectedRun.id && hasMore.value && !historyError.value && !runs.value.some(run => run.id === selectedRun.id)) {
+    await refreshHistory(true)
+  }
   await nextTick()
-  if (selectedRun && historyOpen.value) document.getElementById(`model-check-run-${selectedRun.id}`)?.scrollIntoView({ block: 'nearest' })
+  if (selectedRun && historyOpen.value && selectedRunID.value === selectedRun.id) document.getElementById(`model-check-run-${selectedRun.id}`)?.scrollIntoView({ block: 'nearest' })
 }
 function closeHistory() { historyOpen.value = false; historySequence++; historyLoading.value = false }
 async function refreshOverview() {
