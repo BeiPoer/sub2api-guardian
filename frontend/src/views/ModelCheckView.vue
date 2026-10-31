@@ -129,6 +129,21 @@
             </select>
             <input v-model="search" class="input col-span-2 min-w-0" placeholder="搜索渠道名称" aria-label="搜索渠道" />
           </div>
+          <div class="space-y-2">
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="text-xs font-medium text-gray-600 dark:text-dark-300">批量选择模型</span>
+              <button type="button" class="btn btn-ghost btn-sm" :disabled="bulkLoading || !filteredChannels.some(supported)" @click="loadBulkModels">{{ bulkLoading ? '读取中…' : '读取列表模型' }}</button>
+              <button type="button" class="btn btn-secondary btn-sm" :disabled="bulkLoading || saving || !bulkModels.length || !filteredChannels.some(supported)" @click="selectBulkModels">一键选中（{{ bulkModels.length }}）</button>
+            </div>
+            <div class="flex max-h-24 flex-wrap gap-x-3 gap-y-2 overflow-y-auto overscroll-contain" role="group" aria-label="批量选择的模型">
+              <label v-for="model in bulkModelOptions" :key="model" class="flex min-w-0 items-start gap-1.5 text-xs">
+                <input v-model="bulkModels" type="checkbox" :value="model" :disabled="bulkLoading" class="mt-0.5" />
+                <span class="break-all">{{ model }}</span>
+              </label>
+            </div>
+            <p class="text-xs text-gray-500">仅选中当前筛选列表中支持勾选模型的渠道；未列出的模型可先读取列表。选中后需保存选择。</p>
+            <p v-if="bulkMessage" role="status" class="text-xs text-gray-600 dark:text-dark-300">{{ bulkMessage }}</p>
+          </div>
         </div>
         <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain" role="region" aria-label="可选渠道和模型列表" tabindex="0">
         <p class="px-5 pt-4 text-xs text-gray-500">支持 API Key 渠道的 OpenAI / Anthropic 兼容接口。检测直接请求渠道地址，请使用上游实际模型名，不使用 sub2api 的模型映射与代理。OAuth 等账号暂不支持。</p>
@@ -251,6 +266,10 @@ const models = ref<Record<number, string[]>>({})
 const modelLoading = ref<Record<number, boolean>>({})
 const modelErrors = ref<Record<number, string>>({})
 const customModels = ref<Record<number, string>>({})
+const bulkModels = ref<string[]>([])
+const bulkLoading = ref(false)
+const bulkMessage = ref('')
+const modelRequests = new Map<number, Promise<boolean>>()
 const modelCatalogs = ref<Record<number, { items?: string[]; loading: boolean; error: string }>>({})
 const filteredChannels = computed(() => channels.value
   .filter(channel =>
@@ -262,6 +281,11 @@ const filteredChannels = computed(() => channels.value
   .sort((left, right) => selectedCount(right.channel.id) - selectedCount(left.channel.id) || left.index - right.index)
   .map(item => item.channel)
 )
+const bulkModelOptions = computed(() => [...new Set([
+  ...bankModels.value,
+  ...bulkModels.value,
+  ...filteredChannels.value.filter(supported).flatMap(channel => models.value[channel.id] || []),
+])].sort((a, b) => a.localeCompare(b)))
 const supported = (channel: Channel) => ['apikey', 'api_key', 'key'].includes(channel.type.trim().toLowerCase())
 const selected = (id: number, model: string) => settings.value.targets.some(t => t.account_id === id && t.model === model)
 const savedSelected = (id: number, model: string) => savedSettings.value.targets.some(t => t.account_id === id && t.model === model)
@@ -367,11 +391,60 @@ async function toggleModels(id: number) {
   if (expanded.value === id) { expanded.value = null; return }
   expanded.value = id
   if (models.value[id]) return
-  modelLoading.value[id] = true
-  modelErrors.value[id] = ''
-  try { models.value[id] = [...new Set((await api.channelModels(id)).models || [])] }
-  catch (error) { modelErrors.value[id] = `${(error as Error).message}，可手动输入模型名。` }
-  finally { modelLoading.value[id] = false }
+  await loadChannelModels(id)
+}
+
+function loadChannelModels(id: number): Promise<boolean> {
+  const pending = modelRequests.get(id)
+  if (pending) return pending
+  const request = (async () => {
+    modelLoading.value[id] = true
+    modelErrors.value[id] = ''
+    try {
+      models.value[id] = [...new Set((await api.channelModels(id)).models || [])]
+      return true
+    } catch (error) {
+      modelErrors.value[id] = `${(error as Error).message}，可手动输入模型名。`
+      return false
+    } finally { modelLoading.value[id] = false; modelRequests.delete(id) }
+  })()
+  modelRequests.set(id, request)
+  return request
+}
+
+async function loadBulkModels() { await applyBulkModels(false) }
+async function selectBulkModels() { await applyBulkModels(true) }
+async function applyBulkModels(select: boolean) {
+  if (bulkLoading.value || (select && (saving.value || !bulkModels.value.length))) return
+  const pending = filteredChannels.value.filter(supported)
+  const requested = new Set(bulkModels.value)
+  const group = groupID.value
+  const failed: string[] = []
+  let added = 0
+  let completed = 0
+  const total = pending.length
+  bulkLoading.value = true
+  bulkMessage.value = `正在读取 0/${total} 个渠道…`
+  try {
+    await Promise.all(Array.from({ length: Math.min(4, total) }, async () => {
+      while (pending.length && !disposed) {
+        const channel = pending.shift()!
+        const loaded = await loadChannelModels(channel.id)
+        if (disposed) return
+        if (!loaded) failed.push(channel.name)
+        else if (select) {
+          for (const model of models.value[channel.id] || []) {
+            if (requested.has(model) && !selected(channel.id, model)) {
+              addTarget(channel.id, model, group)
+              added++
+            }
+          }
+        }
+        bulkMessage.value = `正在读取 ${++completed}/${total} 个渠道…`
+      }
+    }))
+    bulkMessage.value = `${select ? `新增 ${added} 个检测项，已有选择保持不变${added ? '，请保存选择' : ''}` : `已读取 ${total - failed.length} 个渠道的模型`}${failed.length ? `；${failed.length} 个渠道读取失败，已跳过：${failed.join('、')}` : ''}。`
+  } finally { bulkLoading.value = false }
 }
 
 async function loadCatalog(id: number) {
@@ -384,10 +457,10 @@ async function loadCatalog(id: number) {
   finally { modelCatalogs.value[id]!.loading = false }
 }
 
-function addTarget(id: number, model: string) {
+function addTarget(id: number, model: string, group = groupID.value) {
   if (selected(id, model)) return
   const expected = bankModels.value.includes(model) ? model : ''
-  settings.value.targets.push({ account_id: id, group_id: groupID.value, model, expected_model: expected })
+  settings.value.targets.push({ account_id: id, group_id: group, model, expected_model: expected })
 }
 function toggleTarget(id: number, model: string) {
   if (selected(id, model)) settings.value.targets = settings.value.targets.filter(t => !(t.account_id === id && t.model === model))
