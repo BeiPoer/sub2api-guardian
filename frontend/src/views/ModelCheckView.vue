@@ -370,7 +370,7 @@ async function saveCatalogTarget(id: number, model: string, include: boolean) {
   next.targets = next.targets.filter(target => !matches(target))
   if (include) {
     const draft = settings.value.targets.find(matches)
-    next.targets.push(draft ? { ...draft } : { account_id: id, group_id: overviewGroup.value, model, expected_model: bankModels.value.includes(model) ? model : '' })
+    next.targets.push(draft ? { ...draft } : { account_id: id, group_id: overviewGroup.value, model, expected_model: defaultExpectedModel(model) })
   }
   if (!next.targets.length) next.enabled = false
   saving.value = true
@@ -457,9 +457,13 @@ async function loadCatalog(id: number) {
   finally { modelCatalogs.value[id]!.loading = false }
 }
 
+function defaultExpectedModel(model: string) {
+  const expected = model === 'gpt-6.1-sol' ? 'gpt-6-astra' : model
+  return bankModels.value.includes(expected) ? expected : ''
+}
 function addTarget(id: number, model: string, group = groupID.value) {
   if (selected(id, model)) return
-  const expected = bankModels.value.includes(model) ? model : ''
+  const expected = defaultExpectedModel(model)
   settings.value.targets.push({ account_id: id, group_id: group, model, expected_model: expected })
 }
 function toggleTarget(id: number, model: string) {

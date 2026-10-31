@@ -8,16 +8,42 @@ import { computed, ref } from 'vue'
 // Exercise the component's actual selection logic without mounting or making upstream requests.
 const source = readFileSync(new URL('../src/views/ModelCheckView.vue', import.meta.url), 'utf8')
   .split('<script setup lang="ts">')[1].split('</script>')[0].replace(/^import .*$/gm, '')
-const script = ts.transpileModule(`${source}\nglobalThis.view = { settings, channels, bankModels, groupID, schedulableFilter, search, bulkModels, bulkModelOptions, bulkMessage, bulkLoading, loadBulkModels, selectBulkModels, toggleModels };`, {
+const script = ts.transpileModule(`${source}\nglobalThis.view = { settings, saved, channels, bankModels, groupID, schedulableFilter, search, bulkModels, bulkModelOptions, bulkMessage, bulkLoading, loadBulkModels, selectBulkModels, toggleModels, addTarget, saveCatalogTarget };`, {
   compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.None },
 }).outputText
 
-function setup(channelModels) {
-  const context = { computed, ref, api: { channelModels }, useUIStore: () => ({ notify() {} }), watch() {}, onMounted() {}, onBeforeUnmount() {} }
+function setup(channelModels, overrides = {}) {
+  const context = { computed, ref, api: { channelModels, ...overrides }, useUIStore: () => ({ notify() {} }), watch() {}, onMounted() {}, onBeforeUnmount() {} }
   runInNewContext(script, context)
   return context.view
 }
 const channel = (id, extra = {}) => ({ id, name: `供应商 ${id}`, type: 'apikey', schedulable: true, groups: [{ id: 1 }], ...extra })
+
+test('6.1 sol 在单个、批量和快捷加入时默认预期为 6 astra，已有选择不覆盖', async () => {
+  let stored
+  const view = setup(async () => ({ models: ['gpt-6.1-sol'] }), {
+    saveModelCheck: async settings => { stored = settings; return { settings } },
+  })
+  view.bankModels.value = ['gpt-6-astra', 'gpt-5.6-sol']
+  view.saved.value = JSON.stringify(view.settings.value)
+  view.addTarget(1, 'gpt-6.1-sol')
+  assert.equal(view.settings.value.targets[0].expected_model, 'gpt-6-astra')
+  view.settings.value.targets[0].expected_model = 'gpt-5.6-sol'
+  view.channels.value = [channel(1), channel(2)]
+  view.bulkModels.value = ['gpt-6.1-sol']
+  await view.selectBulkModels()
+  assert.equal(view.settings.value.targets[0].expected_model, 'gpt-5.6-sol')
+  assert.equal(view.settings.value.targets[1].expected_model, 'gpt-6-astra')
+  await view.saveCatalogTarget(3, 'gpt-6.1-sol', true)
+  assert.equal(stored.targets[0].expected_model, 'gpt-6-astra')
+  view.addTarget(4, 'gpt-5.6-sol')
+  assert.equal(view.settings.value.targets.at(-1).expected_model, 'gpt-5.6-sol')
+  view.addTarget(5, 'unknown')
+  assert.equal(view.settings.value.targets.at(-1).expected_model, '')
+  view.bankModels.value = []
+  view.addTarget(6, 'gpt-6.1-sol')
+  assert.equal(view.settings.value.targets.at(-1).expected_model, '')
+})
 
 test('批量选择遵循筛选，跳过不支持或失败渠道，保留已有预期模型并去重', async () => {
   const calls = []
