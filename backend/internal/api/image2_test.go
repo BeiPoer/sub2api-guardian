@@ -422,6 +422,109 @@ func TestImage2ProxyConvertsDataURLToFileURL(t *testing.T) {
 	}
 }
 
+func TestImage2GIFAndSVGConversionAndServing(t *testing.T) {
+	gif, err := base64.StdEncoding.DecodeString("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, format := range []struct {
+		extension, contentType string
+		image                  []byte
+	}{
+		{"gif", "image/gif", gif},
+		{"svg", "image/svg+xml", []byte(`<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><style>rect{fill:red}</style><rect width="10" height="10"/><script>alert(1)</script></svg>`)},
+	} {
+		t.Run(format.extension, func(t *testing.T) {
+			image := format.image
+			encoded := base64.StdEncoding.EncodeToString(image)
+			server := &Server{image2Dir: t.TempDir(), image2URLCipher: newImage2URLCipher("test")}
+			remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if accept := r.Header.Get("Accept"); accept != "" && !strings.Contains(accept, format.contentType) {
+					t.Error("代理未声明接受图片格式")
+				}
+				w.Header().Set("Content-Type", format.contentType)
+				_, _ = w.Write(image)
+			}))
+			defer remote.Close()
+			server.image2ProxyClient = remote.Client()
+			server.image2Client = remote.Client()
+			for name, item := range map[string]map[string]string{
+				"base64":     {"b64_json": encoded},
+				"data_url":   {"url": "data:" + format.contentType + ";base64," + encoded},
+				"remote_url": {"url": remote.URL + "/image." + format.extension},
+			} {
+				t.Run(name, func(t *testing.T) {
+					raw, err := json.Marshal(map[string]any{"data": []any{item}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					converted, proxyErr := server.convertImage2Response(context.Background(), raw,
+						"https://images.example.com/images", "url", true)
+					if proxyErr != nil {
+						t.Fatalf("图片转换失败: %#v", proxyErr)
+					}
+					var payload struct {
+						Data []map[string]string `json:"data"`
+					}
+					if err := json.Unmarshal(converted, &payload); err != nil || len(payload.Data) != 1 {
+						t.Fatalf("转换响应无效: %v %s", err, converted)
+					}
+					imageURL := payload.Data[0]["url"]
+					if !strings.HasSuffix(imageURL, "."+format.extension) || payload.Data[0]["b64_json"] != "" {
+						t.Fatalf("图片 URL 无效: %s", converted)
+					}
+					request := httptest.NewRequest(http.MethodGet, imageURL, nil)
+					request.SetPathValue("name", filepath.Base(imageURL))
+					response := httptest.NewRecorder()
+					if name == "remote_url" {
+						server.serveImage2URL(response, request)
+					} else {
+						server.serveImage2File(response, request)
+					}
+					if response.Code != http.StatusOK || response.Header().Get("Content-Type") != format.contentType ||
+						!bytes.Equal(response.Body.Bytes(), image) {
+						t.Fatalf("图片访问失败: status=%d type=%s", response.Code, response.Header().Get("Content-Type"))
+					}
+					if response.Header().Get("Content-Security-Policy") != image2ContentPolicy ||
+						response.Header().Get("X-Content-Type-Options") != "nosniff" {
+						t.Fatal("图片响应缺少安全策略")
+					}
+					converted, proxyErr = server.convertImage2Response(context.Background(), raw, "", "b64_json", true)
+					if proxyErr != nil {
+						t.Fatalf("图片转 base64 失败: %#v", proxyErr)
+					}
+					if err := json.Unmarshal(converted, &payload); err != nil || payload.Data[0]["b64_json"] != encoded {
+						t.Fatalf("图片转 base64 内容不一致: %v", err)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestImage2SVGValidation(t *testing.T) {
+	for _, content := range []string{
+		`<svg/>`,
+		"\xef\xbb\xbf" + `<?xml version="1.0"?><!--image--><svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0"/></svg>`,
+	} {
+		if got := image2ContentType([]byte(content)); got != "image/svg+xml" {
+			t.Errorf("未识别 SVG: %s", got)
+		}
+	}
+	server := &Server{image2Dir: t.TempDir()}
+	for _, content := range []string{
+		`<html><svg/></html>`, `<svg xmlns="https://example.com"/>`, `<svg><path></svg>`,
+		`<svg/><svg/>`, `<svg/>trailing`, `<!DOCTYPE svg><svg/>`, `not an image`,
+	} {
+		if _, err := server.writeImage2File([]byte(content)); err == nil {
+			t.Errorf("接受了无效 SVG: %s", content)
+		}
+		if _, err := decodeImage2DataURL("data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString([]byte(content))); err == nil {
+			t.Errorf("接受了无效 SVG Data URL: %s", content)
+		}
+	}
+}
+
 func TestImage2PublicBaseURLFallsBackToRequestHost(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
 	request.Host = "guardian.example.com:8787"
@@ -457,7 +560,8 @@ func TestImage2ProxyExtensions(t *testing.T) {
 		"/IMAGE.JPG":  ".jpg",
 		"/image.jpeg": ".jpg",
 		"/image.WebP": ".webp",
-		"/image.gif":  ".png",
+		"/image.gif":  ".gif",
+		"/image.SVG":  ".svg",
 		"/image":      ".png",
 	}
 	for input, want := range cases {

@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -40,6 +41,7 @@ const (
 	image2URLKeyEnv         = "IMAGE2_URL_ENCRYPTION_KEY"
 	image2DefaultURLKey     = "sub2api-guardian-default-image2-url-key"
 	image2URLAssociatedData = "sub2api-guardian:image2-url:v1"
+	image2ContentPolicy     = "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 )
 
 type image2UpstreamInput struct {
@@ -846,6 +848,47 @@ func parseImage2RemoteURL(value string) (*url.URL, error) {
 	return parsed, nil
 }
 
+func image2ContentType(content []byte) string {
+	contentType := http.DetectContentType(content)
+	if strings.HasPrefix(contentType, "image/") {
+		return contentType
+	}
+	decoder := xml.NewDecoder(bytes.NewReader(bytes.TrimPrefix(content, []byte{0xef, 0xbb, 0xbf})))
+	depth, roots := 0, 0
+	for {
+		token, err := decoder.Token()
+		if err == io.EOF {
+			if roots == 1 && depth == 0 {
+				return "image/svg+xml"
+			}
+			return contentType
+		}
+		if err != nil {
+			return contentType
+		}
+		switch token := token.(type) {
+		case xml.StartElement:
+			if depth == 0 {
+				roots++
+				if roots != 1 || token.Name.Local != "svg" ||
+					(token.Name.Space != "" && token.Name.Space != "http://www.w3.org/2000/svg") {
+					return contentType
+				}
+			}
+			depth++
+		case xml.EndElement:
+			depth--
+		case xml.CharData:
+			if depth == 0 && len(bytes.TrimSpace(token)) != 0 {
+				return contentType
+			}
+		case xml.Directive:
+			// 不接受 DTD 或实体声明，避免将外部资源引入图片。
+			return contentType
+		}
+	}
+}
+
 func decodeImage2DataURL(value string) ([]byte, error) {
 	header, encoded, found := strings.Cut(value, ",")
 	if !found || !strings.HasPrefix(strings.ToLower(header), "data:image/") ||
@@ -853,7 +896,7 @@ func decodeImage2DataURL(value string) ([]byte, error) {
 		return nil, errors.New("invalid image data URL")
 	}
 	content, err := base64.StdEncoding.Strict().DecodeString(encoded)
-	if err != nil || len(content) == 0 || !strings.HasPrefix(http.DetectContentType(content), "image/") {
+	if err != nil || len(content) == 0 || !strings.HasPrefix(image2ContentType(content), "image/") {
 		return nil, errors.New("invalid image data URL")
 	}
 	return content, nil
@@ -865,6 +908,10 @@ func image2ProxyExtension(urlPath string) string {
 		return ".jpg"
 	case ".webp":
 		return ".webp"
+	case ".gif":
+		return ".gif"
+	case ".svg":
+		return ".svg"
 	default:
 		return ".png"
 	}
@@ -918,7 +965,7 @@ func (s *Server) readImage2URL(ctx context.Context, value string) ([]byte, error
 	}
 	content, err := io.ReadAll(io.LimitReader(response.Body, image2MaxResponseBytes+1))
 	if err != nil || len(content) == 0 || len(content) > image2MaxResponseBytes ||
-		!strings.HasPrefix(http.DetectContentType(content), "image/") {
+		!strings.HasPrefix(image2ContentType(content), "image/") {
 		return nil, errors.New("image URL returned invalid image data")
 	}
 	return content, nil
@@ -927,7 +974,7 @@ func (s *Server) readImage2URL(ctx context.Context, value string) ([]byte, error
 func image2ProxyToken(name string) (string, bool) {
 	extension := path.Ext(name)
 	switch strings.ToLower(extension) {
-	case ".png", ".jpg", ".webp":
+	case ".png", ".jpg", ".webp", ".gif", ".svg":
 	default:
 		return "", false
 	}
@@ -941,7 +988,7 @@ func validImage2ProxyContentType(value string) bool {
 		return false
 	}
 	switch strings.ToLower(mediaType) {
-	case "image/png", "image/jpeg", "image/webp":
+	case "image/png", "image/jpeg", "image/webp", "image/gif", "image/svg+xml":
 		return true
 	default:
 		return false
@@ -968,7 +1015,7 @@ func (s *Server) serveImage2URL(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "image unavailable", http.StatusBadGateway)
 		return
 	}
-	request.Header.Set("Accept", "image/png, image/jpeg, image/webp")
+	request.Header.Set("Accept", "image/png, image/jpeg, image/webp, image/gif, image/svg+xml")
 	response, err := s.image2ProxyClient.Do(request)
 	if err != nil {
 		status := http.StatusBadGateway
@@ -991,6 +1038,7 @@ func (s *Server) serveImage2URL(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", image2ContentPolicy)
 	w.WriteHeader(response.StatusCode)
 	if r.Method != http.MethodHead {
 		_, _ = io.Copy(w, response.Body)
@@ -1002,13 +1050,17 @@ func (s *Server) writeImage2File(content []byte) (string, error) {
 		return "", s.image2InitErr
 	}
 	extension := ""
-	switch http.DetectContentType(content) {
+	switch image2ContentType(content) {
 	case "image/png":
 		extension = "png"
 	case "image/jpeg":
 		extension = "jpg"
 	case "image/webp":
 		extension = "webp"
+	case "image/gif":
+		extension = "gif"
+	case "image/svg+xml":
+		extension = "svg"
 	default:
 		return "", errors.New("unsupported image format")
 	}
@@ -1040,12 +1092,16 @@ func (s *Server) serveImage2File(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", image2ContentPolicy)
+	if strings.HasSuffix(name, ".svg") {
+		w.Header().Set("Content-Type", "image/svg+xml")
+	}
 	http.ServeFile(w, r, filepath.Join(s.image2Dir, name))
 }
 
 func validImage2Filename(name string) bool {
 	stem, extension, found := strings.Cut(name, ".")
-	if !found || len(stem) != 32 || (extension != "png" && extension != "jpg" && extension != "webp") {
+	if !found || len(stem) != 32 || (extension != "png" && extension != "jpg" && extension != "webp" && extension != "gif" && extension != "svg") {
 		return false
 	}
 	_, err := hex.DecodeString(stem)
