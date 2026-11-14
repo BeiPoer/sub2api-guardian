@@ -422,6 +422,12 @@ func usableSub2APIAccess(channel store.UpstreamChannel) bool {
 }
 
 func (m *Manager) ensureSub2APIAccess(ctx context.Context, channel store.UpstreamChannel, force bool) (store.UpstreamChannel, error) {
+	// 同步中的调用方可能持有登录或刷新之前的渠道副本。
+	latest, err := m.store.UpstreamChannel(channel.ID)
+	if err != nil {
+		return store.UpstreamChannel{}, channelError(err)
+	}
+	channel = latest
 	if !force && usableSub2APIAccess(channel) {
 		return channel, nil
 	}

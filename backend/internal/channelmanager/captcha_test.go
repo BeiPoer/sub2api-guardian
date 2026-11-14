@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"sub2api-guardian/backend/internal/store"
 )
@@ -14,6 +15,83 @@ import (
 type captchaTransport func(*http.Request) (*http.Response, error)
 
 func (f captchaTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestSub2APISyncReusesCaptchaSession(t *testing.T) {
+	m, st := testManager(t)
+	if err := st.SaveUpstreamCaptchaSettings(store.UpstreamCaptchaSettings{Enabled: true, ClientKey: "key"}); err != nil {
+		t.Fatal(err)
+	}
+	channel, err := st.CreateUpstreamChannel(store.UpstreamChannelInput{Type: store.UpstreamChannelSub2API, BaseURL: "https://upstream.example", Username: "user", Password: "password", RequiresTurnstile: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	creates, logins, refreshes, reads := 0, 0, 0, 0
+	accessToken := "access-1"
+	m.client.Transport = captchaTransport(func(r *http.Request) (*http.Response, error) {
+		var body map[string]any
+		if r.Body != nil {
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+		}
+		response := ""
+		switch r.URL.Path {
+		case "/api/v1/settings/public":
+			response = `{"code":0,"data":{"turnstile_enabled":true,"turnstile_site_key":"site-key"}}`
+		case "/createTask":
+			creates++
+			if creates > 1 {
+				t.Fatal("同一会话重复创建 YesCaptcha 付费任务")
+			}
+			response = `{"errorId":0,"taskId":123}`
+		case "/getTaskResult":
+			response = `{"errorId":0,"status":"ready","solution":{"token":"solved"}}`
+		case "/api/v1/auth/login":
+			logins++
+			if body["turnstile_token"] != "solved" {
+				t.Fatal("登录未携带验证码")
+			}
+			response = `{"code":0,"data":{"access_token":"access-1","refresh_token":"refresh-1","expires_in":3600}}`
+		case "/api/v1/auth/refresh":
+			refreshes++
+			if refreshes > 1 || body["refresh_token"] != "refresh-1" {
+				t.Fatal("重复使用旧刷新令牌")
+			}
+			accessToken = "access-2"
+			response = `{"code":0,"data":{"access_token":"access-2","refresh_token":"refresh-2","expires_in":3600}}`
+		default:
+			reads++
+			if r.Header.Get("Authorization") != "Bearer "+accessToken {
+				t.Fatal("未复用最新会话")
+			}
+			switch r.URL.Path {
+			case "/api/v1/auth/me":
+				response = `{"code":0,"data":{"balance":42}}`
+			case "/api/v1/keys":
+				response = `{"code":0,"data":{"items":[],"total":0}}`
+			case "/api/v1/groups/available", "/api/v1/groups/rates", "/api/v1/subscriptions/active", "/api/v1/subscriptions/summary":
+				response = `{"code":0,"data":[]}`
+			default:
+				t.Fatalf("unexpected URL: %s", r.URL)
+			}
+		}
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(response))}, nil
+	})
+	for i := 0; i < 3; i++ {
+		if i == 2 {
+			if err := st.SaveUpstreamChannelSession(channel.ID, "access-1", "refresh-1", time.Now().Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := m.Sync(context.Background(), channel.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stored, err := st.UpstreamChannel(channel.ID)
+	if err != nil || creates != 1 || logins != 1 || refreshes != 1 || reads != 18 || stored.YesCaptchaCalls != 1 {
+		t.Fatalf("三次完整同步应只验证一次: creates=%d logins=%d refreshes=%d reads=%d count=%d err=%v", creates, logins, refreshes, reads, stored.YesCaptchaCalls, err)
+	}
+}
 
 func TestSub2APICaptchaLogin(t *testing.T) {
 	for _, scenario := range []string{"unchecked", "disabled", "no-captcha", "success", "provider-error", "missing-token", "cancelled"} {
