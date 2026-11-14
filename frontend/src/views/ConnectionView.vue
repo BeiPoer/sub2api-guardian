@@ -77,7 +77,7 @@
             <dt class="text-gray-500 dark:text-dark-400">实时推送</dt>
             <dd>
               <Badge :tone="guardian.connected ? 'success' : 'gray'" dot>
-                {{ guardian.connected ? '已连接' : '轮询兜底' }}
+                {{ !guardian.autoUpdating ? '自动更新已暂停' : guardian.connected ? '已连接' : '轮询兜底' }}
               </Badge>
             </dd>
           </div>

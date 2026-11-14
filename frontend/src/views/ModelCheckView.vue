@@ -235,8 +235,10 @@ import SegmentedControl from '@/components/SegmentedControl.vue'
 import { api } from '@/lib/api'
 import type { Channel, Group, ModelCheckRun, ModelCheckSettings, ModelCheckTarget, ModelCheckTimeline } from '@/lib/types'
 import { useUIStore } from '@/stores/ui'
+import { useGuardianStore } from '@/stores/guardian'
 
 const ui = useUIStore()
+const guardian = useGuardianStore()
 const settings = ref<ModelCheckSettings>({ enabled: false, interval_minutes: 60, quiet_enabled: true, quiet_start: '23:00', quiet_end: '08:00', timezone: 'Asia/Shanghai', targets: [] })
 const saved = ref('')
 const dirty = computed(() => JSON.stringify(settings.value) !== saved.value)
@@ -322,6 +324,8 @@ const timelineGroups = computed(() => {
 })
 let timer: ReturnType<typeof setTimeout> | undefined
 let disposed = false
+let initialized = false
+let polling = false
 let historySequence = 0
 let historyFilter = ''
 let runRevision = 0
@@ -559,15 +563,28 @@ function shortTimestamp(value: string) {
 }
 
 async function poll() {
-  if (disposed) return
-  if (!loading.value && !loadError.value) {
-    try {
+  clearTimeout(timer)
+  if (disposed || !initialized || polling || !guardian.canAutoUpdate()) return
+  polling = true
+  try {
+    if (!loading.value && !loadError.value) {
       await refreshOverview()
-      if (historyOpen.value && runs.value.length <= 30 && !historyLoading.value) await refreshHistory()
-    } catch { /* Foreground actions display errors; polling retries without repeated toasts. */ }
+      if (!disposed && guardian.canAutoUpdate() && historyOpen.value && runs.value.length <= 30 && !historyLoading.value) await refreshHistory()
+    }
+  } catch { /* Foreground actions display errors; polling retries without repeated toasts. */ }
+  finally {
+    polling = false
+    if (!disposed && guardian.canAutoUpdate()) timer = setTimeout(poll, 5000)
   }
-  if (!disposed) timer = setTimeout(poll, 5000)
 }
-onMounted(async () => { await load(); if (!disposed) timer = setTimeout(poll, 5000) })
+watch(() => guardian.autoUpdating, active => {
+  clearTimeout(timer)
+  if (active) void poll()
+}, { flush: 'sync' })
+onMounted(async () => {
+  await load()
+  initialized = true
+  if (!disposed && guardian.canAutoUpdate()) timer = setTimeout(poll, 5000)
+})
 onBeforeUnmount(() => { disposed = true; historySequence++; clearTimeout(timer) })
 </script>

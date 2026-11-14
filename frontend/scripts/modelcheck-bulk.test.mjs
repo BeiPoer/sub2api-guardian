@@ -13,7 +13,7 @@ const script = ts.transpileModule(`${source}\nglobalThis.view = { settings, save
 }).outputText
 
 function setup(channelModels, overrides = {}) {
-  const context = { computed, ref, api: { channelModels, ...overrides }, useUIStore: () => ({ notify() {} }), watch() {}, onMounted() {}, onBeforeUnmount() {} }
+  const context = { computed, ref, api: { channelModels, ...overrides }, useUIStore: () => ({ notify() {} }), useGuardianStore: () => ({}), watch() {}, onMounted() {}, onBeforeUnmount() {} }
   runInNewContext(script, context)
   return context.view
 }

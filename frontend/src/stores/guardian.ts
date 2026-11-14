@@ -5,6 +5,8 @@ import type { Channel, Connection, EngineStatus, Group, Overview, Policy } from 
 
 /** 轮询兜底间隔：SSE 正常时基本用不到，断线时保证数据仍会刷新。 */
 const POLL_INTERVAL_MS = 20_000
+const IDLE_TIMEOUT_MS = 5 * 60_000
+const activityEvents = ['click', 'keydown', 'scroll'] as const
 
 export const useGuardianStore = defineStore('guardian', () => {
   const overview = ref<Overview | null>(null)
@@ -19,6 +21,11 @@ export const useGuardianStore = defineStore('guardian', () => {
   const busy = ref(false)
   const error = ref('')
   const connected = ref(false)
+  const autoUpdating = ref(false)
+  const lastUpdatedAt = ref<Date | null>(null)
+  let started = false
+  let idleTimer: number | undefined
+  let lastActivityAt = 0
 
   let source: EventSource | null = null
   let poller: number | null = null
@@ -73,6 +80,7 @@ export const useGuardianStore = defineStore('guardian', () => {
         if (dataEpoch !== epoch) return
 
         error.value = failures.length > 0 ? Array.from(new Set(failures)).join('；') : ''
+        if (failures.length === 0) lastUpdatedAt.value = new Date()
         if (!refreshQueued || dataEpoch !== epoch) break
       }
     })()
@@ -125,27 +133,29 @@ export const useGuardianStore = defineStore('guardian', () => {
     if (source) return
     const connectionEpoch = dataEpoch
     try {
-      source = new EventSource('/api/stream')
+      const stream = new EventSource('/api/stream')
+      source = stream
+      const current = () => dataEpoch === connectionEpoch && source === stream && canAutoUpdate()
       source.onopen = () => {
-        if (dataEpoch !== connectionEpoch) return
+        if (!current()) return
         connected.value = true
       }
       source.onmessage = () => {
-        if (dataEpoch !== connectionEpoch) return
+        if (!current()) return
         void refresh({ silent: true })
       }
       source.addEventListener('tick', () => {
-        if (dataEpoch !== connectionEpoch) return
+        if (!current()) return
         void refresh({ silent: true })
       })
       source.addEventListener('status', event => {
-        if (dataEpoch === connectionEpoch) applyStatusEvent(event as MessageEvent)
+        if (current()) applyStatusEvent(event as MessageEvent)
       })
       source.addEventListener('ping', event => {
-        if (dataEpoch === connectionEpoch) applyStatusEvent(event as MessageEvent)
+        if (current()) applyStatusEvent(event as MessageEvent)
       })
       source.onerror = () => {
-        if (dataEpoch !== connectionEpoch) return
+        if (!current()) return
         connected.value = false
       }
     } catch {
@@ -153,8 +163,56 @@ export const useGuardianStore = defineStore('guardian', () => {
     }
 
     if (poller === null) {
-      poller = window.setInterval(() => void refresh({ silent: true }), POLL_INTERVAL_MS)
+      poller = window.setInterval(() => {
+        if (canAutoUpdate() && !connected.value) void refresh({ silent: true })
+      }, POLL_INTERVAL_MS)
     }
+  }
+
+  function pauseAutoUpdate() {
+    autoUpdating.value = false
+    window.clearTimeout(idleTimer)
+    refreshQueued = false
+    disconnect()
+  }
+
+  // 后台定时器可能被浏览器延迟，每次自动请求前也检查真实的空闲时间。
+  function canAutoUpdate() {
+    if (!started || document.hidden || Date.now() - lastActivityAt >= IDLE_TIMEOUT_MS) {
+      pauseAutoUpdate()
+    }
+    return autoUpdating.value
+  }
+
+  function resumeAutoUpdate() {
+    if (!started || document.hidden) return
+    lastActivityAt = Date.now()
+    window.clearTimeout(idleTimer)
+    idleTimer = window.setTimeout(pauseAutoUpdate, IDLE_TIMEOUT_MS)
+    if (autoUpdating.value) return
+    autoUpdating.value = true
+    connect()
+    void refresh({ silent: overview.value !== null })
+  }
+
+  function onVisibilityChange() {
+    if (document.hidden) pauseAutoUpdate()
+    else resumeAutoUpdate()
+  }
+
+  function startAutoUpdate() {
+    if (started) return
+    started = true
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    for (const event of activityEvents) document.addEventListener(event, resumeAutoUpdate, { capture: true, passive: true })
+    resumeAutoUpdate()
+  }
+
+  function stopAutoUpdate() {
+    started = false
+    document.removeEventListener('visibilitychange', onVisibilityChange)
+    for (const event of activityEvents) document.removeEventListener(event, resumeAutoUpdate, true)
+    pauseAutoUpdate()
   }
 
   function applyStatusEvent(event: MessageEvent) {
@@ -183,6 +241,7 @@ export const useGuardianStore = defineStore('guardian', () => {
    * 不清的话，下一个登录进来的人会在数据加载完成前先看到上一个人的渠道列表。
    */
   function reset() {
+    stopAutoUpdate()
     dataEpoch++
     statusRevision = 0
     refreshQueued = false
@@ -197,6 +256,7 @@ export const useGuardianStore = defineStore('guardian', () => {
     loading.value = false
     busy.value = false
     error.value = ''
+    lastUpdatedAt.value = null
   }
 
   return {
@@ -211,6 +271,12 @@ export const useGuardianStore = defineStore('guardian', () => {
     busy,
     error,
     connected,
+    autoUpdating,
+    lastUpdatedAt,
+    canAutoUpdate,
+    resumeAutoUpdate,
+    startAutoUpdate,
+    stopAutoUpdate,
     monitoringEnabled,
     configured,
     autoEnabled,

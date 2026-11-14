@@ -35,20 +35,18 @@ onMounted(() => {
 // 未登录就拉的话每个接口都会 401：控制台一片红，SSE 还会不停重连。
 watch(
   () => auth.state,
-  async (state, previous) => {
+  (state, previous) => {
     if (state === 'ready') {
-      await guardian.refresh()
-      guardian.connect()
+      guardian.startAutoUpdate()
       return
     }
     if (previous === 'ready') {
       // 退出登录或会话过期：断开推送并清掉内存里的数据，
       // 否则下一个登录进来的人会先看到上一个人的渠道列表。
-      guardian.disconnect()
       guardian.reset()
     }
   }
 )
 
-onBeforeUnmount(() => guardian.disconnect())
+onBeforeUnmount(() => guardian.stopAutoUpdate())
 </script>

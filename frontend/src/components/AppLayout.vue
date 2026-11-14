@@ -18,6 +18,18 @@
 
       <main class="space-y-6 p-4 md:p-6 lg:p-8">
         <div
+          v-if="!guardian.autoUpdating"
+          role="status"
+          class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200"
+        >
+          <span>
+            自动更新已暂停，后台守护仍正常运行。
+            <span v-if="guardian.lastUpdatedAt">数据更新于 {{ guardian.lastUpdatedAt.toLocaleTimeString() }}。</span>
+            操作页面即可恢复。
+          </span>
+          <button type="button" class="btn btn-warning btn-sm" @click="guardian.resumeAutoUpdate()">恢复更新</button>
+        </div>
+        <div
           v-if="guardian.loading"
           class="flex items-center gap-3 rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm text-gray-600 dark:border-dark-700 dark:bg-dark-800 dark:text-dark-300"
         >
