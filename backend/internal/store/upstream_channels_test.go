@@ -10,6 +10,52 @@ import (
 	"sub2api-guardian/backend/internal/domain"
 )
 
+func TestUpstreamTurnstileMigrationAndPersistence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "guardian.sqlite")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	input := UpstreamChannelInput{Type: UpstreamChannelSub2API, BaseURL: "https://example.com", Username: "u", Password: "p"}
+	channel, err := st.CreateUpstreamChannel(input)
+	if err != nil || channel.RequiresTurnstile {
+		t.Fatalf("默认应关闭: %+v %v", channel, err)
+	}
+	// 模拟升级前只有手动 Token 列的数据库。
+	if _, err := st.db.Exec(`ALTER TABLE upstream_channels DROP COLUMN requires_turnstile`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(`ALTER TABLE upstream_channels ADD COLUMN sub2api_manual_access_token TEXT NOT NULL DEFAULT 'legacy-secret'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	st, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel, err = st.UpstreamChannel(channel.ID)
+	if err != nil || channel.RequiresTurnstile {
+		t.Fatalf("旧渠道升级后应关闭: %+v %v", channel, err)
+	}
+	raw, _ := json.Marshal(channel)
+	if strings.Contains(string(raw), "legacy-secret") || strings.Contains(string(raw), "manual_access_token") {
+		t.Fatalf("旧凭据不应返回: %s", raw)
+	}
+	for _, enabled := range []bool{true, false} {
+		input.RequiresTurnstile = enabled
+		if _, err := st.UpdateUpstreamChannel(channel.ID, input); err != nil {
+			t.Fatal(err)
+		}
+		loaded, err := st.UpstreamChannel(channel.ID)
+		if err != nil || loaded.RequiresTurnstile != enabled {
+			t.Fatalf("勾选状态未保存: %+v %v", loaded, err)
+		}
+	}
+}
+
 func TestUpstreamChannelTablesStayIsolatedAndCascade(t *testing.T) {
 	st, err := Open(filepath.Join(t.TempDir(), "guardian.sqlite"))
 	if err != nil {

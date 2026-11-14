@@ -6,6 +6,7 @@
         <p class="mt-1 text-sm text-gray-500 dark:text-dark-400">集中查看所有上游渠道的余额、令牌和当前倍率。</p>
       </div>
       <div class="flex flex-wrap items-center gap-2">
+        <button type="button" class="btn btn-secondary btn-sm" @click="openCaptchaEditor">YesCaptcha 设置</button>
         <button type="button" class="btn btn-secondary btn-sm" @click="openEmailEditor">
           <Icon name="mail" size="sm" />
           邮件设置
@@ -176,7 +177,8 @@
                 <p class="mt-2 text-xs text-gray-500 dark:text-dark-400">最近同步 {{ formatRelative(selectedChannel.last_sync_at) }} · {{ credentialLabel(selectedChannel) }}</p>
               </div>
               <div class="flex flex-wrap items-center justify-end gap-2">
-                <button type="button" class="btn btn-secondary btn-sm" @click="openEmailEditor"><Icon name="mail" size="sm" />邮件</button>
+                <button type="button" class="btn btn-secondary btn-sm" @click="openCaptchaEditor">YesCaptcha 设置</button>
+        <button type="button" class="btn btn-secondary btn-sm" @click="openEmailEditor"><Icon name="mail" size="sm" />邮件</button>
                 <button type="button" class="btn btn-secondary btn-sm" @click="openWeComEditor"><Icon name="chat" size="sm" />企微</button>
                 <button type="button" class="btn btn-secondary btn-sm" :disabled="busy" @click="openChannelEditor(selectedChannel)"><Icon name="edit" size="sm" />编辑</button>
                 <button v-if="selectedChannel.type !== 'other'" type="button" class="btn btn-secondary btn-sm" :disabled="busy || selectedChannel.ignored" @click="syncChannel(selectedChannel)"><Icon name="refresh" size="sm" />同步</button>
@@ -291,6 +293,7 @@
             </div>
             <div class="border-t border-gray-100 p-4 dark:border-dark-700">
               <div class="flex flex-wrap items-center gap-x-5 gap-y-3 text-sm">
+                <span v-if="selectedChannel.type === 'sub2api'" class="text-gray-500 dark:text-dark-400" title="累计创建验证任务的尝试次数，包含失败请求，不含结果轮询；从功能上线后开始统计。">YesCaptcha 调用 <strong class="text-gray-900 dark:text-white">{{ selectedChannel.yescaptcha_calls ?? 0 }} 次</strong></span>
                 <span class="font-medium text-gray-700 dark:text-dark-200">充值配置</span>
                 <span class="text-gray-500 dark:text-dark-400">比例 <strong class="text-gray-900 dark:text-white">{{ rechargeRatioLabel(selectedChannel) }}</strong></span>
                 <span v-if="selectedChannel.recharge_methods?.length" class="flex items-center gap-2 text-gray-500 dark:text-dark-400">
@@ -455,7 +458,7 @@
           <label class="block"><span class="input-label">类型</span><select v-model="channelEditor.type" class="input" :disabled="Boolean(channelEditor.id)"><option value="sub2api">Sub2API</option><option value="newapi">New API</option><option value="other">其它</option></select></label>
         </div>
         <Field v-model="channelEditor.baseURL" label="站点地址" placeholder="https://example.com" />
-        <Field v-if="channelEditor.type === 'sub2api'" v-model="channelEditor.sub2APIManualAccessToken" label="Access Token" type="password" :placeholder="channelEditor.id && channelEditor.hasManualAccessToken ? '已配置，留空保持不变' : '如果上游登录有Cloudflare Turnstile验证，建议手动登录后在此处输入access token绕过验证'" />
+        <SwitchRow v-if="channelEditor.type === 'sub2api'" v-model="channelEditor.requiresTurnstile" label="需要 Turnstile 验证" description="仅勾选后，账号密码登录才会通过 YesCaptcha 获取验证码。请先配置全局 YesCaptcha 设置。" />
         <div class="grid grid-cols-1 gap-4 sm:grid-cols-2"><Field v-model="channelEditor.username" label="账号 / 邮箱" /><Field v-model="channelEditor.password" label="密码" type="password" :placeholder="channelEditor.id ? '留空保持不变' : ''" /></div>
         <div v-if="channelEditor.type === 'newapi'" class="grid grid-cols-1 gap-4 sm:grid-cols-2"><Field v-model="channelEditor.newAPIUserID" label="用户 ID" /><Field v-model="channelEditor.newAPIAccessToken" label="系统访问令牌" type="password" :placeholder="channelEditor.id ? '留空保持不变' : ''" /></div>
         <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -477,6 +480,15 @@
         <SwitchRow v-if="channelEditor.id && channelEditor.type !== 'other'" v-model="channelEditor.sync" label="保存后同步" />
       </div>
       <template #footer><button type="button" class="btn btn-secondary" @click="channelEditor.open = false">取消</button><button type="button" class="btn btn-primary" :disabled="busy" @click="saveChannel">保存</button></template>
+    </Modal>
+
+    <Modal :open="captchaEditor.open" title="YesCaptcha 设置" @close="captchaEditor.open = false">
+      <div class="space-y-4">
+        <SwitchRow v-model="captchaEditor.enabled" label="自动处理 Turnstile" description="仅供勾选“需要 Turnstile 验证”的 sub2api 渠道登录时使用。" />
+        <Field v-model="captchaEditor.clientKey" label="YesCaptcha Client Key" type="password" :placeholder="captchaEditor.hasKey ? '已配置，留空保持不变' : '请输入 YesCaptcha Client Key'" />
+        <p class="text-sm text-gray-500 dark:text-dark-400">验证会产生 YesCaptcha 费用，可能耗时约两分钟。只向服务商发送登录页地址和公开 site key，不发送渠道账号密码。不支持 Cloudflare 整站拦截。</p>
+      </div>
+      <template #footer><button type="button" class="btn btn-secondary" @click="captchaEditor.open = false">取消</button><button type="button" class="btn btn-primary" :disabled="busy" @click="saveCaptcha">保存</button></template>
     </Modal>
 
     <Modal :open="emailEditor.open" title="邮件设置" @close="emailEditor.open = false">
@@ -702,7 +714,8 @@ const rechargeMethodOptions: Array<{ value: UpstreamRechargeMethod; label: strin
   { value: 'wechat', label: '微信' },
   { value: 'card', label: '卡网' }
 ]
-const channelEditor = reactive({ open: false, id: 0, name: '', type: 'sub2api' as UpstreamChannelType, baseURL: '', username: '', password: '', sub2APIManualAccessToken: '', hasManualAccessToken: false, newAPIAccessToken: '', newAPIUserID: '', rechargeRatio: 1, rechargeMethods: [] as UpstreamRechargeMethod[], rechargeFee: '', ignored: false, sync: true })
+const channelEditor = reactive({ open: false, id: 0, name: '', type: 'sub2api' as UpstreamChannelType, baseURL: '', username: '', password: '', requiresTurnstile: false, newAPIAccessToken: '', newAPIUserID: '', rechargeRatio: 1, rechargeMethods: [] as UpstreamRechargeMethod[], rechargeFee: '', ignored: false, sync: true })
+const captchaEditor = reactive({ open: false, enabled: false, clientKey: '', hasKey: false })
 const emailEditor = reactive({ open: false, host: '', port: 587, secure: false, user: '', password: '', from: '', subjectPrefix: '', recipients: '', testRecipient: '', interval: 30, hasPassword: false })
 const wecomEditor = reactive({ open: false, corpID: '', agentID: '', secret: '', target: '', hasSecret: false })
 const taskTypes: UpstreamTaskType[] = ['low_balance', 'burn_rate', 'group_added', 'group_removed', 'group_ratio_changed']
@@ -891,8 +904,7 @@ function openChannelEditor(channel?: UpstreamChannel) {
   channelEditor.baseURL = channel?.base_url ?? ''
   channelEditor.username = channel?.username ?? ''
   channelEditor.password = channel?.password ?? ''
-  channelEditor.sub2APIManualAccessToken = ''
-  channelEditor.hasManualAccessToken = channel?.has_sub2api_manual_access_token ?? false
+  channelEditor.requiresTurnstile = channel?.requires_turnstile ?? false
   channelEditor.newAPIAccessToken = channel?.newapi_access_token ?? ''
   channelEditor.newAPIUserID = channel?.newapi_user_id ?? ''
   channelEditor.rechargeRatio = channel?.recharge_ratio || 1
@@ -915,7 +927,7 @@ async function saveChannel() {
   }
   payload.username = channelEditor.username
   payload.password = channelEditor.password
-  if (channelEditor.type === 'sub2api' && channelEditor.sub2APIManualAccessToken) payload.sub2api_manual_access_token = channelEditor.sub2APIManualAccessToken
+  if (channelEditor.type === 'sub2api') payload.requires_turnstile = channelEditor.requiresTurnstile
   if (channelEditor.type === 'newapi') {
     payload.newapi_access_token = channelEditor.newAPIAccessToken
     payload.newapi_user_id = channelEditor.newAPIUserID
@@ -978,6 +990,29 @@ async function copyText(value: string) {
     ui.notify('success', '已复制')
   } catch {
     ui.notify('error', '复制失败')
+  }
+}
+
+async function openCaptchaEditor() {
+  try {
+    const settings = await api.upstreamCaptchaSettings()
+    Object.assign(captchaEditor, { open: true, enabled: settings.enabled, hasKey: settings.has_client_key, clientKey: '' })
+  } catch (err) {
+    ui.notify('error', (err as Error).message)
+  }
+}
+
+async function saveCaptcha() {
+  busy.value = true
+  try {
+    await api.saveUpstreamCaptchaSettings({ enabled: captchaEditor.enabled, client_key: captchaEditor.clientKey })
+    captchaEditor.open = false
+    captchaEditor.clientKey = ''
+    ui.notify('success', 'YesCaptcha 设置已保存')
+  } catch (err) {
+    ui.notify('error', (err as Error).message)
+  } finally {
+    busy.value = false
   }
 }
 

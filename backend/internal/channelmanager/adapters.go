@@ -287,9 +287,6 @@ func (m *Manager) syncSub2API(ctx context.Context, channel store.UpstreamChannel
 	}
 	rates, err := m.sub2APIRequest(ctx, channel, "/groups/rates", http.MethodGet, nil, true)
 	if err != nil {
-		if isManualTokenAuthError(channel, err) {
-			return syncResult{}, err
-		}
 		rates = map[string]any{}
 	}
 	groups := applyGroupRates(normalizeCollection(groupsPayload), rates)
@@ -333,9 +330,17 @@ func (m *Manager) sub2APILogin(ctx context.Context, channel store.UpstreamChanne
 	if strings.TrimSpace(channel.Username) == "" || channel.Password == "" {
 		return store.UpstreamChannel{}, invalid("sub2api 渠道需要账号和密码")
 	}
-	payload, _, err := m.requestJSON(ctx, http.MethodPost, sub2APIURL(channel, "/auth/login"), map[string]any{
+	token, err := m.sub2APITurnstileToken(ctx, channel)
+	if err != nil {
+		return store.UpstreamChannel{}, err
+	}
+	body := map[string]any{
 		"email": channel.Username, "password": channel.Password,
-	}, nil)
+	}
+	if token != "" {
+		body["turnstile_token"] = token
+	}
+	payload, _, err := m.requestJSON(ctx, http.MethodPost, sub2APIURL(channel, "/auth/login"), body, nil)
 	if err != nil {
 		return store.UpstreamChannel{}, err
 	}
@@ -351,7 +356,7 @@ func (m *Manager) sub2APILogin(ctx context.Context, channel store.UpstreamChanne
 		return store.UpstreamChannel{}, invalid("该 sub2api 账号启用了 2FA，当前不支持交互式验证码登录")
 	}
 	if truthy(record["turnstile_required"]) || truthy(record["requires_turnstile"]) {
-		return store.UpstreamChannel{}, invalid("该 sub2api 站点需要 Turnstile 验证，当前不支持交互式验证码登录")
+		return store.UpstreamChannel{}, invalid("上游仍要求 Turnstile 验证，请勾选渠道的“需要 Turnstile 验证”并检查 YesCaptcha 设置")
 	}
 	accessToken := strings.TrimSpace(stringValue(record["access_token"]))
 	if accessToken == "" {
@@ -417,9 +422,6 @@ func usableSub2APIAccess(channel store.UpstreamChannel) bool {
 }
 
 func (m *Manager) ensureSub2APIAccess(ctx context.Context, channel store.UpstreamChannel, force bool) (store.UpstreamChannel, error) {
-	if channel.Sub2APIManualAccessToken != "" {
-		return channel, nil
-	}
 	if !force && usableSub2APIAccess(channel) {
 		return channel, nil
 	}
@@ -439,15 +441,9 @@ func (m *Manager) sub2APIRequest(ctx context.Context, channel store.UpstreamChan
 	}
 	headers := make(http.Header)
 	accessToken := authed.Sub2APIAccessToken
-	if authed.Sub2APIManualAccessToken != "" {
-		accessToken = authed.Sub2APIManualAccessToken
-	}
 	headers.Set("Authorization", "Bearer "+accessToken)
 	payload, _, err := m.requestJSON(ctx, method, sub2APIURL(authed, path), body, headers)
 	if err != nil && retry && isUpstreamStatus(err, http.StatusUnauthorized) {
-		if authed.Sub2APIManualAccessToken != "" {
-			return nil, err
-		}
 		refreshed, refreshErr := m.ensureSub2APIAccess(ctx, authed, true)
 		if refreshErr != nil {
 			return nil, refreshErr
@@ -757,20 +753,15 @@ func (m *Manager) LoginURL(ctx context.Context, channelID int64) (string, error)
 		}
 		values := make(url.Values)
 		accessToken := authed.Sub2APIAccessToken
-		if authed.Sub2APIManualAccessToken != "" {
-			accessToken = authed.Sub2APIManualAccessToken
-		}
 		values.Set("access_token", accessToken)
 		values.Set("token_type", "Bearer")
 		values.Set("redirect", "/dashboard")
-		if authed.Sub2APIManualAccessToken == "" {
-			if authed.Sub2APIRefreshToken != "" {
-				values.Set("refresh_token", authed.Sub2APIRefreshToken)
-			}
-			if expiresAt, err := time.Parse(time.RFC3339Nano, authed.Sub2APITokenExpiresAt); err == nil {
-				seconds := max(1, int(time.Until(expiresAt).Seconds()))
-				values.Set("expires_in", strconv.Itoa(seconds))
-			}
+		if authed.Sub2APIRefreshToken != "" {
+			values.Set("refresh_token", authed.Sub2APIRefreshToken)
+		}
+		if expiresAt, err := time.Parse(time.RFC3339Nano, authed.Sub2APITokenExpiresAt); err == nil {
+			seconds := max(1, int(time.Until(expiresAt).Seconds()))
+			values.Set("expires_in", strconv.Itoa(seconds))
 		}
 		result = strings.TrimRight(authed.BaseURL, "/") + "/auth/oauth/callback#" + values.Encode()
 		return nil

@@ -37,10 +37,9 @@ func upstreamError(status int, message string, details any) error {
 	return &Error{Status: status, UpstreamCode: status, Message: message, Details: details}
 }
 
-// isManualTokenAuthError 只识别手动凭据渠道的鉴权错误，兼容 HTTP 200 的业务错误。
+// isManualTokenAuthError 只识别 New API 手动凭据渠道的鉴权错误，兼容 HTTP 200 的业务错误。
 func isManualTokenAuthError(channel store.UpstreamChannel, err error) bool {
-	if !((channel.Type == store.UpstreamChannelSub2API && channel.Sub2APIManualAccessToken != "") ||
-		(channel.Type == store.UpstreamChannelNewAPI && channel.NewAPIAccessToken != "")) {
+	if channel.Type != store.UpstreamChannelNewAPI || channel.NewAPIAccessToken == "" {
 		return false
 	}
 	if isUpstreamStatus(err, http.StatusUnauthorized, http.StatusForbidden) {

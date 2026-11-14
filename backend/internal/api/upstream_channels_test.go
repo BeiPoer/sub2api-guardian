@@ -10,18 +10,33 @@ import (
 	"sub2api-guardian/backend/internal/store"
 )
 
-func TestSub2APIManualAccessTokenCanReplaceCredentials(t *testing.T) {
-	typeName := store.UpstreamChannelSub2API
-	baseURL := "example.com"
-	token := "  manual-token  "
-	input, err := normalizeUpstreamChannelPayload(upstreamChannelPayload{
-		Type: &typeName, BaseURL: &baseURL, Sub2APIManualAccessToken: &token,
-	}, nil)
-	if err != nil {
-		t.Fatal(err)
+func TestSub2APIRequiresCredentialsAndTurnstileOptIn(t *testing.T) {
+	typeName, baseURL := store.UpstreamChannelSub2API, "example.com"
+	payload := upstreamChannelPayload{Type: &typeName, BaseURL: &baseURL}
+	if _, err := normalizeUpstreamChannelPayload(payload, nil); err == nil {
+		t.Fatal("sub2api 必须提供账号密码")
 	}
-	if input.Sub2APIManualAccessToken != "manual-token" || input.Username != "" || input.Password != "" {
-		t.Fatalf("手动 access token 输入异常: %+v", input)
+	username, password := "user", "password"
+	payload.Username, payload.Password = &username, &password
+	input, err := normalizeUpstreamChannelPayload(payload, nil)
+	if err != nil || input.RequiresTurnstile {
+		t.Fatalf("默认不启用 Turnstile: %+v %v", input, err)
+	}
+	enabled := true
+	payload.RequiresTurnstile = &enabled
+	input, err = normalizeUpstreamChannelPayload(payload, nil)
+	if err != nil || !input.RequiresTurnstile {
+		t.Fatalf("无法勾选: %+v %v", input, err)
+	}
+	existing := store.UpstreamChannel{Type: typeName, BaseURL: "https://example.com", Username: username, Password: password, RequiresTurnstile: true}
+	input, err = normalizeUpstreamChannelPayload(upstreamChannelPayload{}, &existing)
+	if err != nil || !input.RequiresTurnstile {
+		t.Fatalf("省略字段应保留: %+v %v", input, err)
+	}
+	enabled = false
+	input, err = normalizeUpstreamChannelPayload(upstreamChannelPayload{RequiresTurnstile: &enabled}, &existing)
+	if err != nil || input.RequiresTurnstile {
+		t.Fatalf("无法取消勾选: %+v %v", input, err)
 	}
 }
 

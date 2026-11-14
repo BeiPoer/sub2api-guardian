@@ -15,7 +15,7 @@ import (
 )
 
 func TestManualTokenAuthAlerts(t *testing.T) {
-	for _, channelType := range []store.UpstreamChannelType{store.UpstreamChannelSub2API, store.UpstreamChannelNewAPI} {
+	for _, channelType := range []store.UpstreamChannelType{store.UpstreamChannelNewAPI} {
 		for _, taskType := range []store.UpstreamTaskType{
 			store.UpstreamTaskLowBalance, store.UpstreamTaskBurnRate, store.UpstreamTaskGroupAdded,
 			store.UpstreamTaskGroupRemoved, store.UpstreamTaskGroupRatioChange,
@@ -51,18 +51,12 @@ func TestManualTokenAuthAlerts(t *testing.T) {
 					}
 					var data any = []any{}
 					switch r.URL.Path {
-					case "/api/v1/auth/me":
-						data = map[string]any{"balance": 100}
 					case "/api/user/self":
 						data = map[string]any{"id": 9, "quota": 50000000}
 					case "/api/status":
 						data = map[string]any{"quota_per_unit": 500000}
 					}
-					if channelType == store.UpstreamChannelSub2API {
-						writeTestJSON(w, map[string]any{"code": 0, "data": data})
-					} else {
-						writeTestJSON(w, map[string]any{"success": true, "data": data})
-					}
+					writeTestJSON(w, map[string]any{"success": true, "data": data})
 				}))
 				defer server.Close()
 				manager.wecomBaseURL = server.URL
@@ -71,7 +65,7 @@ func TestManualTokenAuthAlerts(t *testing.T) {
 				}
 				input := store.UpstreamChannelInput{
 					Name: "手动 Token 渠道", Type: channelType, BaseURL: server.URL,
-					Sub2APIManualAccessToken: "secret-token", NewAPIAccessToken: "secret-token", NewAPIUserID: "9",
+					NewAPIAccessToken: "secret-token", NewAPIUserID: "9",
 				}
 				channel, err := st.CreateUpstreamChannel(input)
 				if err != nil {
@@ -132,7 +126,7 @@ func TestManualTokenAuthAlerts(t *testing.T) {
 				if sends.Load() != 2 {
 					t.Fatalf("冷却期后未再次推送: %d", sends.Load())
 				}
-				input.Sub2APIManualAccessToken, input.NewAPIAccessToken = "replacement-token", "replacement-token"
+				input.NewAPIAccessToken = "replacement-token"
 				if _, err := st.UpdateUpstreamChannel(channel.ID, input); err != nil {
 					t.Fatal(err)
 				}
@@ -158,9 +152,6 @@ func TestManualTokenAuthAlertErrorFormats(t *testing.T) {
 		wantAlert   bool
 	}{
 		{"newapi business error", store.UpstreamChannelNewAPI, 200, `{"success":false,"message":"无权进行此操作，access token 无效"}`, "/api/user/self", true},
-		{"sub2api business code", store.UpstreamChannelSub2API, 200, `{"code":401,"message":"unauthorized"}`, "/api/v1/auth/me", true},
-		{"forbidden", store.UpstreamChannelSub2API, 403, `{"message":"access denied"}`, "/api/v1/auth/me", true},
-		{"rates unauthorized", store.UpstreamChannelSub2API, 401, `{"message":"token expired"}`, "/api/v1/groups/rates", true},
 		{"server error", store.UpstreamChannelNewAPI, 500, `{"message":"invalid access token"}`, "/api/user/self", false},
 		{"rate limited", store.UpstreamChannelNewAPI, 429, `{"message":"too many requests"}`, "/api/user/self", false},
 		{"unrelated business error", store.UpstreamChannelNewAPI, 200, `{"success":false,"message":"database unavailable"}`, "/api/user/self", false},
@@ -181,7 +172,7 @@ func TestManualTokenAuthAlertErrorFormats(t *testing.T) {
 			defer server.Close()
 			manager, st := testManager(t)
 			channel, err := st.CreateUpstreamChannel(store.UpstreamChannelInput{
-				Name: "渠道", Type: tc.channelType, BaseURL: server.URL, Sub2APIManualAccessToken: "manual", NewAPIAccessToken: "manual", NewAPIUserID: "9",
+				Name: "渠道", Type: tc.channelType, BaseURL: server.URL, NewAPIAccessToken: "manual", NewAPIUserID: "9",
 			})
 			if err != nil {
 				t.Fatal(err)

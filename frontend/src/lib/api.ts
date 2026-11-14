@@ -295,7 +295,7 @@ export const api = {
     post<{ ok: boolean; synced: number; failed: number }>(
       '/api/upstream-channels/sync',
       undefined,
-      LONG_TIMEOUT_MS
+      600_000
     ),
   upstreamOverview: (id: number) =>
     request<UpstreamOverview>(`/api/upstream-channels/${id}/overview`),
@@ -345,6 +345,8 @@ export const api = {
     post<{ ok: boolean; message_id: string }>('/api/upstream-email-settings/test', {
       recipients
     }),
+  upstreamCaptchaSettings: () => request<{ enabled: boolean; has_client_key: boolean }>("/api/upstream-captcha-settings"),
+  saveUpstreamCaptchaSettings: (payload: { enabled: boolean; client_key: string }) => put("/api/upstream-captcha-settings", payload),
   upstreamWeComSettings: () =>
     request<UpstreamWeComSettings>('/api/upstream-wecom-settings'),
   saveUpstreamWeComSettings: (payload: Record<string, unknown>) =>

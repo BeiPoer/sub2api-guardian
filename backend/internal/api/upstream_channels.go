@@ -18,19 +18,19 @@ import (
 const upstreamSyncTimeout = 3 * time.Minute
 
 type upstreamChannelPayload struct {
-	Name                     *string                         `json:"name"`
-	Type                     *store.UpstreamChannelType      `json:"type"`
-	BaseURL                  *string                         `json:"base_url"`
-	Username                 *string                         `json:"username"`
-	Password                 *string                         `json:"password"`
-	NewAPIAccessToken        *string                         `json:"newapi_access_token"`
-	NewAPIUserID             *string                         `json:"newapi_user_id"`
-	Sub2APIManualAccessToken *string                         `json:"sub2api_manual_access_token"`
-	RechargeRatio            *float64                        `json:"recharge_ratio"`
-	RechargeMethods          *[]store.UpstreamRechargeMethod `json:"recharge_methods"`
-	RechargeFee              *string                         `json:"recharge_fee"`
-	Ignored                  *bool                           `json:"ignored"`
-	Sync                     bool                            `json:"sync"`
+	Name              *string                         `json:"name"`
+	Type              *store.UpstreamChannelType      `json:"type"`
+	BaseURL           *string                         `json:"base_url"`
+	Username          *string                         `json:"username"`
+	Password          *string                         `json:"password"`
+	NewAPIAccessToken *string                         `json:"newapi_access_token"`
+	NewAPIUserID      *string                         `json:"newapi_user_id"`
+	RequiresTurnstile *bool                           `json:"requires_turnstile"`
+	RechargeRatio     *float64                        `json:"recharge_ratio"`
+	RechargeMethods   *[]store.UpstreamRechargeMethod `json:"recharge_methods"`
+	RechargeFee       *string                         `json:"recharge_fee"`
+	Ignored           *bool                           `json:"ignored"`
+	Sync              bool                            `json:"sync"`
 }
 
 type upstreamChannelListItem struct {
@@ -176,8 +176,8 @@ func normalizeUpstreamChannelPayload(payload upstreamChannelPayload, existing *s
 			Name: existing.Name, Type: existing.Type, BaseURL: existing.BaseURL,
 			Username: existing.Username, Password: existing.Password,
 			NewAPIAccessToken: existing.NewAPIAccessToken, NewAPIUserID: existing.NewAPIUserID,
-			Sub2APIManualAccessToken: existing.Sub2APIManualAccessToken,
-			RechargeRatio:            existing.RechargeRatio, RechargeMethods: existing.RechargeMethods, RechargeFee: existing.RechargeFee,
+			RequiresTurnstile: existing.RequiresTurnstile,
+			RechargeRatio:     existing.RechargeRatio, RechargeMethods: existing.RechargeMethods, RechargeFee: existing.RechargeFee,
 			Ignored: existing.Ignored,
 		}
 	}
@@ -219,8 +219,11 @@ func normalizeUpstreamChannelPayload(payload upstreamChannelPayload, existing *s
 	if payload.NewAPIUserID != nil {
 		input.NewAPIUserID = strings.TrimSpace(*payload.NewAPIUserID)
 	}
-	if payload.Sub2APIManualAccessToken != nil && strings.TrimSpace(*payload.Sub2APIManualAccessToken) != "" {
-		input.Sub2APIManualAccessToken = strings.TrimSpace(*payload.Sub2APIManualAccessToken)
+	if payload.RequiresTurnstile != nil {
+		input.RequiresTurnstile = *payload.RequiresTurnstile
+	}
+	if input.Type != store.UpstreamChannelSub2API {
+		input.RequiresTurnstile = false
 	}
 	if payload.RechargeRatio != nil {
 		if *payload.RechargeRatio <= 0 {
@@ -250,7 +253,7 @@ func normalizeUpstreamChannelPayload(payload upstreamChannelPayload, existing *s
 	if payload.Ignored != nil {
 		input.Ignored = *payload.Ignored
 	}
-	if ((input.Type == store.UpstreamChannelSub2API && input.Sub2APIManualAccessToken == "") || input.Type == store.UpstreamChannelOther) && (input.Username == "" || input.Password == "") {
+	if (input.Type == store.UpstreamChannelSub2API || input.Type == store.UpstreamChannelOther) && (input.Username == "" || input.Password == "") {
 		label := "sub2api"
 		if input.Type == store.UpstreamChannelOther {
 			label = "其它"

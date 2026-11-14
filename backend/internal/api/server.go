@@ -209,6 +209,8 @@ func (s *Server) protectedRoutes() map[string]http.HandlerFunc {
 		"DELETE /api/upstream-channels/{id}/tasks/{taskId}":       s.upstreamNoStore(s.deleteUpstreamTask),
 		"GET /api/upstream-channels/{id}/balance-logs":            s.upstreamNoStore(s.upstreamBalanceLogs),
 		"GET /api/upstream-channels/{id}/alerts":                  s.upstreamNoStore(s.upstreamAlerts),
+		"GET /api/upstream-captcha-settings":                      s.upstreamNoStore(s.getUpstreamCaptchaSettings),
+		"PUT /api/upstream-captcha-settings":                      s.upstreamNoStore(s.saveUpstreamCaptchaSettings),
 		"GET /api/upstream-email-settings":                        s.upstreamNoStore(s.getUpstreamEmailSettings),
 		"PUT /api/upstream-email-settings":                        s.upstreamNoStore(s.saveUpstreamEmailSettings),
 		"POST /api/upstream-email-settings/test":                  s.upstreamNoStore(s.testUpstreamEmailSettings),
