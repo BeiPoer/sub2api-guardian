@@ -49,10 +49,14 @@ func (m *Manager) sub2APITurnstileToken(ctx context.Context, channel store.Upstr
 	if err := m.store.IncrementUpstreamYesCaptchaCalls(channel.ID); err != nil {
 		return "", fmt.Errorf("记录 YesCaptcha 调用次数失败：%w", err)
 	}
-	result, err := m.yesCaptchaRequest(ctx, "createTask", map[string]any{
+	body := map[string]any{
 		"clientKey": settings.ClientKey,
 		"task":      map[string]any{"type": "TurnstileTaskProxyless", "websiteURL": strings.TrimRight(channel.BaseURL, "/") + "/login", "websiteKey": siteKey},
-	})
+	}
+	if settings.SoftID > 0 {
+		body["softID"] = settings.SoftID
+	}
+	result, err := m.yesCaptchaRequest(ctx, "createTask", body)
 	if err != nil {
 		return "", err
 	}

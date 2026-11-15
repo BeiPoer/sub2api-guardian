@@ -20,6 +20,7 @@ func (s *Store) IncrementUpstreamYesCaptchaCalls(channelID int64) error {
 type UpstreamCaptchaSettings struct {
 	Enabled   bool   `json:"enabled"`
 	ClientKey string `json:"client_key"`
+	SoftID    int64  `json:"soft_id"`
 }
 
 func (s *Store) UpstreamCaptchaSettings() (UpstreamCaptchaSettings, error) {

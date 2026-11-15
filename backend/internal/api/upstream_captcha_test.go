@@ -17,6 +17,13 @@ func TestUpstreamCaptchaSettings(t *testing.T) {
 		{map[string]any{"enabled": true, "client_key": " secret-value "}, 200, `"has_client_key":true`},
 		{map[string]any{"enabled": false, "client_key": ""}, 200, `"has_client_key":true`},
 		{map[string]any{"enabled": true}, 200, `"enabled":true`},
+		{map[string]any{"soft_id": 12345}, 200, `"soft_id":12345`},
+		{map[string]any{"enabled": true}, 200, `"soft_id":12345`},
+		{map[string]any{"soft_id": -1}, 400, "Soft ID"},
+		{map[string]any{"soft_id": 9007199254740992}, 400, "Soft ID"},
+		{map[string]any{"soft_id": 1.5}, 400, ""},
+		{map[string]any{}, 200, `"soft_id":12345`},
+		{map[string]any{"soft_id": 0}, 200, `"soft_id":0`},
 	} {
 		rec := doJSON(t, handler, http.MethodPut, "/api/upstream-captcha-settings", step.body)
 		if rec.Code != step.status || !strings.Contains(rec.Body.String(), step.want) || strings.Contains(rec.Body.String(), "secret-value") {

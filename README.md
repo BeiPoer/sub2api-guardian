@@ -93,6 +93,7 @@ New API 列表接口返回脱敏 Key 时，渠道管理同步会按令牌 ID 读
 只有勾选的渠道在重新登录时才从上游公开设置读取 site key，通过 YesCaptcha 获取 token 后登录；
 已有会话仍按原逻辑复用与刷新。Sub2API 渠道不再支持手动填写 Access Token，需提供账号密码。
 密钥保存在本地数据库，不回显给前端，留空保存会保留原值。
+YesCaptcha 设置还支持可选的 Soft ID（开发者 ID），配置后以整数 `softID` 随创建任务请求发送；填 0 或清空后保存表示不传。
 全局开关及渠道勾选项默认关闭；只有勾选的渠道登录且上游启用 Turnstile 时才创建付费任务，
 每五秒查询一次，最多等待两分钟。不会向 YesCaptcha 发送渠道账号密码。
 此功能不处理 Cloudflare 整站「Just a moment…」挑战或账号 2FA。

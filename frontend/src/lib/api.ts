@@ -345,8 +345,8 @@ export const api = {
     post<{ ok: boolean; message_id: string }>('/api/upstream-email-settings/test', {
       recipients
     }),
-  upstreamCaptchaSettings: () => request<{ enabled: boolean; has_client_key: boolean }>("/api/upstream-captcha-settings"),
-  saveUpstreamCaptchaSettings: (payload: { enabled: boolean; client_key: string }) => put("/api/upstream-captcha-settings", payload),
+  upstreamCaptchaSettings: () => request<{ enabled: boolean; has_client_key: boolean; soft_id: number }>("/api/upstream-captcha-settings"),
+  saveUpstreamCaptchaSettings: (payload: { enabled: boolean; client_key: string; soft_id: number }) => put("/api/upstream-captcha-settings", payload),
   upstreamWeComSettings: () =>
     request<UpstreamWeComSettings>('/api/upstream-wecom-settings'),
   saveUpstreamWeComSettings: (payload: Record<string, unknown>) =>

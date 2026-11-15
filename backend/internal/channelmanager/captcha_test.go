@@ -18,7 +18,7 @@ func (f captchaTransport) RoundTrip(r *http.Request) (*http.Response, error) { r
 
 func TestSub2APISyncReusesCaptchaSession(t *testing.T) {
 	m, st := testManager(t)
-	if err := st.SaveUpstreamCaptchaSettings(store.UpstreamCaptchaSettings{Enabled: true, ClientKey: "key"}); err != nil {
+	if err := st.SaveUpstreamCaptchaSettings(store.UpstreamCaptchaSettings{Enabled: true, ClientKey: "key", SoftID: 12345}); err != nil {
 		t.Fatal(err)
 	}
 	channel, err := st.CreateUpstreamChannel(store.UpstreamChannelInput{Type: store.UpstreamChannelSub2API, BaseURL: "https://upstream.example", Username: "user", Password: "password", RequiresTurnstile: true})
@@ -39,12 +39,18 @@ func TestSub2APISyncReusesCaptchaSession(t *testing.T) {
 		case "/api/v1/settings/public":
 			response = `{"code":0,"data":{"turnstile_enabled":true,"turnstile_site_key":"site-key"}}`
 		case "/createTask":
+			if body["softID"] != float64(12345) || len(body) != 3 {
+				t.Fatalf("createTask 应携带数字 softID: %v", body)
+			}
 			creates++
 			if creates > 1 {
 				t.Fatal("同一会话重复创建 YesCaptcha 付费任务")
 			}
 			response = `{"errorId":0,"taskId":123}`
 		case "/getTaskResult":
+			if _, exists := body["softID"]; exists {
+				t.Fatal("轮询不应携带 softID")
+			}
 			response = `{"errorId":0,"status":"ready","solution":{"token":"solved"}}`
 		case "/api/v1/auth/login":
 			logins++

@@ -487,6 +487,7 @@
       <div class="space-y-4">
         <SwitchRow v-model="captchaEditor.enabled" label="自动处理 Turnstile" description="仅供勾选“需要 Turnstile 验证”的 sub2api 渠道登录时使用。" />
         <Field v-model="captchaEditor.clientKey" label="YesCaptcha Client Key" type="password" :placeholder="captchaEditor.hasKey ? '已配置，留空保持不变' : '请输入 YesCaptcha Client Key'" />
+        <Field v-model="captchaEditor.softID" label="Soft ID（可选）" type="number" :min="0" :max="Number.MAX_SAFE_INTEGER" hint="YesCaptcha 开发者 ID，创建验证任务时发送；填 0 或清空表示不传。" />
         <p class="text-sm text-gray-500 dark:text-dark-400">验证会产生 YesCaptcha 费用，可能耗时约两分钟。只向服务商发送登录页地址和公开 site key，不发送渠道账号密码。不支持 Cloudflare 整站拦截。</p>
       </div>
       <template #footer><button type="button" class="btn btn-secondary" @click="captchaEditor.open = false">取消</button><button type="button" class="btn btn-primary" :disabled="busy" @click="saveCaptcha">保存</button></template>
@@ -716,7 +717,7 @@ const rechargeMethodOptions: Array<{ value: UpstreamRechargeMethod; label: strin
   { value: 'card', label: '卡网' }
 ]
 const channelEditor = reactive({ open: false, id: 0, name: '', type: 'sub2api' as UpstreamChannelType, baseURL: '', username: '', password: '', requiresTurnstile: false, newAPIAccessToken: '', newAPIUserID: '', rechargeRatio: 1, rechargeMethods: [] as UpstreamRechargeMethod[], rechargeFee: '', ignored: false, sync: true })
-const captchaEditor = reactive({ open: false, enabled: false, clientKey: '', hasKey: false })
+const captchaEditor = reactive({ open: false, enabled: false, softID: 0, clientKey: '', hasKey: false })
 const emailEditor = reactive({ open: false, host: '', port: 587, secure: false, user: '', password: '', from: '', subjectPrefix: '', recipients: '', testRecipient: '', interval: 30, hasPassword: false })
 const wecomEditor = reactive({ open: false, corpID: '', agentID: '', secret: '', target: '', hasSecret: false })
 const taskTypes: UpstreamTaskType[] = ['low_balance', 'burn_rate', 'group_added', 'group_removed', 'group_ratio_changed']
@@ -997,16 +998,21 @@ async function copyText(value: string) {
 async function openCaptchaEditor() {
   try {
     const settings = await api.upstreamCaptchaSettings()
-    Object.assign(captchaEditor, { open: true, enabled: settings.enabled, hasKey: settings.has_client_key, clientKey: '' })
+    Object.assign(captchaEditor, { open: true, enabled: settings.enabled, hasKey: settings.has_client_key, softID: settings.soft_id ?? 0, clientKey: '' })
   } catch (err) {
     ui.notify('error', (err as Error).message)
   }
 }
 
 async function saveCaptcha() {
+  const softID = Number(captchaEditor.softID)
+  if (!Number.isSafeInteger(softID) || softID < 0) {
+    ui.notify('error', 'Soft ID 请输入非负整数，0 表示不传')
+    return
+  }
   busy.value = true
   try {
-    await api.saveUpstreamCaptchaSettings({ enabled: captchaEditor.enabled, client_key: captchaEditor.clientKey })
+    await api.saveUpstreamCaptchaSettings({ enabled: captchaEditor.enabled, client_key: captchaEditor.clientKey, soft_id: softID })
     captchaEditor.open = false
     captchaEditor.clientKey = ''
     ui.notify('success', 'YesCaptcha 设置已保存')
