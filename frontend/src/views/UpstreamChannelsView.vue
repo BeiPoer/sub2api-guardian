@@ -50,7 +50,7 @@
                       {{ channel.name }}
                     </button>
                     <div class="mt-1.5 flex flex-wrap gap-1.5">
-                      <Badge :tone="channelTypeTone(channel.type)">{{ channelTypeLabel(channel.type) }}</Badge>
+                      <Badge :tone="channelTypeTone(channel.type)">{{ channelTypeLabel(channel.type) }}</Badge><Badge v-if="channel.type === 'sub2api' && channel.requires_turnstile" tone="danger" title="已勾选需要 Turnstile 验证">YesCaptcha</Badge>
                       <Badge :tone="channelStatusMeta(channel).tone" dot>{{ channelStatusMeta(channel).label }}</Badge>
                     </div>
                   </div>
@@ -132,7 +132,7 @@
                   <button v-for="channel in activeFiltered" :key="channel.id" type="button" class="upstream-rail-item" :class="selectedID === channel.id && 'upstream-rail-item-selected'" @click="selectChannel(channel)">
                     <span class="h-full min-h-14 w-1 flex-shrink-0 rounded-full" :class="channelStatusClass(channel)" />
                     <span class="min-w-0 flex-1 text-left">
-                      <span class="flex min-w-0 items-center gap-1.5"><strong class="truncate text-sm text-gray-900 dark:text-white">{{ channel.name }}</strong><Badge :tone="channelTypeTone(channel.type)">{{ channelTypeLabel(channel.type) }}</Badge></span>
+                      <span class="flex min-w-0 flex-wrap items-center gap-1.5"><strong class="truncate text-sm text-gray-900 dark:text-white">{{ channel.name }}</strong><Badge :tone="channelTypeTone(channel.type)">{{ channelTypeLabel(channel.type) }}</Badge><Badge v-if="channel.type === 'sub2api' && channel.requires_turnstile" tone="danger" title="已勾选需要 Turnstile 验证">YesCaptcha</Badge></span>
                       <span class="mt-1 block truncate text-xs text-gray-500 dark:text-dark-400">{{ channel.base_url }}</span>
                       <span class="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-gray-500 dark:text-dark-400"><span>{{ formatRelative(channel.last_sync_at) }}</span><span>{{ credentialLabel(channel) }}</span></span>
                     </span>
@@ -149,7 +149,7 @@
                   <button v-for="channel in ignoredFiltered" :key="channel.id" type="button" class="upstream-rail-item" :class="selectedID === channel.id && 'upstream-rail-item-selected'" @click="selectChannel(channel)">
                     <span class="h-full min-h-14 w-1 flex-shrink-0 rounded-full bg-gray-300 dark:bg-dark-600" />
                     <span class="min-w-0 flex-1 text-left">
-                      <span class="flex min-w-0 items-center gap-1.5"><strong class="truncate text-sm text-gray-900 dark:text-white">{{ channel.name }}</strong><Badge :tone="channelTypeTone(channel.type)">{{ channelTypeLabel(channel.type) }}</Badge></span>
+                      <span class="flex min-w-0 flex-wrap items-center gap-1.5"><strong class="truncate text-sm text-gray-900 dark:text-white">{{ channel.name }}</strong><Badge :tone="channelTypeTone(channel.type)">{{ channelTypeLabel(channel.type) }}</Badge><Badge v-if="channel.type === 'sub2api' && channel.requires_turnstile" tone="danger" title="已勾选需要 Turnstile 验证">YesCaptcha</Badge></span>
                       <span class="mt-1 block truncate text-xs text-gray-500 dark:text-dark-400">{{ channel.base_url }}</span>
                       <span class="mt-2 block text-[11px] text-gray-500 dark:text-dark-400">{{ credentialLabel(channel) }}</span>
                     </span>
@@ -170,6 +170,7 @@
                 <div class="flex flex-wrap items-center gap-2">
                   <h2 class="min-w-0 break-words text-xl font-semibold text-gray-900 dark:text-white">{{ selectedChannel.name }}</h2>
                   <Badge :tone="channelTypeTone(selectedChannel.type)">{{ channelTypeLabel(selectedChannel.type) }}</Badge>
+                  <Badge v-if="selectedChannel.type === 'sub2api' && selectedChannel.requires_turnstile" tone="danger" title="已勾选需要 Turnstile 验证">YesCaptcha</Badge>
                   <Badge :tone="channelStatusMeta(selectedChannel).tone" dot>{{ channelStatusMeta(selectedChannel).label }}</Badge>
                   <Badge v-if="selectedChannel.ignored" tone="gray">已忽略</Badge>
                 </div>
